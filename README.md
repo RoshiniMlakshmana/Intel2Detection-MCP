@@ -1,45 +1,50 @@
 # ThreatResearch MCP
 
-An independent, evidence-gated threat intelligence and detection research project. It takes the **collect → compare coverage → analyst review** idea from [Roshini's original Shuffle/TheHive/Wazuh workflow](https://medium.com/@Commoness/automation-using-threat-intelligence-to-auto-update-the-rules-cfbcb8004f16). [Ethan's ThreatIntel-Aggregator](https://github.com/Ethan-Andrews/ThreatIntel-Aggregator) was reviewed as a reference; no code was copied from it. Each enterprise can run its **own installation** with its own database, inventory, telemetry mappings, credentials, and Claude MCP connection. This package is an MCP application that works with Claude; it does not contain a separately trained language model.
+An evidence-gated threat intelligence and detection workflow for Claude, built on the [Model Context Protocol](https://py.sdk.modelcontextprotocol.io/). Runs as an MCP server, an optional continuous poller, and a local analyst dashboard — no SIEM required to start. Each organization runs its own installation and database.
 
-**New here?** Follow the [research-only quickstart](QUICKSTART.md). It needs Python and Claude, but no SIEM, tokens, or organization data. Use `python -m threat_research.cli doctor` to check an installation offline. A local, dependency-free **[analyst dashboard](DASHBOARD.md)** (`threat-research dashboard`) puts a Sources page, per-threat evidence/inventory/risk/framework view, and a rule-approval workflow in a browser over the same database — also with no SIEM required.
+## 1. What it does
 
-For a public cloneable repository, see [GitHub publishing steps](PUBLISHING.md). Choose a license and repository destination before publication; the downloadable archive is the release candidate.
+Collects newly published threats, has Claude (or an analyst) research the *actual cited behavior* rather than guessing from a CVE title, checks whether matching detection coverage already exists, drafts a Sigma/KQL/SPL rule only when a behavior and its required telemetry are verified, and adds that draft to a local rule repository only after explicit analyst approval — never automatically, never deployed to a SIEM.
 
-## What this version does
+## 2. Impact
 
-- Collects new or modified NVD records, reviewed GitHub Security Advisories, and new CISA KEV entries. It merges records by CVE ID, retains source URLs, and adds FIRST EPSS when available. The `enrich_from_cna` tool retrieves the original CNA record and its references for one CVE. With a `THREATFOX_AUTH_KEY`, it also collects recent high-confidence public botnet C2 IP:port indicators. Source failures appear in the run result and digest.
-- Polls **33 configured RSS/Atom research and news feeds** spanning government advisories, incident writeups, malware research, cloud/software security, and security news. The full named catalog is in `threat_research/research_feeds.py`. Feed availability can change: each daily run reports successful counts and individual failures; 33 is the *configured* count, not a live-health guarantee. Entries require a publication/update date in the collection window, HTTPS article URL, and a bounded title/excerpt. Matching CVE IDs in metadata are linked as **unverified research pointers** under that CVE. The continuous worker queues new supported publisher articles and inspects at most six per polling run; title/HTML content is never treated as an analyst observation.
-- Reads **RansomLook** recent-post metadata, an open-source project on GitHub that monitors ransomware leak sites. It records a claim's name, attributed group, first-observed date, and clearnet tracker citation, with no direct connection to `.onion` sites and no leaked content. These are **unverified claims**, with no CVE score or automatic detection. A claim listing itself cannot be entered as evidence of technical behavior. Teams can configure their organization and supplier aliases for a cautious name-match check. The digest limits this category to two entries and prioritizes possible name matches.
-- Polls **five curated GitHub repositories** for recent commit subjects: Unit 42 supporting intelligence, Volexity public intel, Meta threat indicators, SigmaHQ community rules, and Microsoft Sentinel detections. `community_detection_updates` lists these with links to the specific commits. The first three are research pointers; the latter two show possible existing detection approaches. The collector does not fetch or copy rule bodies, indicators, or report text, so a commit is never counted as local coverage or sufficient behavior evidence. Commit author dates may differ from when a change was pushed. Optional `GITHUB_TOKEN` increases API quota; each repository's failures are reported separately. The daily digest reserves at most one entry each for research and community rule updates.
-- `inspect_cited_report` can now read a **cited public article on a configured publisher host** on demand. It scans bounded HTML, removes navigation/scripts, and returns short relevant excerpts, paragraph positions, and a SHA-256 page hash. The response remains untrusted research text: an analyst must read the full report and verify observed behavior before using `record_observed_behavior`. It rejects redirects, non-HTML, oversized pages, unlisted hosts, and URLs not already attached to that threat. Paywalled, PDF, script-rendered, and unmatched publisher pages may fail inspection.
-- That inspection also returns narrow **behavior leads** for web-server shell creation, encoded PowerShell, and unauthorized MCP tool execution. It ignores obvious negation, reports exact paragraph numbers, and never inserts an observation or draft from text by itself. The [synthetic SOC lab](examples/soc_lab/README.md) connects CVE and feed metadata to article inspection, reviewed observations, three Sigma/KQL/SPL drafts, asset risk, and labeled event replay.
-- Newly collected article inspections enter a durable queue with bounded retries and visible failures. `behavior_review_leads` lists the resulting untrusted, cited snippets; the daily digest can show recent lead types and URLs. Analysts still inspect the full publisher report before recording observed behavior. Paywalls, unsupported hosts, PDFs, script-rendered pages, and failed requests remain visible gaps.
-- Accepts sourced emerging campaign/vendor reports **without any CVE ID** through `register_campaign_report`. The analyst supplies the summary and verifies the source; the tool does not pretend to read or validate arbitrary webpages. Feed articles also appear as research leads in `emerging_threats` and the digest; being listed there does not establish an active campaign.
-- Produces an explainable **environment priority** from KEV, EPSS, CVSS, confirmed affected status, internet exposure, and asset criticality. If affected versions are unknown it says `verify_affected_version`, never “low risk.” Compare four illustrative environments or enter your real environment facts.
-- Refreshes the **official MITRE ATT&CK Enterprise, MITRE ATLAS, and OWASP LLM Top 10 release** catalogs every 24 hours while the worker runs, and when a client review finds them stale. It records release versions, source URLs, hashes and fetch time; errors preserve an explicitly stale snapshot. `review_detection_for_client` brings back small, cited excerpts and verifies its narrow technique/risk relationships against the retrieved edition. Claude uses this retrieved context to explain the client impact; the server does not retrain or fine-tune a model. The current OWASP release is discovered from the official project's home page and parsed from its linked PDF, so a change to the publisher's site or format appears as a source error until the adapter is updated.
-- Separates source facts, analyst-recorded observed behavior, and clearly labeled possible attacker adaptations. It does not assign invented numeric probabilities to adaptations.
-- Requires a cited analyst observation before drafting a **behavior** rule, including for an emerging campaign report with no CVE. The behavior templates are **web service spawning a shell**, **encoded PowerShell execution**, and **MCP tool execution after a deny/missing/expired authorization decision**. A distinct **recent ThreatFox C2 IP:port** template produces an expiring IOC hunt only at confidence 75/100 or higher. Each has Sigma, KQL, and SPL. The endpoint Sigma/SPL examples assume Windows Sysmon; the web-service KQL includes Linux process names as a broader Defender hunt. The MCP rule requires a custom audit contract and field mapping before it can run in Sentinel or Splunk.
-- For behaviors outside those templates, `research_detection_plan` gives Claude CVE facts, related reports, source URLs, unverified article excerpts, and precise missing questions. A published CVE not in the rolling feed can be looked up by ID through its CNA record. The analyst can provide a reviewed source, observation, false-positive context, and 2-8 literal field predicates to `draft_custom_detection`. This creates a Sigma review draft **without any SIEM account**. It checks equivalent custom specifications against local and imported inventory. A configured Splunk or Defender environment later maps the fields to a bounded SPL/KQL query; a generic environment exports the Sigma draft for a suitable backend. Custom matching supports Windows process/network events and instrumented MCP audit events, with equals/contains/endswith and one condition per field. Unsupported log families or complex correlation are reported as gaps rather than guessed queries.
-- Checks equivalent behavior plus telemetry against its local inventory and analyst-mapped imported inventory before drafting. Saying `implement this rule` approves a draft **in the local inventory** or attaches a distinct observation to an existing local/imported rule through the same MCP tool. An independently recorded, previously unlinked observation increments its pattern score by one. Repeating the same feed record or evidence ID does not. Score 1 alone is not labeled a confirmed compromise.
-- Exposes 41 tools to Claude through the official MCP Python SDK v2, including `evaluate_synthetic_soc_lab` for case-level replay results. A continuous worker polls every 15 minutes by default, queues newly observed KEV and high-confidence C2 leads, and can email fresh alerts. The separate daily digest still runs at the specified local time.
-- Every drafted, rejected, reopened, or approved rule is mirrored into a **local, Git-ready rule repository** (`RULE_REPOSITORY_DIR`, default a `rule-repository/` folder beside each database) with `draft/` and `approved/` JSON snapshots — Sigma/KQL/SPL text, source evidence with publication dates, analyst observations, inventory comparison, risk analysis, false positives, current framework mappings, reproducible test results, and full approval history. Nothing here runs `git` or touches a network; an analyst commits and pushes it themselves if they choose to, and it is never deployed to a SIEM.
-- `inventory_status`/`declare_inventory_scope` give an honest **Yes/No/Unknown** coverage answer for every behavior an analyst has recorded evidence for — the three fixed templates *and* any custom-spec observation, each checked at its own bound fingerprint. Yes only for reviewed matching coverage, No only within an inventory an analyst has explicitly declared complete and recent (30-day TTL), Unknown otherwise — including an inventory that is simply empty or was never declared. Every answer shows the matching rule (for Yes) plus the specific cited evidence and scope checked behind it.
-- `test_rule_against_samples` replays one draft or approved rule against a local JSONL file of analyst-labeled positive/benign events, records a SHA-256 hash of exactly what was tested (so an edited rule is visibly untested again) plus every match/miss, and exports the run into that rule's repository snapshot. This is local reference matching only, clearly labeled as such; native Splunk/Defender validation (`test_draft_in_siem`) remains a separate, explicitly configured step.
-- A local, dependency-free **[analyst dashboard](DASHBOARD.md)** (`threat-research dashboard`, stdlib `http.server` only) reads the same SQLite database: a Sources page with a card per configured source (last successful refresh, latest publication date, record count, current error), and a threat detail page with source/evidence, an evidence-gated detection-inventory status (`yes`/`no`/`unknown`), research/risk with live MITRE ATT&CK/ATLAS/OWASP mapping, an analyst workspace for verified behavior/telemetry/benign examples/feedback, and a rule-approval workflow that only ever writes to the local repository, never a SIEM. It also self-refreshes collection once daily.
-- `watch-events` tails a local appended JSONL stream against approved local rules (or explicitly includes drafts in a lab). This reference matcher evaluates narrow structured selections and emits minimal alert metadata. It is useful for reproducible telemetry exercises; the existing `test-siem` tool executes a read-only draft query in an actual configured Splunk/Defender service.
+It removes the manual work of checking dozens of feeds each morning, reading past a headline for real technical detail, and hand-drafting a first-pass Sigma rule with its telemetry list. It does not measure or claim a specific time saved — that depends on your feeds, team, and review process.
 
-## Connect one enterprise environment
+## 3. Sources
 
-Each company installs its own copy and keeps its environment data locally. The public intelligence collector and Claude MCP process use the same **deployment-specific** SQLite file. Do not reuse that file across organizations. No enterprise assets, SIEM tokens, or saved searches are uploaded to a central service by this project. If you intend to offer one hosted service for many companies instead, you need tenant-aware authorization and data storage; this standalone installation must not be exposed as a shared unauthenticated remote MCP endpoint.
+- **CVE/advisories** — CISA KEV, NVD, GitHub Security Advisories, merged by CVE ID: **verified source facts**.
+- **Research and news** — 33 RSS/Atom feeds (government, vendor research, security news; listed in `threat_research/research_feeds.py`), plus on-demand full-article inspection.
+- **Ransomware leak-site claims** — RansomLook recent posts: **unverified claims**, never evidence.
+- **Community detections** — 5 curated GitHub repos (Unit 42, Volexity, Meta, SigmaHQ, Microsoft Sentinel), commit subjects only, as **research leads**, never imported as coverage.
 
-After installing the package, create a pack for the target SIEM. These commands use Windows PowerShell; replace the directory and name:
+Only an analyst-recorded observation tied to a specific cited claim becomes **evidence** for a rule; everything else stays a lead until reviewed.
+
+## 4. Install and connect to Claude Code
+
+Tested on Windows PowerShell (Python 3.11+), from the project folder:
 
 ```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli create-pack --directory C:\ThreatResearch\Acme --name "Acme SOC" --siem generic
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m threat_research.cli doctor
+claude mcp add --scope user threat-research -- "C:\path\to\ThreatResearch-MCP\.venv\Scripts\python.exe" -m threat_research.server
 ```
 
-Choose `splunk` or `defender` for the implemented native read-only checks, or `generic` for a different SIEM. The command creates `profile.json`, an empty `assets.csv`, `inventory.json`, an isolated SQLite database, and `claude-mcp.json` with the absolute Python and database paths. No credentials or fake assets are inserted. Fill in the team's actual telemetry fields, verified affected assets, and approved rule inventory. Remove telemetry families that the team does not collect. Then:
+`doctor` should report `ready_for_research`. In Claude Code:
+
+> Use threat-research to collect fresh CVEs and emerging threats, check inventory status, and draft a rule only where cited evidence and required telemetry support it.
+
+Full setup, the analyst dashboard, and Claude Desktop config: **[QUICKSTART.md](QUICKSTART.md)**, **[DASHBOARD.md](DASHBOARD.md)**.
+
+## 5. Deploy for a team
+
+Each organization gets an isolated database and rule repository:
+
+```powershell
+.\.venv\Scripts\python.exe -m threat_research.cli create-pack --directory C:\ThreatResearch\Acme --name "Acme SOC" --siem splunk
+```
+
+`--siem` is `splunk`, `defender`, or `generic`. This writes `profile.json` (telemetry mapping), an empty `assets.csv` (only *confirmed* affected assets), and `inventory.json` (existing rules) — no credentials, no synthetic data. Fill those in, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m threat_research.cli inspect-pack --directory C:\ThreatResearch\Acme
@@ -47,149 +52,14 @@ Choose `splunk` or `defender` for the implemented native read-only checks, or `g
 .\.venv\Scripts\python.exe -m threat_research.cli serve-live --directory C:\ThreatResearch\Acme
 ```
 
-Merge the generated `claude-mcp.json` server entry into **that enterprise's** Claude Desktop MCP configuration. For Claude Code, use the same executable, arguments, and `THREAT_RESEARCH_DB` value when adding the MCP server. Set SMTP and feed credentials in the worker's local environment. If analysts use MCP tools to query a SIEM, the MCP process also needs an authorized read-only SIEM token in its local environment; keep secrets out of the generated Claude configuration. `--directory` can also be passed to `poll-status`, `poll-once`, `show`, and other CLI commands to select the environment pack. Pack validation checks file shape; it does not prove that mapped fields occur in live logs.
+`inspect-pack`/`onboard-pack` validate both files before anything is scored or drafted. `serve-live` is a **separate, always-on polling worker** — run it apart from Claude's MCP process, against the same database. Credentials (`SPLUNK_TOKEN`, `GRAPH_TOKEN`, `SMTP_*`, `NVD_API_KEY`, `GITHUB_TOKEN`) go only in that worker's process environment — never in `profile.json` or `claude-mcp.json`. Details: **[QUICKSTART.md §5](QUICKSTART.md)**.
 
-The generic profile uses a canonical-to-local `field_map` and supports asset risk, local inventory deduplication, and Sigma drafts. `check_detection_fit` reports missing canonical fields and makes the mapping available for review. `export-sigma --directory C:\ThreatResearch\Acme --id RULE-ID` creates a Sigma rule and a field-mapping pipeline for a compatible Sigma backend. A security engineer must choose the correct backend, add target-specific source/index conditions, convert the rule, and test it against actual events. Generic mode intentionally has **no native query executor**. The Sigma examples for Windows process and network telemetry should not be treated as Linux or other platform detections without rewriting and testing.
+## 6. Limitations
 
-| Mode | Local risk and inventory | Draft format | Native read-only check |
-| --- | --- | --- | --- |
-| Splunk | Yes | Sigma, SPL, KQL | SPL query and saved-search candidate review, when configured |
-| Defender XDR | Yes | Sigma, SPL, KQL | Microsoft Graph hunting query, when configured |
-| Generic SIEM | Yes | Sigma with field mapping | Requires a target backend and an enterprise-owned connector |
+- **Polling, not streaming** — latency is the poll interval (15 min default) plus each source's publish delay.
+- **No cited behavior, no rule** — missing evidence returns "research needed," never a guess from a title.
+- **Risk needs asset context** — without a confirmed inventory, priority stays `verify_*`/unknown, never a guessed score.
+- **Drafts need native testing** — generated Sigma/KQL/SPL require target-SIEM validation with your own credentials.
+- **Approval stays local** — it adds a rule to the local Git-ready repository only; nothing is deployed or pushed.
 
-This is **near-real-time intelligence polling**, with source publication time plus a default 15-minute polling interval. It is not a streaming processor for every enterprise log event, and it does not deploy or enable SIEM alerts automatically. An analyst's explicit rule approval changes only the local inventory.
-
-## Set up a team's environment
-
-The project includes sample profiles in `examples/` for **Splunk**, **Microsoft Defender XDR**, and **generic SIEMs**, plus `assets.example.csv`. Copy and edit them for the team. A profile declares the actual event families, index/sourcetype or table, field names, and optional `organization_aliases` / `supplier_aliases` used solely for leak-claim name triage. The asset CSV has one row per asset with `asset_id`, `hostname`, `product`, `version`, `confirmed_cves` (semicolon-separated), `internet_exposed` (`true`/`false`), `criticality` (`low`/`medium`/`high`), and `asset_role` (`general`, `model_serving`, `mcp_server`, or `agent_runtime`). Only put a CVE in `confirmed_cves` if a trusted inventory/vulnerability workflow has verified the affected asset/version. The example CVE and products are synthetic.
-
-Onboarding **validates both files before replacing** the local environment snapshot. In PowerShell, from the extracted project folder:
-
-```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli onboard --profile .\examples\environment.splunk.example.json --assets .\examples\assets.example.csv
-.\.venv\Scripts\python.exe -m threat_research.cli environment-status
-.\.venv\Scripts\python.exe -m threat_research.cli assess-assets --id CVE-2026-12345
-```
-
-Use `environment.defender.example.json` in the first command for a Defender environment. The `risk_from_asset_inventory` MCP tool scores only confirmed affected assets; unmatched assets remain **unknown**, even if the inventory is large. `leak_claim_relevance` compares claim titles with the explicit organization/supplier aliases; a name match is **not** a verified victim or breach. It flags an asset snapshot older than seven days. The daily digest prioritizes CVEs with confirmed affected assets and marks stale snapshots. Refresh the CSV through your existing approved export process and rerun `onboard`; there is no unattended scanner access or credential in the project.
-
-After drafting a rule, run `check-rule --id RULE-ID` or ask Claude to use `check_detection_fit`. This checks declared fields and gives an SPL query with the team's configured Splunk index and sourcetype, or the existing KQL template for the stated Defender table. Missing fields block a mapped query. This is a **configuration check**, not native query execution or false-positive testing. Import a curated existing-rule inventory separately with `import-inventory` so a new detection can be compared with known coverage.
-
-### Optional read-only Splunk event probe
-
-Set `splunk_url` in the profile to the HTTPS management API origin (often port 8089) and keep the token outside the profile. Use a Splunk token that can search only the intended indexes. In PowerShell, set `SPLUNK_TOKEN` in the process environment, then run:
-
-```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli probe-splunk --family process_creation
-```
-
-The `probe_splunk_telemetry` MCP tool does the same for `process_creation`, `network_connection`, or `mcp_audit`. It uses the Splunk **v2 search export** endpoint, queries the last 24 hours, takes at most one event, and returns field names rather than the event contents. TLS certificate validation is enabled; use `SPLUNK_CA_BUNDLE` for your internal CA. No token is saved to SQLite or returned to Claude. A missing sample is inconclusive, and one sample does not prove detection coverage. The Splunk probe was tested with a synthetic API response; it has not been run against a live deployment. Some Splunk Cloud environments require REST API access to be enabled by the provider.
-
-### Optional native SIEM checks and rule comparison
-
-After a draft passes `check_detection_fit`, run `test_draft_in_siem` (CLI: `test-siem --id RULE-ID`) with a read-only search credential. For Splunk, use the configured `splunk_url` and `SPLUNK_TOKEN`. For Defender XDR, set `GRAPH_TOKEN` to a Microsoft Graph access token with **ThreatHunting.Read.All** for `POST /v1.0/security/runHuntingQuery`. The project does not acquire or refresh tokens. This executes only a generated, unchanged rule query over the past 24 hours with at most five returned matches; only the count, query hash, and errors are returned. The service may still charge for a search, and a match does not establish malicious activity. Zero matches do not prove a rule is wrong or the environment is safe. Grant access only to the intended data and inspect representative positive and benign events in your SIEM before deployment.
-
-For Splunk, `compare_live_splunk_rules` (CLI: `compare-splunk-rules --id RULE-ID`) reads up to 500 saved-search entries across accessible namespaces and returns candidate names, enabled state, query hashes, and matching terms. It does not import them, prove equivalent coverage, change scores, or modify searches. Read the actual query and import a curated behavior mapping with `import-inventory` if its logic and telemetry really match. A role with limited visibility may miss searches. Defender live inventory comparison is not yet implemented; use the curated inventory export.
-
-## Install on Windows for Claude Code
-
-Install Python 3.11 or later. In PowerShell, from the extracted project folder:
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m threat_research.cli init
-```
-
-Register the server using **absolute paths** (replace `C:\path\to\ThreatResearch-MCP`):
-
-```powershell
-claude mcp add --scope user threat-research -- "C:\path\to\ThreatResearch-MCP\.venv\Scripts\python.exe" -m threat_research.server
-```
-
-Open Claude Code and use `/mcp` to verify the server. Example conversation:
-
-> Use threat-research to collect fresh CVEs and emerging C2 threats. Compare their risk in my environment and show cited observations separately from possible attacker adaptations. Draft an expiring IOC hunt or a behavior rule only when its evidence and telemetry support it.
-
-Claude Desktop can also run the same Python executable and module through its `mcpServers` configuration. Example entry:
-
-```json
-{
-  "mcpServers": {
-    "threat-research": {
-      "command": "C:\\path\\to\\ThreatResearch-MCP\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "threat_research.server"]
-    }
-  }
-}
-```
-
-### Run continuously
-
-The MCP stdio process starts when Claude connects. To keep collection running between chats, run **one separate worker** on an always-on host. Set `THREAT_RESEARCH_DB` to the same absolute SQLite path for both the worker and Claude's MCP process. Set `POLL_INTERVAL_MINUTES=15` (allowed range: 5-1440); collection starts immediately and repeats on that interval. The SQLite lease prevents two workers from polling the same database at once. After a crash, the lease expires within 20 minutes. Each successful source records its own durable checkpoint; its next collection overlaps the previous success by one hour. Failed sources retain their earlier checkpoint for retry, with a seven-day recovery limit. A longer outage may require manual backfill, especially for feeds that publish only recent entries. Every successful or degraded run records source counts, failures, and completion time. Duplicates do not generate new alerts. A CVE newly promoted to CISA KEV is eligible even if it was already collected as a CVE.
-
-In PowerShell, after setting environment variables for that account:
-
-```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli poll-once
-.\.venv\Scripts\python.exe -m threat_research.cli poll-status
-.\.venv\Scripts\python.exe -m threat_research.cli serve-live
-```
-
-Use Windows Task Scheduler to start the last command **at system startup** on the always-on host; configure it to restart if the process exits. `serve-live` also checks and sends the once-per-day digest at `DIGEST_TIME` and `DIGEST_TZ`. Set `SMTP_HOST`, `SMTP_FROM`, `SMTP_PORT`, `DIGEST_TO`, and SMTP authentication settings as needed. Configure `NVD_API_KEY` and `GITHUB_TOKEN` for reliable continuous access to those providers. `ALERT_TO` overrides the immediate alert recipient; otherwise the configured daily recipient receives both. High-confidence ThreatFox C2 and newly observed CISA KEV leads are queued by default. Set `ALERT_RESEARCH=true` to include all new research and community commits; this can create substantial email volume. Up to ten pending leads are sent per alert email. Failed email delivery leaves them in a durable queue for the next poll. A crash immediately after SMTP accepts a message can cause the same alert email to be retried once; review the included threat IDs before acting. `polling_status` and `poll-status` show the pending count and source health without exposing credentials. The system uses **polling**, so its latency is the poll interval plus each source's publication delay, not instant streaming.
-
-For a container worker on an always-on Docker host, copy `.env.example` to `.env`, edit the settings and create a writable `data` directory. Run `docker compose up -d --build` and inspect `docker compose logs -f collector`. The Compose configuration restarts the worker and persists SQLite under `./data`. Docker is optional: it is not installed in the development environment, and the image was not built here. The container runs the collector only; Claude still uses the local MCP stdio command and must access the **same database path**. Do not place the SQLite database on an unreliable network share. If Claude runs on a different host, use a deliberate shared service/database design before relying on this deployment.
-
-## Daily digest
-
-The default configured time is **08:00 America/Los_Angeles**; change `DIGEST_TIME` and `DIGEST_TZ` as needed. `serve-live` handles collection, prompt alerts, and the daily digest on an always-on machine. Alternatively, run `threat-research digest` through Windows Task Scheduler at your chosen local time. The MCP server itself is on-demand and cannot send a digest while the machine and scheduler are off.
-
-In Task Scheduler, create a **Daily** trigger at your chosen time. Set **Program/script** to the absolute path of `.venv\Scripts\python.exe`. Set **Add arguments** to `-m threat_research.cli digest`. Set environment variables for that Windows account before the task runs. `THREAT_RESEARCH_DB` must point to a stable writable location.
-
-If `DIGEST_TO` and `SMTP_HOST` are set, configure `SMTP_PORT`, `SMTP_FROM`, and optionally `SMTP_USER`/`SMTP_PASSWORD`. Port 465 uses TLS from the start; other ports use STARTTLS. Email is sent only with those settings. Without email settings, the digest is saved beside the SQLite database as `digest-YYYY-MM-DD.txt`. No address or credentials are included in this project. To run it immediately:
-
-```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli digest
-```
-
-## Research and rule workflow
-
-1. `collect_now` gathers intelligence, including the research-feed catalog, RansomLook recent claim metadata, and curated GitHub repository updates. `latest_threats`, `emerging_threats`, `community_detection_updates`, and `threat_details` show links and dates. For a CVE, `threat_details` also shows research articles or commit subjects that mention its ID; these are leads, not verified relationships. The continuously running `serve-live` worker inspects up to six new eligible article pages per run, and `behavior_review_leads` exposes cited review snippets; `inspect_cited_report` also reads a specific supported page on demand. `enrich_from_cna` adds the CNA's affected products and references for a chosen CVE. `register_campaign_report` records a vendor or researcher report without a CVE, with an analyst-supplied source URL and summary.
-2. `risk_from_asset_inventory` uses the onboarded asset snapshot to score confirmed affected CVE exposures. `environment_risk` also permits a single manually entered scenario. Missing EPSS is marked unavailable, not treated as proof of safety.
-3. `research_explanation` shows source facts and separate *inferences*. A reference URL is a research pointer until someone reads and verifies its content.
-4. After checking a source report, `record_observed_behavior` records its HTTPS URL, a substantive claim, and one supported behavior. The tool deliberately cannot prove that the cited webpage actually contains the claim; analyst review is required. The MCP authorization template requires an audit event with `event_type`, `execution_status`, `authorization_decision`, `principal_id`, `request_id`, `tool_name`, `resource_scope`, and timestamp. It should never be used on an uninstrumented MCP server.
-5. `draft_detection` compares behavior and telemetry with the local inventory, then creates a review-only Sigma/KQL/SPL draft when coverage is absent. For a recent high-confidence ThreatFox C2 endpoint, `draft_c2_ioc_hunt` produces an IP:port-specific hunt with a seven-day maximum lifetime. `check_detection_fit` reports missing local telemetry fields and a mapped SPL query when appropriate. If a real SIEM is configured, `test_draft_in_siem` checks whether the query executes natively and `compare_live_splunk_rules` offers saved-search duplicate leads. `detection_rule` shows full text, source, expiration, and false-positive context. Expired IOC rules cannot be approved without refreshing the source.
-6. To compare against a separate rule inventory, make a curated JSON mapping of existing rule IDs to one of the supported behaviors, with a source URL. For an existing IOC hunt, use `"behavior": "ioc_network"` and add `"indicator": "8.8.4.4:443"` with the **actual endpoint**. `examples/inventory.example.json` shows the behavior format; its URL is a placeholder. Import it with `python -m threat_research.cli import-inventory --file C:\path\to\inventory.json`. This mapping is **analyst supplied**; it cannot establish semantic equivalence for arbitrary existing queries.
-7. Ask Claude to **“implement this rule”** with its ID. The `implement_rule` tool requires that exact phrase. This approves a draft in the local inventory; for an existing local or imported rule, provide a distinct matching evidence ID to increment its pattern score once. `corroborate_existing_rule` also remains available for imported coverage. Neither tool deploys to Sentinel, Splunk, or production. Native query execution, sample telemetry tests, and an analyst's tuning review are necessary before deployment.
-8. Ask Claude to call `review_detection_for_client` with a rule ID, or run `review-detection --id RULE-ID`. The review joins rule text, citations, verified client asset risk when configured, telemetry fit, exact local/imported inventory matches, rationale, and versioned ATT&CK/ATLAS/OWASP context. Framework matching is deliberately narrow: generic shell creation maps to ATT&CK command interpreter activity; encoded PowerShell maps to its ATT&CK subtechnique; MCP tool execution can have a related ATLAS tool-invocation technique and OWASP agency risk **only if those IDs remain present in the current releases**. Network IOC hunts do not claim an attacker technique from an IP address. Broad semantic equality with arbitrary deployed SIEM searches cannot be established from names or commit titles alone; import curated inventory or review the available Splunk saved-search candidates.
-9. For a new CVE, ask Claude to call `research_detection_plan` first. If a specific behavior is not evidenced, it says research needed. Once you have reviewed the technical source and can describe the log pattern, give Claude your observations and ask it to call `draft_custom_detection`. `search_framework_techniques` retrieves current official framework candidates for the same behavior; it **does not automatically assign** a technique. For a custom rule, `review_detection_for_client` includes these candidates as unverified suggestions and reports client field-mapping gaps. Custom rule text is never auto-approved or deployed.
-
-## Limits that matter
-
-This is a working research foundation, **not a production detection service**. NVD descriptions and CVE IDs generally do not reveal stable exploit telemetry. Every collected CVE has a research status and sources, but many have no documented stable behavior; those remain `research_needed_no_behavior_rule`. Research-feed collection captures titles/excerpts; the worker separately inspects a limited number of allowed publisher pages, while `inspect_cited_report` handles on-demand review. An analyst must verify behavior before drafting. Custom input can extend beyond the fixed templates but its accepted log families, operators, field count and literal syntax are intentionally constrained. Native KQL/SPL execution against a real tenant was not performed. The local JSONL watcher does not ingest directly from an enterprise SIEM or provide durable stream delivery.
-
-There is no live vulnerability scanner/CMDB sync, automatic semantic classification of Splunk's existing rules, automated vendor-report comprehension, model training, Slack delivery, or production SIEM deployment yet. Teams import an approved asset export; the optional Splunk probe reads one recent event, while native query checks run only with separately configured credentials. Defender Graph support covers draft hunting queries, not live detection inventory or automated token acquisition. SMTP delivery is inactive until configured. ThreatFox requires a personal Auth-Key. Only its recent public botnet C2 IP:port entries meeting the confidence threshold are currently used for automatic IOC hunts; leak-site claims and GitHub commits are research leads, not validated intrusions or indicators. Community rules can inform a new draft after reviewing their license, author attribution, data fields, event quality, false positives, and the team's existing inventory. Nothing imports or deploys those public rules automatically.
-
-## Verification
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m threat_research.cli demo-soc --output-directory .\soc-lab-output
-```
-
-The tests cover feed idempotence, source failures, RSS/Atom parsing, article/CVE links, bounded inspection, automatic article review queue and retries, behavior-lead negation, evidence gating, threat and asset risk, inventory deduplication, rule approval/reject/reopen, daily delivery, continuous polling, Splunk/Defender API response handling with synthetic responses, enterprise isolation, the full SOC replay with append-only watcher, and (in `tests/test_dashboard.py`) the analyst dashboard's aggregation, HTTP routes, and the ATLAS/RSS/NVD poll-failure fixes below. **78 tests pass** as of this dashboard addition. The included replay measured **3 TP, 2 FP, 2 FN, 5 TN** on **12 synthetic events**; see its [committed sample report](examples/soc_lab/sample_report.json) and [walkthrough](examples/soc_lab/README.md). A live run from this workspace (see [DASHBOARD.md](DASHBOARD.md)) collected CISA KEV, NVD (1,196 modified CVEs in one window), GitHub advisories, RansomLook, one CNA record, EPSS, all 5 curated GitHub repos, and 29 of the 33 RSS feeds including Google Project Zero, with zero errors after this change; **CISA's advisories RSS feed, JFrog's blog feed, and Malpedia remain blocked from this network** (bot-management/WAF and an apparent IP-level block respectively — see the table in DASHBOARD.md), and that failure is now shown per-source rather than only in a JSON tool response. Splunk/Defender query checks and live Splunk inventory comparison still were not live validated (no test credentials for either service exist in this environment). Run `poll-once`, `poll-status`, `review-leads`, `inspect-report`, `test-siem`, and `compare-splunk-rules` as applicable on an authorized networked host. The synthetic replay is not a production detection accuracy measurement.
-
-## Sources and design references
-
-- [CISA KEV data](https://github.com/cisagov/kev-data) and [NVD API](https://nvd.nist.gov/developers/vulnerabilities)
-- [GitHub global advisories API](https://docs.github.com/en/rest/security-advisories/global-advisories), [CVE Services](https://github.com/CVEProject/cve-services), [FIRST EPSS](https://www.first.org/epss/)
-- [ThreatFox community API and IOC expiration policy](https://threatfox.abuse.ch/api/)
-- [RansomLook open-source tracker](https://github.com/RansomLook/RansomLook) and [RansomLook recent posts](https://www.ransomlook.io/recent). The [Ransomwatch repository](https://github.com/joshhighet/ransomwatch) informed source selection, but its historical bulk data is **not** polled by this project.
-- Official versioned framework retrieval: [MITRE ATT&CK Enterprise STIX releases](https://github.com/mitre-attack/attack-stix-data), [MITRE ATLAS distributable data](https://github.com/mitre-atlas/atlas-data), and the [OWASP GenAI Security Project](https://genai.owasp.org/). The stored snapshot is refreshed on a running, networked installation; a framework label is a related classification, not independent incident evidence.
-- Curated GitHub research sources: [Unit 42 supporting intel](https://github.com/PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information), [Volexity threat-intel](https://github.com/volexity/threat-intel), and [Meta threat-research indicators](https://github.com/facebook/threat-research). Community detection pointers: [SigmaHQ/sigma](https://github.com/SigmaHQ/sigma) (Detection Rule License with attribution requirements) and [Azure/Azure-Sentinel](https://github.com/Azure/Azure-Sentinel) (MIT license). The poller uses the [GitHub commits REST API](https://docs.github.com/en/rest/commits/commits#list-commits) with a bounded window; check license terms before reusing any rule text.
-- Configured research feeds are listed with their publisher URLs in `threat_research/research_feeds.py`; publisher feed availability and redistribution terms should be checked at deployment.
-- [Official MCP Python SDK](https://py.sdk.modelcontextprotocol.io/) and [Claude Code MCP setup](https://code.claude.com/docs/en/mcp)
-- [Splunk v2 search export API](https://help.splunk.com/en/splunk-enterprise/rest-api-reference/10.2/search-endpoints/search-endpoint-descriptions) and [Bearer tokens](https://help.splunk.com/en/splunk-enterprise/administer/manage-users-and-security/9.3/authenticate-into-the-splunk-platform-with-tokens/use-authentication-tokens)
-- [Splunk saved searches REST endpoint](https://help.splunk.com/en/splunk-enterprise/leverage-rest-apis/rest-api-reference/10.2/search-endpoints/search-endpoint-descriptions) and [Microsoft Graph runHuntingQuery](https://learn.microsoft.com/en-us/graph/api/security-security-runhuntingquery?view=graph-rest-1.0)
-- [Sigma conversion and target pipelines](https://sigmahq.io/docs/digging-deeper/backends)
-- [Sigma processing pipelines and field mapping](https://sigmahq.io/docs/digging-deeper/pipelines.html)
+More detail and references: **[QUICKSTART.md](QUICKSTART.md)** · **[DASHBOARD.md](DASHBOARD.md)** · **[PUBLISHING.md](PUBLISHING.md)**.
