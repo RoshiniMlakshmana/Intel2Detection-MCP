@@ -1,0 +1,39 @@
+{
+  "synthetic": true,
+  "cve": {
+    "id": "CVE-2099-99999",
+    "kind": "advisory",
+    "title": "Synthetic ExampleServer web vulnerability",
+    "summary": "Invented lab CVE used to test source linking and affected asset scoring; it is not a real advisory.",
+    "source": "https://example.test/advisory/CVE-2099-99999",
+    "claim": "Synthetic vulnerability record for an offline SOC lab.",
+    "kev": true,
+    "cvss": 9.8,
+    "affected": ["ExampleServer"],
+    "references": ["https://example.test/research/web-shell"]
+  },
+  "articles": [
+    {
+      "title": "Synthetic CVE-2099-99999 incident investigation",
+      "summary": "Fictional incident research links CVE-2099-99999 to a web worker child process.",
+      "source": "https://example.test/research/web-shell",
+      "html": "web_shell.html",
+      "reviewed_behavior": "web_server_shell",
+      "draft_under": "CVE-2099-99999"
+    },
+    {
+      "title": "Synthetic emerging encoded PowerShell campaign",
+      "summary": "Fictional threat report with process command-line telemetry and no CVE identifier.",
+      "source": "https://example.test/research/encoded-campaign",
+      "html": "encoded_campaign.html",
+      "reviewed_behavior": "encoded_powershell"
+    },
+    {
+      "title": "Synthetic agent tool authorization incident",
+      "summary": "Fictional MCP audit incident with an execution after an explicit deny decision.",
+      "source": "https://example.test/research/agent-tool",
+      "html": "agent_tool.html",
+      "reviewed_behavior": "mcp_unauthorized_execution"
+    }
+  ]
+}

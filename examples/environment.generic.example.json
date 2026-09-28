@@ -1,0 +1,24 @@
+{
+  "name": "Example SOC - replace with your team name",
+  "siem": "generic",
+  "organization_aliases": [],
+  "supplier_aliases": [],
+  "telemetry": {
+    "process_creation": {
+      "source": "replace_process_event_source",
+      "field_map": {
+        "ParentImage": "replace_parent_process_path",
+        "Image": "replace_process_path",
+        "CommandLine": "replace_command_line"
+      }
+    },
+    "network_connection": {
+      "source": "replace_network_event_source",
+      "field_map": {
+        "DestinationIp": "replace_destination_ip",
+        "DestinationPort": "replace_destination_port",
+        "Image": "replace_process_path"
+      }
+    }
+  }
+}

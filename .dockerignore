@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.env
+data
+build
+dist
+soc-lab-output
+*.zip
+*.sqlite3
+__pycache__
+*.pyc
+tests
+examples
+scripts

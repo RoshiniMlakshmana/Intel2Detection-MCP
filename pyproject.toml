@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "threat-research-mcp"
+version = "0.10.0"
+description = "Evidence-gated threat intelligence research and detection workflow for Claude"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.2,<3", "tzdata>=2025.2", "PyYAML>=6,<7", "pypdf>=5,<7"]
+
+[project.scripts]
+threat-research = "threat_research.cli:main"
+threat-research-mcp = "threat_research.server:main"
+threat-research-dashboard = "threat_research.dashboard:main"
+
+[tool.setuptools.packages.find]
+include = ["threat_research*"]
+
+[tool.setuptools.package-data]
+threat_research = ["lab_fixtures/*.json", "lab_fixtures/*.jsonl", "lab_fixtures/*.csv", "lab_fixtures/*.html"]

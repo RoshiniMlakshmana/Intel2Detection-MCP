@@ -1,0 +1,18 @@
+{
+  "name": "Synthetic SOC Lab",
+  "siem": "generic",
+  "telemetry": {
+    "process_creation": {
+      "source": "lab_process_jsonl",
+      "field_map": {"ParentImage": "ParentImage", "Image": "Image", "CommandLine": "CommandLine"}
+    },
+    "network_connection": {
+      "source": "lab_network_jsonl",
+      "field_map": {"DestinationIp": "DestinationIp", "DestinationPort": "DestinationPort", "Image": "Image"}
+    },
+    "mcp_audit": {
+      "source": "lab_mcp_jsonl",
+      "field_map": {"event_type": "event_type", "execution_status": "execution_status", "authorization_decision": "authorization_decision", "principal_id": "principal_id", "request_id": "request_id", "tool_name": "tool_name", "resource_scope": "resource_scope"}
+    }
+  }
+}

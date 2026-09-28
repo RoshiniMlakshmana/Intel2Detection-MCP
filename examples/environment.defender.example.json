@@ -1,0 +1,20 @@
+{
+  "name": "Example Defender SOC - replace with your team name",
+  "siem": "defender",
+  "organization_aliases": ["Example Corporation"],
+  "supplier_aliases": ["Example Supplier"],
+  "telemetry": {
+    "process_creation": {
+      "table": "DeviceProcessEvents",
+      "fields": ["Timestamp", "DeviceName", "FileName", "ProcessCommandLine", "InitiatingProcessFileName", "InitiatingProcessCommandLine", "AccountName"]
+    },
+    "network_connection": {
+      "table": "DeviceNetworkEvents",
+      "fields": ["Timestamp", "DeviceName", "RemoteIP", "RemotePort", "InitiatingProcessFileName", "ActionType"]
+    },
+    "mcp_audit": {
+      "table": "MCPAudit_CL",
+      "fields": ["TimeGenerated", "event_type_s", "execution_status_s", "authorization_decision_s", "principal_id_s", "request_id_s", "tool_name_s", "resource_scope_s"]
+    }
+  }
+}

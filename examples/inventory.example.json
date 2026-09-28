@@ -1,0 +1,8 @@
+[
+  {
+    "id": "EXISTING-MCP-AUTH-001",
+    "title": "Existing MCP Unauthorized Execution Detection",
+    "behavior": "mcp_unauthorized_execution",
+    "source_url": "https://example.org/internal-detection-inventory/EXISTING-MCP-AUTH-001"
+  }
+]

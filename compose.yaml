@@ -1,0 +1,12 @@
+services:
+  collector:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      THREAT_RESEARCH_DB: /data/intel.sqlite3
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp

@@ -1,0 +1,24 @@
+{
+  "name": "Example SOC - replace with your team name",
+  "siem": "splunk",
+  "organization_aliases": ["Example Corporation"],
+  "supplier_aliases": ["Example Supplier"],
+  "splunk_url": "https://splunk.example.org:8089",
+  "telemetry": {
+    "process_creation": {
+      "index": "endpoint",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": ["_time", "host", "EventCode", "ParentImage", "Image", "CommandLine", "ParentCommandLine", "User"]
+    },
+    "network_connection": {
+      "index": "endpoint",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": ["_time", "host", "EventCode", "DestinationIp", "DestinationPort", "Image", "User"]
+    },
+    "mcp_audit": {
+      "index": "ai_security",
+      "sourcetype": "mcp:audit",
+      "fields": ["_time", "event_type", "execution_status", "authorization_decision", "principal_id", "request_id", "tool_name", "resource_scope"]
+    }
+  }
+}

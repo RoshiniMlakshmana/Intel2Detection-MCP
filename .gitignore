@@ -1,0 +1,51 @@
+.venv/
+data/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Local databases (default install path and any project-local copy)
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.db
+
+# Credentials and secrets -- never committed under any name
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+*secret*
+*token*
+
+# Generated research/rule snapshots and other run output
+digest-*.txt
+soc-lab-output/
+soc-lab-ci/
+rule-repository/
+wheelhouse/
+
+# Organization/enterprise packs (profile.json, assets.csv, inventory.json,
+# claude-mcp.json, and their isolated database) are private per-customer
+# data and must never live inside this shared repository. The templates in
+# examples/ are synthetic and excluded from this rule.
+claude-mcp.json
+/profile.json
+/assets.csv
+/inventory.json
+
+# Scratch/demo working directories used during development sessions
+.walkthrough/
+.demo/
+.demo*/
+
+build/
+dist/
+.pytest_cache/
+.coverage
+*.zip

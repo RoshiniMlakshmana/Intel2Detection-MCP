@@ -1,0 +1,449 @@
+{
+  "lab_notice": "Entire source set, CVE, analyst annotations, inventory, and events are synthetic. No real publisher, live SIEM, or production tenant was contacted.",
+  "source_records": 4,
+  "source_paths": [
+    {
+      "feed_report_id": "REPORT-DC18E07C536F5EF3",
+      "linked_cve": [
+        "CVE-2099-99999"
+      ],
+      "draft_under": "CVE-2099-99999",
+      "source": "https://example.test/research/web-shell",
+      "article_sha256": "8251f55aaa8a4e3bdbf8156170ba8bd9660d3e0d23811f8f5e90214ca17ae03e",
+      "leads": [
+        {
+          "behavior": "web_server_shell",
+          "paragraph": 1,
+          "excerpt": "In this invented lab incident, w3wp.exe spawned cmd.exe after the attacker exploited CVE-2099-99999 on the exposed ExampleServer host. The process creation event preserved ParentImage, Image, CommandLine, timestamp, and account.",
+          "status": "analyst_review_required",
+          "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."
+        }
+      ],
+      "fixture_analyst_annotation": "web_server_shell",
+      "metadata_draft_blocked": "a cited analyst observation with a supported behavior is required",
+      "draft_rule_id": "9548e24f-b5d6-5e05-8759-0f9c6e55e435"
+    },
+    {
+      "feed_report_id": "REPORT-F017418823A360A0",
+      "linked_cve": [],
+      "draft_under": "REPORT-F017418823A360A0",
+      "source": "https://example.test/research/encoded-campaign",
+      "article_sha256": "cb7d8d643b0d010dfe57b83bd94c66a90e2cd48ed8728b65de06d7137a8e7a70",
+      "leads": [
+        {
+          "behavior": "encoded_powershell",
+          "paragraph": 2,
+          "excerpt": "During the fictional intrusion, a signed powershell.exe process executed an -EncodedCommand payload after user sign-in. Process creation logging recorded the full command line, parent process, and user identity.",
+          "status": "analyst_review_required",
+          "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."
+        }
+      ],
+      "fixture_analyst_annotation": "encoded_powershell",
+      "metadata_draft_blocked": "a cited analyst observation with a supported behavior is required",
+      "draft_rule_id": "da4930ee-5d7b-5289-b567-c38089e0c08b"
+    },
+    {
+      "feed_report_id": "REPORT-413F6DF003FC0242",
+      "linked_cve": [],
+      "draft_under": "REPORT-413F6DF003FC0242",
+      "source": "https://example.test/research/agent-tool",
+      "article_sha256": "a970b25bfd1010c29f437da43e2e66c4182acd9c43aaa12a7b9047e250aee683",
+      "leads": [
+        {
+          "behavior": "mcp_unauthorized_execution",
+          "paragraph": 2,
+          "excerpt": "The MCP tool invocation executed even though its authorization decision was deny for the same request ID. Audit events included execution status, principal ID, tool name, resource scope, and timestamp.",
+          "status": "analyst_review_required",
+          "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."
+        }
+      ],
+      "fixture_analyst_annotation": "mcp_unauthorized_execution",
+      "metadata_draft_blocked": "a cited analyst observation with a supported behavior is required",
+      "draft_rule_id": "d6c32d51-c36d-52df-9121-18548794ec73"
+    }
+  ],
+  "cve_asset_risk": {
+    "threat_id": "CVE-2099-99999",
+    "inventory_assets": 2,
+    "confirmed_affected_count": 1,
+    "confirmed_affected": [
+      {
+        "asset_id": "lab-web-01",
+        "hostname": "lab-web-01",
+        "product": "ExampleServer",
+        "version": "1.2.3",
+        "assessment": {
+          "threat_id": "CVE-2099-99999",
+          "environment": {
+            "affected": true,
+            "internet_exposed": true,
+            "criticality": "high",
+            "asset_role": "general"
+          },
+          "score": 80,
+          "priority": "critical",
+          "components": {
+            "known_exploitation": 25,
+            "epss": 0,
+            "cvss": 15,
+            "affected_asset": 20,
+            "internet_exposed": 10,
+            "asset_criticality": 10
+          },
+          "uncertainties": [
+            "Missing EPSS; treated as unavailable, not zero likelihood."
+          ],
+          "rule_advice": "Hunt or draft only where a cited behavior and required telemetry exist; patching remains primary for applicable CVEs.",
+          "ai_security_focus": "Confirm software exposure and affected versions."
+        }
+      }
+    ],
+    "other_assets": "unknown; inventory absence is not proof of non-exposure",
+    "unmatched_asset_priority": "verify_affected_version",
+    "asset_snapshot_stale": false
+  },
+  "illustrative_environment_comparison": {
+    "affected_internet_facing_critical": {
+      "threat_id": "CVE-2099-99999",
+      "environment": {
+        "affected": true,
+        "internet_exposed": true,
+        "criticality": "high"
+      },
+      "score": 80,
+      "priority": "critical",
+      "components": {
+        "known_exploitation": 25,
+        "epss": 0,
+        "cvss": 15,
+        "affected_asset": 20,
+        "internet_exposed": 10,
+        "asset_criticality": 10
+      },
+      "uncertainties": [
+        "Missing EPSS; treated as unavailable, not zero likelihood."
+      ],
+      "rule_advice": "Hunt or draft only where a cited behavior and required telemetry exist; patching remains primary for applicable CVEs.",
+      "ai_security_focus": "Confirm software exposure and affected versions."
+    },
+    "affected_internal_low_criticality": {
+      "threat_id": "CVE-2099-99999",
+      "environment": {
+        "affected": true,
+        "internet_exposed": false,
+        "criticality": "low"
+      },
+      "score": 60,
+      "priority": "high",
+      "components": {
+        "known_exploitation": 25,
+        "epss": 0,
+        "cvss": 15,
+        "affected_asset": 20,
+        "internet_exposed": 0,
+        "asset_criticality": 0
+      },
+      "uncertainties": [
+        "Missing EPSS; treated as unavailable, not zero likelihood."
+      ],
+      "rule_advice": "Hunt or draft only where a cited behavior and required telemetry exist; patching remains primary for applicable CVEs.",
+      "ai_security_focus": "Confirm software exposure and affected versions."
+    },
+    "version_not_verified": {
+      "threat_id": "CVE-2099-99999",
+      "environment": {
+        "affected": "unknown",
+        "internet_exposed": true,
+        "criticality": "high"
+      },
+      "score": 60,
+      "priority": "verify_affected_version",
+      "components": {
+        "known_exploitation": 25,
+        "epss": 0,
+        "cvss": 15,
+        "affected_asset": 0,
+        "internet_exposed": 10,
+        "asset_criticality": 10
+      },
+      "uncertainties": [
+        "Affected version has not been confirmed.",
+        "Missing EPSS; treated as unavailable, not zero likelihood."
+      ],
+      "rule_advice": "Hunt or draft only where a cited behavior and required telemetry exist; patching remains primary for applicable CVEs.",
+      "ai_security_focus": "Confirm software exposure and affected versions."
+    },
+    "product_not_present": {
+      "threat_id": "CVE-2099-99999",
+      "environment": {
+        "affected": false,
+        "internet_exposed": false,
+        "criticality": "low"
+      },
+      "score": 40,
+      "priority": "not_applicable_to_this_asset",
+      "components": {
+        "known_exploitation": 25,
+        "epss": 0,
+        "cvss": 15,
+        "affected_asset": 0,
+        "internet_exposed": 0,
+        "asset_criticality": 0
+      },
+      "uncertainties": [
+        "Missing EPSS; treated as unavailable, not zero likelihood."
+      ],
+      "rule_advice": "Hunt or draft only where a cited behavior and required telemetry exist; patching remains primary for applicable CVEs.",
+      "ai_security_focus": "Confirm software exposure and affected versions."
+    }
+  },
+  "inventory_duplicate_check": {
+    "status": "existing_coverage",
+    "rule_id": "9548e24f-b5d6-5e05-8759-0f9c6e55e435",
+    "pattern_score": 0,
+    "message": "Review coverage and attach new evidence; no duplicate rule drafted."
+  },
+  "drafts_tested": 3,
+  "rule_reviews": [
+    {
+      "rule_id": "9548e24f-b5d6-5e05-8759-0f9c6e55e435",
+      "behavior": "web_server_shell",
+      "why_use": "A web server process launching a command shell can indicate post-exploitation; deployments and maintenance can also cause this. Investigate parent lineage, account, command line, and change window.",
+      "telemetry_needed": "Sysmon Event ID 1 / DeviceProcessEvents / Splunk Sysmon process creation; Sigma/SPL Windows only",
+      "declared_telemetry_fit": {
+        "ready": true,
+        "rule_id": "9548e24f-b5d6-5e05-8759-0f9c6e55e435",
+        "siem": "generic",
+        "family": "process_creation",
+        "source": "lab_process_jsonl",
+        "missing_canonical_fields": [],
+        "field_map": {
+          "CommandLine": "CommandLine",
+          "Image": "Image",
+          "ParentImage": "ParentImage"
+        },
+        "sigma": "title: \"Web Service Spawns a Shell\"\nid: 7443b43f-5c67-5545-85b2-381d9f4db20e\nstatus: experimental\ndescription: Behavior hypothesis; investigate correlated evidence before alerting.\nlogsource:\n  category: process_creation\n  product: windows\ndetection:\n  selection:\n    \"ParentImage|endswith\": [\"\\\\w3wp.exe\", \"\\\\httpd.exe\", \"\\\\nginx.exe\"]\n    \"Image|endswith\": [\"\\\\cmd.exe\", \"\\\\powershell.exe\"]\n  condition: selection\nfalsepositives:\n  - Authorized administration or application maintenance\nlevel: medium\n",
+        "mapped_query": null,
+        "validation": "Mapping declared only. A target-specific Sigma pipeline or manually reviewed query and native SIEM test are required; no local query is executed.",
+        "next_step": "Convert and test the Sigma rule with an appropriate backend, then import verified coverage."
+      },
+      "source_evidence": [
+        {
+          "id": 6,
+          "source_url": "https://example.test/research/web-shell",
+          "claim": "Synthetic lab analyst annotation: In this invented lab incident, w3wp.exe spawned cmd.exe after the attacker exploited CVE-2099-99999 on the exposed ExampleServer host. The process creation event preserved ParentImage, Image, CommandLine, timestamp, and account.",
+          "behavior": "web_server_shell"
+        }
+      ],
+      "further_attacker_adaptation_hypothesis": "The attacker could start a different child such as rundll32.exe; separately assess web-worker lineage and DLL loads before widening the rule.",
+      "adaptation_probability": "not calibrated; investigate, do not present an invented number"
+    },
+    {
+      "rule_id": "da4930ee-5d7b-5289-b567-c38089e0c08b",
+      "behavior": "encoded_powershell",
+      "why_use": "Encoded PowerShell commands can hide script content. Legitimate administration may also use encoding; review decoded content, signer, ancestry, and user context.",
+      "telemetry_needed": "Sysmon Event ID 1 / DeviceProcessEvents / Splunk Sysmon process creation with command line",
+      "declared_telemetry_fit": {
+        "ready": true,
+        "rule_id": "da4930ee-5d7b-5289-b567-c38089e0c08b",
+        "siem": "generic",
+        "family": "process_creation",
+        "source": "lab_process_jsonl",
+        "missing_canonical_fields": [],
+        "field_map": {
+          "CommandLine": "CommandLine",
+          "Image": "Image"
+        },
+        "sigma": "title: \"PowerShell Encoded Command Execution\"\nid: 9015d5b4-78bf-5644-be3e-b6fb74748ce1\nstatus: experimental\ndescription: Behavior hypothesis; investigate correlated evidence before alerting.\nlogsource:\n  category: process_creation\n  product: windows\ndetection:\n  selection:\n    \"Image|endswith\": [\"\\\\powershell.exe\", \"\\\\pwsh.exe\"]\n    \"CommandLine|contains\": [\" -enc \", \" -encodedcommand \", \" -e \"]\n  condition: selection\nfalsepositives:\n  - Authorized administration or application maintenance\nlevel: medium\n",
+        "mapped_query": null,
+        "validation": "Mapping declared only. A target-specific Sigma pipeline or manually reviewed query and native SIEM test are required; no local query is executed.",
+        "next_step": "Convert and test the Sigma rule with an appropriate backend, then import verified coverage."
+      },
+      "source_evidence": [
+        {
+          "id": 7,
+          "source_url": "https://example.test/research/encoded-campaign",
+          "claim": "Synthetic lab analyst annotation: During the fictional intrusion, a signed powershell.exe process executed an -EncodedCommand payload after user sign-in. Process creation logging recorded the full command line, parent process, and user identity.",
+          "behavior": "encoded_powershell"
+        }
+      ],
+      "further_attacker_adaptation_hypothesis": "The attacker could change the argument syntax or use another script host; validate observed command-line variants and decoded content before expanding detection.",
+      "adaptation_probability": "not calibrated; investigate, do not present an invented number"
+    },
+    {
+      "rule_id": "d6c32d51-c36d-52df-9121-18548794ec73",
+      "behavior": "mcp_unauthorized_execution",
+      "why_use": "A tool marked executed despite a non-allow authorization decision is a policy-state mismatch. Investigate request binding, delayed decisions, log completeness, and idempotent retries; this alert alone does not prove compromise.",
+      "telemetry_needed": "Custom MCP audit contract: event_type, execution_status, authorization_decision, principal_id, request_id, tool_name, resource_scope, timestamp",
+      "declared_telemetry_fit": {
+        "ready": true,
+        "rule_id": "d6c32d51-c36d-52df-9121-18548794ec73",
+        "siem": "generic",
+        "family": "mcp_audit",
+        "source": "lab_mcp_jsonl",
+        "missing_canonical_fields": [],
+        "field_map": {
+          "authorization_decision": "authorization_decision",
+          "event_type": "event_type",
+          "execution_status": "execution_status",
+          "principal_id": "principal_id",
+          "request_id": "request_id",
+          "resource_scope": "resource_scope",
+          "tool_name": "tool_name"
+        },
+        "sigma": "title: \"MCP Tool Executed Without Allow Decision\"\nid: 9cc82294-52e5-5d53-9ad9-4b18800bca09\nstatus: experimental\ndescription: Behavior hypothesis; investigate correlated evidence before alerting.\nlogsource:\n  category: application\n  product: mcp_audit\ndetection:\n  selection:\n    \"event_type\": \"tool_invocation\"\n    \"execution_status\": \"executed\"\n    \"authorization_decision\": [\"deny\", \"missing\", \"expired\"]\n  condition: selection\nfalsepositives:\n  - Authorized administration or application maintenance\nlevel: medium\n",
+        "mapped_query": null,
+        "validation": "Mapping declared only. A target-specific Sigma pipeline or manually reviewed query and native SIEM test are required; no local query is executed.",
+        "next_step": "Convert and test the Sigma rule with an appropriate backend, then import verified coverage."
+      },
+      "source_evidence": [
+        {
+          "id": 8,
+          "source_url": "https://example.test/research/agent-tool",
+          "claim": "Synthetic lab analyst annotation: The MCP tool invocation executed even though its authorization decision was deny for the same request ID. Audit events included execution status, principal ID, tool name, resource scope, and timestamp.",
+          "behavior": "mcp_unauthorized_execution"
+        }
+      ],
+      "further_attacker_adaptation_hypothesis": "An attacker could evade a single audit source or race authorization state; correlate the enforcement decision and execution receipt using the same request ID.",
+      "adaptation_probability": "not calibrated; investigate, do not present an invented number"
+    }
+  ],
+  "approval": "drafts remain unapproved in the isolated lab inventory",
+  "measurement": {
+    "sample_size": 12,
+    "counts": {
+      "tp": 3,
+      "fp": 2,
+      "fn": 2,
+      "tn": 5
+    },
+    "precision": 0.6,
+    "recall": 0.6,
+    "false_positive_rate": 0.286,
+    "cases": [
+      {
+        "event_id": "E01",
+        "scenario": "CVE exploitation followed by web worker spawning cmd",
+        "truth": "malicious",
+        "outcome": "tp",
+        "rule_ids": [
+          "9548e24f-b5d6-5e05-8759-0f9c6e55e435"
+        ],
+        "behaviors": [
+          "web_server_shell"
+        ]
+      },
+      {
+        "event_id": "E02",
+        "scenario": "Approved web application maintenance also launches cmd",
+        "truth": "benign",
+        "outcome": "fp",
+        "rule_ids": [
+          "9548e24f-b5d6-5e05-8759-0f9c6e55e435"
+        ],
+        "behaviors": [
+          "web_server_shell"
+        ]
+      },
+      {
+        "event_id": "E03",
+        "scenario": "Emerging campaign runs encoded PowerShell",
+        "truth": "malicious",
+        "outcome": "tp",
+        "rule_ids": [
+          "da4930ee-5d7b-5289-b567-c38089e0c08b"
+        ],
+        "behaviors": [
+          "encoded_powershell"
+        ]
+      },
+      {
+        "event_id": "E04",
+        "scenario": "Approved deployment uses encoded PowerShell",
+        "truth": "benign",
+        "outcome": "fp",
+        "rule_ids": [
+          "da4930ee-5d7b-5289-b567-c38089e0c08b"
+        ],
+        "behaviors": [
+          "encoded_powershell"
+        ]
+      },
+      {
+        "event_id": "E05",
+        "scenario": "MCP denied request nonetheless executes",
+        "truth": "malicious",
+        "outcome": "tp",
+        "rule_ids": [
+          "d6c32d51-c36d-52df-9121-18548794ec73"
+        ],
+        "behaviors": [
+          "mcp_unauthorized_execution"
+        ]
+      },
+      {
+        "event_id": "E06",
+        "scenario": "MCP deny blocks execution correctly",
+        "truth": "benign",
+        "outcome": "tn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E07",
+        "scenario": "Routine workstation process",
+        "truth": "benign",
+        "outcome": "tn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E08",
+        "scenario": "Attacker adapts web worker child to rundll32",
+        "truth": "malicious",
+        "outcome": "fn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E09",
+        "scenario": "Attacker uses colon form of encoded argument",
+        "truth": "malicious",
+        "outcome": "fn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E10",
+        "scenario": "Authorized MCP tool request",
+        "truth": "benign",
+        "outcome": "tn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E11",
+        "scenario": "Benign network flow without an IOC rule",
+        "truth": "benign",
+        "outcome": "tn",
+        "rule_ids": [],
+        "behaviors": []
+      },
+      {
+        "event_id": "E12",
+        "scenario": "Service launches a routine shell",
+        "truth": "benign",
+        "outcome": "tn",
+        "rule_ids": [],
+        "behaviors": []
+      }
+    ],
+    "scope": "Synthetic labeled event fixtures; local reference matching, not production SIEM accuracy."
+  },
+  "tuning_notes": [
+    "E02 and E04 need change-window, signer, ancestry, and decoded-command review; suppressing all such traffic could conceal malicious use.",
+    "E08 and E09 are deliberate misses. Investigate these telemetry variants as separately evidenced hypotheses; do not infer coverage from a title or one lab sample.",
+    "MCP E05 is a policy mismatch; verify request binding and independent enforcement records before calling it an intrusion."
+  ],
+  "watch_command": "python -m threat_research.cli watch-events --database ./soc-lab-output/lab.sqlite3 --file ./soc-lab-output/live_events.jsonl --include-drafts"
+}
