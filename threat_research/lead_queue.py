@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import report_inspection, store
+from . import corroboration, report_inspection, store
 from .core import now
 
 
@@ -59,23 +59,36 @@ def inspect_due(path: Path | None = None, fetch=None, limit=None):
         rows = db.execute("SELECT threat_id,source_url,attempts FROM article_inspection_queue "
                           "WHERE status='pending' AND next_try<=? ORDER BY next_try,threat_id LIMIT ?",
                           (now(), max(1, min(int(limit), 40)))).fetchall()
-    result = {"attempted": 0, "inspected": 0, "leads": 0, "errors": {}}
+    result = {"attempted": 0, "inspected": 0, "leads": 0, "corroboration_reviews_queued": 0, "errors": {}}
     for row in rows:
         result["attempted"] += 1
         try:
             kwargs = {"fetch": fetch} if fetch else {}
             page = report_inspection.inspect_report(row["threat_id"], row["source_url"], path, **kwargs)
+            new_leads = []
             with store.connection(path) as db:
                 for lead in page["behavior_leads"]:
-                    result["leads"] += db.execute(
+                    inserted = db.execute(
                         "INSERT OR IGNORE INTO article_behavior_leads "
                         "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen) "
                         "VALUES (?,?,?,?,?,?,?)",
                         (row["threat_id"], row["source_url"], page["sha256"], lead["behavior"],
                          lead["paragraph"], lead["excerpt"], now())).rowcount
+                    result["leads"] += inserted
+                    if inserted:
+                        # Only a genuinely new lead (this exact source/paragraph/
+                        # behavior was never seen before) is eligible to queue a
+                        # corroboration review, so a re-poll, retry, or re-fetch
+                        # of the same article can never queue -- let alone
+                        # approve -- a duplicate.
+                        new_leads.append(lead)
                 db.execute("UPDATE article_inspection_queue SET status='inspected',attempts=attempts+1,"
                            "inspected_at=?,last_error=NULL WHERE threat_id=? AND source_url=?",
                            (now(), row["threat_id"], row["source_url"]))
+            for lead in new_leads:
+                if corroboration.queue_from_lead(row["threat_id"], row["source_url"], lead["paragraph"],
+                                                 lead["behavior"], lead["excerpt"], path):
+                    result["corroboration_reviews_queued"] += 1
             result["inspected"] += 1
         except (OSError, ValueError, UnicodeError, TypeError) as exc:
             attempts = row["attempts"] + 1
@@ -108,5 +121,7 @@ def queue_status(path: Path | None = None):
     with store.connection(path) as db:
         counts = db.execute("SELECT status,COUNT(*) AS n FROM article_inspection_queue GROUP BY status").fetchall()
         leads = db.execute("SELECT COUNT(*) FROM article_behavior_leads").fetchone()[0]
+        pending_reviews = db.execute("SELECT COUNT(*) FROM corroboration_reviews WHERE status='pending'").fetchone()[0]
     return {"article_queue": {row["status"]: row["n"] for row in counts},
-            "review_required_behavior_leads": leads}
+            "review_required_behavior_leads": leads,
+            "pending_corroboration_reviews": pending_reviews}

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import core, custom_rules, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay
+from . import core, corroboration, custom_rules, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay
 
 mcp = MCPServer("ThreatResearch")
 
@@ -290,6 +290,24 @@ def rule_repository_status() -> dict:
 def test_rule_against_samples(rule_id: str, events_file: str) -> dict:
     """Replay one draft or approved rule's own selection logic against a local JSONL file of analyst-labeled positive/benign events (same shape as the synthetic SOC lab); records a hash of the exact tested rule text and every match/miss, and refreshes its on-disk repository snapshot. Local reference matching only -- never SIEM validation; use test_draft_in_siem for that once a SIEM is configured."""
     return soc_replay.test_rule_against_samples(rule_id, events_file)
+
+
+@mcp.tool()
+def pending_corroboration_reviews(limit: int = 20) -> list[dict]:
+    """List pending corroboration reviews: newly collected, cited article leads that lexically match an existing rule's behavior. Shows the rule ID and title, new source and paragraph, why it matched, current and proposed pattern_score, and the matched rule's status. Nothing is attached or scored until explicitly approved or rejected."""
+    return corroboration.list_pending(limit=limit)
+
+
+@mcp.tool()
+def approve_corroboration_review(review_id: int, approval_phrase: str) -> dict:
+    """Only on the user's explicit 'implement this rule' request: link this review's cited evidence to the matched rule and add exactly +1 to its pattern_score. Never changes draft/approved status and never touches environment or asset risk scoring. A review that is no longer pending (already decided, or its source already corroborated the rule) is refused rather than scored again."""
+    return corroboration.approve(review_id, approval_phrase)
+
+
+@mcp.tool()
+def reject_corroboration_review(review_id: int, reason: str) -> dict:
+    """Reject a pending corroboration review with a short reason; the matched rule, its evidence, and its pattern_score are left completely unchanged."""
+    return corroboration.reject(review_id, reason)
 
 
 @mcp.tool()

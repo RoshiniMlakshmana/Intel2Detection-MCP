@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-from . import dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
+from . import corroboration, dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
 from .core import collect_daily, get_threat, list_threats
 from .digest import due_now, run_daily
 from .rules import import_inventory
@@ -20,7 +20,8 @@ def main():
                                             "demo-soc", "watch-events", "review-leads", "review-queue", "doctor",
                                             "refresh-frameworks", "framework-status", "review-detection", "dashboard",
                                             "inventory-status", "declare-inventory", "reject-rule", "reopen-rule",
-                                            "rule-repository-status", "test-rule"])
+                                            "rule-repository-status", "test-rule",
+                                            "list-reviews", "approve-review", "reject-review"])
     parser.add_argument("--host", help="dashboard bind host (default 127.0.0.1)")
     parser.add_argument("--port", type=int, help="dashboard bind port (default 8765)")
     parser.add_argument("--no-auto-refresh", action="store_true", help="dashboard: do not poll on startup/daily; use when serve-live already polls")
@@ -41,6 +42,8 @@ def main():
     parser.add_argument("--complete", action="store_true", help="declare-inventory: mark the declared scope as the complete current inventory")
     parser.add_argument("--reason", help="reject-rule: short rejection reason")
     parser.add_argument("--events-file", help="test-rule: local JSONL file of analyst-labeled positive/benign events")
+    parser.add_argument("--review-id", type=int, help="approve-review/reject-review: pending corroboration review ID")
+    parser.add_argument("--approval-phrase", default="", help="approve-review: must be exactly 'implement this rule'")
     args = parser.parse_args()
     if args.directory and args.command not in ("create-pack", "inspect-pack", "onboard-pack"):
         os.environ["THREAT_RESEARCH_DB"] = str(enterprise.pack_database(args.directory))
@@ -140,6 +143,16 @@ def main():
         if not args.id or not args.events_file:
             parser.error("test-rule requires --id RULE-ID and --events-file events.jsonl")
         result = soc_replay.test_rule_against_samples(args.id, args.events_file)
+    elif args.command == "list-reviews":
+        result = corroboration.list_pending()
+    elif args.command == "approve-review":
+        if not args.review_id:
+            parser.error("approve-review requires --review-id ID and --approval-phrase 'implement this rule'")
+        result = corroboration.approve(args.review_id, args.approval_phrase)
+    elif args.command == "reject-review":
+        if not args.review_id or not args.reason:
+            parser.error("reject-review requires --review-id ID and --reason")
+        result = corroboration.reject(args.review_id, args.reason)
     elif args.command == "create-pack":
         if not args.directory or not args.name or not args.siem:
             parser.error("create-pack requires --directory, --name, and --siem")

@@ -133,6 +133,15 @@ def initialize(path: Path | None = None):
                 sample_size INTEGER NOT NULL, counts TEXT NOT NULL, cases TEXT NOT NULL,
                 sample_source TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS corroboration_reviews (
+                id INTEGER PRIMARY KEY, rule_kind TEXT NOT NULL CHECK(rule_kind IN ('local','external')),
+                rule_id TEXT NOT NULL, threat_id TEXT NOT NULL REFERENCES threats(id),
+                source_url TEXT NOT NULL, paragraph INTEGER NOT NULL, behavior TEXT NOT NULL,
+                excerpt TEXT NOT NULL, fingerprint TEXT NOT NULL, matched_rule_status TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
+                decided_at TEXT, decided_reason TEXT, evidence_id INTEGER,
+                UNIQUE(rule_kind,rule_id,threat_id,source_url,paragraph,behavior)
+            );
         """)
         # Existing local stores from the first release remain usable.
         for table, columns in {

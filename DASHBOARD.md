@@ -47,6 +47,14 @@ existing `implement_rule` MCP tool.
 - Framework mapping never invents an entry: it only renders what
   `frameworks.retrieve()` returns from the actually retrieved MITRE/OWASP
   release, citing that release's own version and retrieval time.
+- **Reviews page** (`/reviews`, nav item shows a live pending count): when a
+  newly collected, cited article lead lexically matches an existing local or
+  imported rule's behavior, it lands here as a durable pending review — the
+  rule's ID/title, the new source and paragraph, current and proposed
+  `pattern_score`, and why it matched — never scored automatically. Approving
+  links the cited evidence and adds exactly +1; rejecting leaves the rule
+  untouched. A repeated poll, retry, or a second review citing the same
+  source can never increment the same rule twice.
 
 ## Run it (Windows PowerShell)
 

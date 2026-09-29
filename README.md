@@ -4,7 +4,7 @@ An evidence-gated threat intelligence and detection workflow for Claude, built o
 
 ## 1. What it does
 
-Collects newly published threats, has Claude (or an analyst) research the *actual cited behavior* rather than guessing from a CVE title, checks whether matching detection coverage already exists, drafts a Sigma/KQL/SPL rule only when a behavior and its required telemetry are verified, and adds that draft to a local rule repository only after explicit analyst approval — never automatically, never deployed to a SIEM.
+Collects newly published threats, has Claude (or an analyst) research the *actual cited behavior* rather than guessing from a CVE title, checks whether matching detection coverage already exists, drafts a Sigma/KQL/SPL rule only when a behavior and its required telemetry are verified, and adds that draft to a local rule repository only after explicit analyst approval — never automatically, never deployed to a SIEM. When a newly collected, cited lead lexically matches an existing rule's behavior, it queues a **pending corroboration review** instead of scoring anything automatically; only explicit approval links the new evidence and adds exactly +1 to that rule's `pattern_score`, and rejection leaves it untouched.
 
 ## 2. Impact
 

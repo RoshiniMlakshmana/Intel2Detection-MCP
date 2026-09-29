@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import core, custom_rules, dashboard_data, environment, poller, rules, store
+from . import core, corroboration, custom_rules, dashboard_data, environment, poller, rules, store
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -102,8 +102,10 @@ def _safe_href(url, text=None):
     return f'<a href="{_e(url)}" target="_blank" rel="noopener noreferrer">{_e(text)}</a>'
 
 
-def _page(title, body, active=None, flash=None):
-    nav_items = [("/", "Sources"), ("/threats", "All threats")]
+def _page(title, body, active=None, flash=None, path=None):
+    pending = corroboration.pending_count(path)
+    reviews_label = f"Reviews ({pending})" if pending else "Reviews"
+    nav_items = [("/", "Sources"), ("/threats", "All threats"), ("/reviews", reviews_label)]
     nav = "".join(f'<a href="{href}"{" style=\"color:var(--text);font-weight:700\"" if href == active else ""}>{label}</a>'
                   for href, label in nav_items)
     flash_html = ""
@@ -163,7 +165,7 @@ Last poll completed: {_fmt(data['last_poll_completed'])}. Email alerts:
 {'configured' if data['email_configured'] else 'not configured'}.</p>
 <div class="tags">{tag_html}</div>
 <div class="grid">{''.join(_source_card(c) for c in cards)}</div>"""
-    return _page("Sources", body, active="/", flash=_flash_from_query(qs))
+    return _page("Sources", body, active="/", flash=_flash_from_query(qs), path=path)
 
 
 def _threat_row(t):
@@ -182,7 +184,7 @@ def render_source_threats(name, path=None, qs=None):
 its original article URL and publication date on the threat detail page.</p>
 <table><thead><tr><th>ID</th><th>Title</th><th>Kind</th><th>Published</th></tr></thead>
 <tbody>{rows}</tbody></table>"""
-    return _page(name, body, active="/", flash=_flash_from_query(qs or {}))
+    return _page(name, body, active="/", flash=_flash_from_query(qs or {}), path=path)
 
 
 def render_threats(path=None, qs=None):
@@ -196,7 +198,7 @@ def render_threats(path=None, qs=None):
     body = f"""<h1>All threats</h1><div class="tags">{tag_html}</div>
 <table><thead><tr><th>ID</th><th>Title</th><th>Kind</th><th>Published</th></tr></thead>
 <tbody>{rows}</tbody></table>"""
-    return _page("All threats", body, active="/threats", flash=_flash_from_query(qs))
+    return _page("All threats", body, active="/threats", flash=_flash_from_query(qs), path=path)
 
 
 # ---------------------------------------------------------------- Threat ---
@@ -406,7 +408,7 @@ def render_threat(threat_id, path=None, qs=None):
 <p><small class="muted">Approval adds a rule to this local detection repository only. It is never deployed to a SIEM.
 Rejected or unfinished drafts stay stored here for later review.</small></p>
 """
-    return _page(t["id"], body, active="/threats", flash=_flash_from_query(qs))
+    return _page(t["id"], body, active="/threats", flash=_flash_from_query(qs), path=path)
 
 
 def _workspace_notes_html(notes):
@@ -416,6 +418,43 @@ def _workspace_notes_html(notes):
     return "<h3>Recorded notes</h3><ul class=\"bullets\">" + "".join(
         f'<li><b>{_e(labels.get(n["note_type"], n["note_type"]))}</b> ({_fmt(n["created_at"])}): {_e(n["content"])}</li>'
         for n in notes) + "</ul>"
+
+
+# --------------------------------------------------------------- Reviews --
+
+def _review_card(review):
+    return f"""<div class="panel">
+<div style="display:flex;justify-content:space-between"><b>{_e(review['rule_title'] or review['rule_id'])}</b>
+<span class="badge stale">pending</span></div>
+<p><small class="muted">Matched rule: <code>{_e(review['rule_id'])}</code> ({_e(review['rule_kind'])}) &middot;
+current status: {_e(review['rule_current_status'])} &middot;
+current pattern_score: {review['current_pattern_score']} &middot;
+proposed if approved: <b>{review['proposed_pattern_score']}</b></small></p>
+<p><b>New behavior:</b> <code>{_e(review['behavior'])}</code> &middot; from threat
+<a href="/threat?id={_e(review['threat_id'])}">{_e(review['threat_id'])}</a>, paragraph {review['paragraph']}</p>
+<p>{_safe_href(review['source_url'])}</p>
+<p><small class="muted">{_e(review['excerpt'])}</small></p>
+<p><small class="muted">{_e(review['match_confidence'])}</small></p>
+<p><small class="muted">{_e(review['note'])}</small></p>
+<form class="inline" method="post" action="/review/approve">
+<input type="hidden" name="review_id" value="{review['id']}">
+<button type="submit">Approve (+1 pattern_score)</button></form>
+<form class="inline" method="post" action="/review/reject">
+<input type="hidden" name="review_id" value="{review['id']}">
+<input type="text" name="reason" placeholder="Rejection reason" required style="width:220px;display:inline-block">
+<button class="danger" type="submit">Reject</button></form>
+</div>"""
+
+
+def render_reviews(path=None, qs=None):
+    pending = corroboration.list_pending(path, limit=50)
+    body = f"""<h1>Corroboration reviews</h1>
+<p class="lede">Newly collected, cited article leads that lexically match an existing rule's behavior. Nothing here
+was attached or scored automatically -- approving links the cited evidence and adds exactly +1 to pattern_score;
+rejecting leaves the rule, its evidence, and its score completely unchanged. A repeated poll, retry, or a second
+review citing the same source can never increment the same rule twice.</p>
+{''.join(_review_card(r) for r in pending) or '<p><small class="muted">No pending corroboration reviews.</small></p>'}"""
+    return _page("Corroboration reviews", body, active="/reviews", flash=_flash_from_query(qs or {}), path=path)
 
 
 # ------------------------------------------------------------- Handlers ---
@@ -449,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _not_found(self):
-        self._send(404, _page("Not found", "<h1>Not found</h1>"))
+        self._send(404, _page("Not found", "<h1>Not found</h1>", path=self._db_path()))
 
     def do_GET(self):
         parsed = urlsplit(self.path)
@@ -463,6 +502,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, render_source_threats(name, path, qs))
             elif parsed.path == "/threats":
                 self._send(200, render_threats(path, qs))
+            elif parsed.path == "/reviews":
+                self._send(200, render_reviews(path, qs))
             elif parsed.path == "/threat":
                 ident = (qs.get("id") or [""])[0]
                 out = render_threat(ident, path, qs)
@@ -479,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._not_found()
         except Exception as exc:  # noqa: BLE001 - surface to the analyst, never a bare 500 with no context
-            self._send(500, _page("Error", f'<h1>Error</h1><p>{_e(str(exc)[:400])}</p>'))
+            self._send(500, _page("Error", f'<h1>Error</h1><p>{_e(str(exc)[:400])}</p>', path=self._db_path()))
 
     def do_POST(self):
         parsed = urlsplit(self.path)
@@ -493,6 +534,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._handle_post(parsed.path, form, path)
         except ValueError as exc:
+            if parsed.path.startswith("/review/"):
+                self._redirect("/reviews", flash=f"Not applied: {str(exc)[:300]}", ok=False)
+                return
             back = form.get("threat_id") or form.get("id") or ""
             target = f"/threat?id={_url_escape(back)}" if back else "/"
             self._redirect(target, flash=f"Research needed: {str(exc)[:300]}", ok=False)
@@ -525,6 +569,12 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/rule/reopen":
             rules.reopen_rule(form["id"], path)
             self._redirect(f"/threat?id={_url_escape(form.get('threat_id',''))}", flash="Draft reopened.")
+        elif route == "/review/approve":
+            result = corroboration.approve(int(form["review_id"]), "implement this rule", path)
+            self._redirect("/reviews", flash=f"Approved; pattern_score now {result.get('pattern_score')}.")
+        elif route == "/review/reject":
+            corroboration.reject(int(form["review_id"]), form["reason"], path)
+            self._redirect("/reviews", flash="Review rejected; rule unchanged.")
         else:
             self._not_found()
 

@@ -8,11 +8,12 @@ from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import environment, lead_queue, store
+from . import corroboration, environment, lead_queue, store
 from .core import collect_daily, list_emerging, list_threats, now
 
 
-def render_digest(threats, result, local_day, confirmed_counts=None, stale=False, claim_matches=None, leads=None):
+def render_digest(threats, result, local_day, confirmed_counts=None, stale=False, claim_matches=None, leads=None,
+                  pending_reviews=None):
     confirmed_counts = confirmed_counts or {}
     claim_matches = claim_matches or {}
     lines = [f"Threat research digest — {local_day}", "", f"New records: {result['new_records']}"]
@@ -44,6 +45,12 @@ def render_digest(threats, result, local_day, confirmed_counts=None, stale=False
         for lead in leads[:5]:
             lines += [f"- {lead['threat_id']} | {lead['behavior']} | unverified article text",
                       f"  {lead['source_url']}"]
+    if pending_reviews:
+        lines += ["", "Pending corroboration reviews (new cited leads matching existing rules; nothing scored yet):"]
+        for review in pending_reviews[:5]:
+            lines += [f"- review #{review['id']} | rule {review['rule_id']} ({review['rule_title']}) | "
+                      f"pattern_score {review['current_pattern_score']} -> {review['proposed_pattern_score']} if approved",
+                      f"  {review['source_url']}"]
     lines += ["", "Rules require a cited observed behavior and available telemetry. A CVE description alone is not an exploit detection.",
               "Ask Claude for the source evidence, environment risk, and separate speculative next steps before approving a rule."]
     return "\n".join(lines) + "\n"
@@ -109,7 +116,8 @@ def run_daily(path: Path | None = None, collect=True):
     candidates.sort(key=lambda item: (confirmed_counts.get(item["id"], 0), item["kev"], item["epss"] or 0), reverse=True)
     queue = emerging + candidates[:10]
     body = render_digest(queue, result, day, confirmed_counts, environment_state.get("asset_snapshot_stale", False),
-                         claim_matches, lead_queue.list_leads(path, 5, days=2))
+                         claim_matches, lead_queue.list_leads(path, 5, days=2),
+                         corroboration.list_pending(path, limit=5))
     target = (path or store.db_path()).parent / f"digest-{day}.txt"
     target.write_text(body, encoding="utf-8")
     # A configured SMTP failure raises; the run is not marked delivered and can retry.

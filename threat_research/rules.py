@@ -493,6 +493,42 @@ def acknowledge_existing(rule_id, evidence_id, approval_phrase, path: Path | Non
             "suspicion": "higher_corroboration" if score >= 2 else "investigate_context", "deployment": "unchanged"}
 
 
+def corroborate_local_rule(rule_id, evidence_id, path: Path | None = None):
+    """Attach a distinct, independently-recorded observation to an existing
+    local rule and add exactly +1 to its pattern_score. Unlike implement_rule,
+    this never changes draft/approved status -- corroborating a draft's
+    evidence is a separate action from an analyst's decision to approve it.
+    It also never touches environment/asset risk scoring. Used by the
+    automatic corroboration-review workflow's explicit approval step, and
+    safe to reuse anywhere a rule already has evidence and a fresh,
+    independently-cited observation needs to be linked.
+    """
+    with store.connection(path) as db:
+        row = db.execute("SELECT * FROM rules WHERE id=?", (rule_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown rule")
+        evidence = db.execute("SELECT * FROM evidence WHERE id=? AND kind='analyst_observation'", (evidence_id,)).fetchone()
+        if not evidence or evidence["behavior"] != row["behavior"]:
+            raise ValueError("evidence must independently support this behavior")
+        if row["behavior"] == "custom":
+            binding = db.execute("SELECT fingerprint FROM custom_rule_observations WHERE evidence_id=?", (evidence_id,)).fetchone()
+            if not binding or binding["fingerprint"] != row["fingerprint"]:
+                raise ValueError("custom observation must match this exact behavior spec")
+        if db.execute("SELECT 1 FROM rule_evidence WHERE rule_id=? AND evidence_id=?", (rule_id, evidence_id)).fetchone():
+            return {"status": "already_linked", "rule_id": rule_id, "pattern_score": row["pattern_score"], "deployment": "unchanged"}
+        if db.execute("SELECT 1 FROM rule_evidence re JOIN evidence e ON e.id=re.evidence_id "
+                      "WHERE re.rule_id=? AND e.source_url=?", (rule_id, evidence["source_url"])).fetchone():
+            raise ValueError("corroboration needs a distinct independent source URL; this source already corroborated this rule")
+        db.execute("INSERT INTO rule_evidence(rule_id,evidence_id) VALUES (?,?)", (rule_id, evidence_id))
+        db.execute("UPDATE rules SET pattern_score=pattern_score+1 WHERE id=?", (rule_id,))
+        db.execute("INSERT INTO audit (at,action,target,detail) VALUES (?,?,?,?)",
+                   (now(), "rule_corroborated", rule_id, json.dumps({"evidence_id": evidence_id})))
+        score = db.execute("SELECT pattern_score,status FROM rules WHERE id=?", (rule_id,)).fetchone()
+    rule_repository.export_rule(rule_id, path)
+    return {"status": "corroborated", "rule_id": rule_id, "pattern_score": score["pattern_score"],
+            "rule_status": score["status"], "deployment": "not_deployed"}
+
+
 def implement_or_corroborate(rule_id, approval_phrase, evidence_id=None, path: Path | None = None):
     """One approval entry point for a local draft or an imported inventory match."""
     if get_rule(rule_id, path):
