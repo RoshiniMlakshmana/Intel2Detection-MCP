@@ -9,6 +9,9 @@ from . import corroboration, report_inspection, store
 from .core import now
 
 
+SPECIFIC_ARTIFACTS = "specific_artifacts"
+
+
 def batch_size():
     value = int(os.environ.get("ARTICLE_REVIEW_BATCH_SIZE", "18"))
     if not 1 <= value <= 40:
@@ -102,6 +105,19 @@ def store_page_leads(threat_id, source_url, page, path: Path | None = None):
                 # of the same article can never queue -- let alone
                 # approve -- a duplicate.
                 new_leads.append(lead)
+    details = page.get("specific_details") or []
+    if details and not page["behavior_leads"]:
+        # A technical report with concrete artifacts (hashes, file names,
+        # paths) needs an analyst read even when no fixed template matched;
+        # without this row it stayed a raw lead after inspection. It is an
+        # untrusted lead only: never evidence, never corroboration (not a
+        # template behavior), never a rule.
+        with store.connection(path) as db:
+            count += db.execute(
+                "INSERT OR IGNORE INTO article_behavior_leads "
+                "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen) VALUES (?,?,?,?,?,?,?)",
+                (threat_id, source_url, page["sha256"], SPECIFIC_ARTIFACTS, details[0]["paragraph"],
+                 details[0]["excerpt"][:420], now())).rowcount
     queued = sum(1 for lead in new_leads if corroboration.queue_from_lead(
         threat_id, source_url, lead["paragraph"], lead["behavior"], lead["excerpt"], path))
     return {"leads": count, "corroboration_reviews_queued": queued}

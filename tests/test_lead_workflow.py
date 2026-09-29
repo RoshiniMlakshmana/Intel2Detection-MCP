@@ -99,8 +99,16 @@ class ProgressionTest(Base):
         self.assertEqual(prog["next_step"], "research")
         self.assertIn("not behavior evidence", prog["steps"][0]["missing"])
         self.assertEqual([s["key"] for s in prog["steps"]],
-                         ["research", "evidence", "telemetry", "inventory", "candidate", "checks", "decision", "repository"])
-        self.assertIn("never generated from a CVE title", prog["steps"][4]["missing"])
+                         ["research", "evidence", "telemetry", "inventory", "framework", "environment_risk",
+                          "candidate", "checks", "decision", "repository"])
+        steps = {s["key"]: s for s in prog["steps"]}
+        self.assertIn("never generated from a CVE title", steps["candidate"]["missing"])
+        # Every intended stage is visible to Claude: scope, framework and withheld score included.
+        self.assertIn("Inventory scope: not declared", steps["inventory"]["summary"])
+        self.assertEqual(steps["framework"]["state"], "blocked")
+        self.assertEqual((steps["environment_risk"]["state"], steps["environment_risk"]["score"]), ("attention", None))
+        self.assertIn("Withheld", steps["environment_risk"]["summary"])
+        self.assertIn("research_lead('CVE-2099-00007')", prog["next_action"])
         with store.connection(self.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM rules").fetchone()[0], 0)
 

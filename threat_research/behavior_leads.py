@@ -36,11 +36,16 @@ def from_paragraphs(paragraphs):
     return output
 
 
+# Actor or malicious-artifact context. Malware write-ups describe "the loader"
+# or "the sample" rather than an attacker (observed: Microsoft's NeedyMantis
+# analysis, whose loader name and SHA-256 were missed with actor words only).
 ACTOR = re.compile(r"\b(?:attacker|adversar(?:y|ies)|threat actors?|actors?|MCA|intruders?|operators?|"
-                   r"exploit(?:ed|ing|ation)?)\b", re.I)
+                   r"exploit(?:ed|ing|ation)?|malware|malicious|loader|sample|payload|backdoor|implant|"
+                   r"dropper|stealer|ransomware|beacon|shellcode|web ?shell|C2|command[- ]and[- ]control)\b", re.I)
+HASH = re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.I)
 ARTIFACT = re.compile(
     r"(?:(?<![\w/])/(?:bin|sbin|tmp|var|etc|usr|netscaler|flash|home|opt|dev/shm)/[\w./-]+"
-    r"|\b[A-Za-z]:\[\w\. -]+"
+    r"|\b[A-Za-z]:\\[\w\\.-]+"
     r"|[\"'“‘]\.[\w.-]{2,}[\"'”’]"
     r"|\b[\w-]+(?:\.[\w-]+)*\.(?:php|pl|sh|jsp|jspx|aspx?|exe|dll|ps1|py|elf|so|bat|vbs|lnk)\b"
     r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
@@ -56,7 +61,9 @@ def specific_details(paragraphs, limit=5):
     """
     output = []
     for index, paragraph in enumerate(paragraphs):
-        if NEGATION.search(paragraph) or not ACTOR.search(paragraph):
+        # A file hash in a threat report is itself a specific artifact; other
+        # tokens (paths, file names, IPs) need actor or malware context.
+        if NEGATION.search(paragraph) or not (ACTOR.search(paragraph) or HASH.search(paragraph)):
             continue
         tokens = list(dict.fromkeys(m.group(0) for m in ARTIFACT.finditer(paragraph)))
         if tokens:

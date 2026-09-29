@@ -633,7 +633,8 @@ def _progression_html(prog):
         items.append(f'<li class="{step["state"]}"><b>{_e(step["title"])}</b> '
                      f'<span class="badge {STEP_BADGE.get(step["state"], "unknown")}">{_e(step["state"])}</span>'
                      f'<br><small class="muted">{_e(step["summary"])}</small>{missing}{_step_extra(step, prog)}</li>')
-    return f'<ol class="steps">{"".join(items)}</ol>'
+    action = f'<p><b>Next action:</b> {_e(prog["next_action"])}</p>' if prog.get("next_action") else ""
+    return f'{action}<ol class="steps">{"".join(items)}</ol>'
 
 
 def render_threat(threat_id, path=None, qs=None):

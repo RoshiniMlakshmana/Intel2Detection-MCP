@@ -38,6 +38,11 @@ TERMS = re.compile(r"\b(CVE-\d{4}-\d{4,}|exploited|payload|powershell|command li
 MAX_BYTES = 600_000
 
 
+# Table cells and preformatted blocks carry IOC tables and command lines in
+# technical reports; reading only prose paragraphs missed them.
+BLOCK_TAGS = ("p", "li", "h1", "h2", "h3", "td", "th", "pre")
+
+
 class _Text(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -49,14 +54,14 @@ class _Text(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style", "nav", "footer", "header", "form"):
             self.depth += 1
-        elif not self.depth and tag in ("p", "li", "h1", "h2", "h3"):
+        elif not self.depth and tag in BLOCK_TAGS:
             self.flush()
             self.active = True
 
     def handle_endtag(self, tag):
         if tag in ("script", "style", "nav", "footer", "header", "form"):
             self.depth = max(0, self.depth - 1)
-        elif tag in ("p", "li", "h1", "h2", "h3"):
+        elif tag in BLOCK_TAGS:
             self.flush()
             self.active = False
 

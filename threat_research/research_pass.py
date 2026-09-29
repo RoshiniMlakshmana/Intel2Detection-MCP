@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from . import environment, lead_queue, report_inspection, sources, store
+from . import environment, lead_queue, report_inspection, research_feeds, sources, store
 from .core import get_threat, now
 
 MAX_LEADS = 4
@@ -56,7 +56,11 @@ HREF = re.compile(rb"""href\s*=\s*["'](https://[^"'<>\s]{1,500})["']""", re.I)
 BACKLOG_SQL = ("((t.kind='advisory' AND t.kev=1) "
                "OR (t.kind='campaign' AND EXISTS(SELECT 1 FROM report_cves rc JOIN threats c ON c.id=rc.cve_id "
                "WHERE rc.report_id=t.id AND c.kev=1)) "
-               "OR EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id))")
+               "OR EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) "
+               # A lead the pass itself sent to verification (or could not
+               # read) stays actionable even if it started as a raw lead.
+               "OR EXISTS(SELECT 1 FROM research_outcomes rv WHERE rv.threat_id=t.id "
+               "AND rv.status IN ('observables_need_analyst_verification','no_readable_source')))")
 NO_OBSERVATION_SQL = ("NOT EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id "
                       "AND o.kind='analyst_observation')")
 
@@ -210,6 +214,14 @@ SHARE_HOSTS = {"twitter.com", "x.com", "facebook.com", "linkedin.com", "reddit.c
                "feedburner.com", "youtube.com", "bsky.app", "mastodon.social", "whatsapp.com"}
 
 
+# Only news coverage quotes someone else's research; a vendor, government or
+# research page is itself the original (observed: Microsoft's own report
+# otherwise "matched" the legitimate software sites its malware abuses).
+NEWS_HOSTS = {urlsplit(url).hostname for _, url, category in research_feeds.FEEDS if category == "news"} | {
+    "thehackernews.com"}
+STATIC_ASSET = re.compile(r"\.(?:css|js|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|json|xml)$", re.I)
+
+
 def _original_candidates(raw, page, from_url):
     """Links on a quoting page to the publisher it names (e.g. a research firm's own post).
 
@@ -218,13 +230,16 @@ def _original_candidates(raw, page, from_url):
     """
     text = " ".join([e["excerpt"] for e in page["excerpts"]] +
                     [d["excerpt"] for d in page.get("specific_details", [])]).lower()
-    own, found = _host(from_url), []
+    # The publisher's own domain is never "another" original: on a vendor's
+    # own report (observed: Microsoft) its site navigation matched by name.
+    own, found = ".".join(_host(from_url).split(".")[-2:]), []
     for match in HREF.findall(raw[:report_inspection.MAX_BYTES]):
         url = _clean_url(html.unescape(match.decode("utf-8", errors="replace")))
         host = _host(url)
         labels = host.split(".")
         name = labels[-2] if len(labels) >= 2 else ""
-        if (host and host != own and host not in report_inspection.ALLOWED_HOSTS and len(name) >= 5
+        if (host and ".".join(labels[-2:]) != own and host not in report_inspection.ALLOWED_HOSTS
+                and len(name) >= 5 and not STATIC_ASSET.search(urlsplit(url).path)
                 and ".".join(labels[-2:]) not in SHARE_HOSTS and name in text and url not in found):
             found.append(url)
     return found[:5]
@@ -232,7 +247,8 @@ def _original_candidates(raw, page, from_url):
 
 def _details(record, page, raw=b""):
     details = page.get("specific_details", [])
-    originals = _original_candidates(raw, page, record["url"]) if details and raw else []
+    originals = (_original_candidates(raw, page, record["url"])
+                 if details and raw and _host(record["url"]) in NEWS_HOSTS else [])
     return [{"url": record["url"], "role": record["role"], **d,
              "original_publication_candidates": originals} for d in details]
 

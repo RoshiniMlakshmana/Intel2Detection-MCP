@@ -55,6 +55,11 @@ async def main():
                 proposed = await call("draft_detection", {"threat_id": registered["id"],
                                                             "evidence_id": first["evidence_id"]})
                 assert proposed["status"] == "draft"
+                gate = await call("implement_rule", {"rule_id": proposed["rule_id"], "approval_phrase": "looks fine"})
+                assert gate["status"] == "refused" and "implement this rule" in gate["reason"], gate
+                staged = await call("lead_progression", {"threat_id": registered["id"]})
+                keys = [s["key"] for s in staged["steps"]]
+                assert {"framework", "environment_risk"} <= set(keys) and staged["next_action"], staged
                 approved = await call("implement_rule", {"rule_id": proposed["rule_id"],
                                                            "approval_phrase": "implement this rule"})
                 assert approved["status"] == "approved_in_local_inventory"

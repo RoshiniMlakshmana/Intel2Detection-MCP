@@ -10,11 +10,11 @@ import json
 import re
 from pathlib import Path
 
-from . import corroboration, environment, research_pass, rule_repository, rules, soc_replay, store
+from . import corroboration, environment, frameworks, research_pass, rule_repository, rules, soc_replay, store
 from .core import backfill_source_names, get_threat
 
 PAGE_SIZE = 50
-STATUSES = ("research_needed", "article_leads", "evidence_recorded")
+STATUSES = ("research_needed", "article_leads", "research_completed", "evidence_recorded")
 # Mutually exclusive work queues. research_backlog: high-priority leads (CISA
 # KEV, reports citing a KEV CVE, reports with behavior leads) still needing a
 # report read; raw_unreviewed: everything else nobody has looked at yet;
@@ -39,6 +39,10 @@ TAB_TOOLS = {
 _STATUS_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id AND o.kind='analyst_observation') "
                "THEN 'evidence_recorded' "
                "WHEN EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) THEN 'article_leads' "
+               # Without this, a lead whose sources were read showed "research_needed"
+               # beside queue "research_completed".
+               "WHEN EXISTS(SELECT 1 FROM research_outcomes ro WHERE ro.threat_id=t.id "
+               "AND ro.status='completed_insufficient_detail') THEN 'research_completed' "
                "ELSE 'research_needed' END")
 _QUEUE_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id AND o.kind='analyst_observation') "
               "THEN 'evidence_recorded' "
@@ -250,6 +254,105 @@ def _repository_entry(rule_id, status, path):
             "git_tracked": (root / ".git").exists(), "repository": str(root)}
 
 
+def _framework_step(step, template_obs, custom_obs, path):
+    """Framework mapping follows from a verified behavior, never from a CVE or headline."""
+    if template_obs:
+        mappings, unverified = {}, []
+        for behavior in sorted({e["behavior"] for e in template_obs}):
+            context = frameworks.retrieve(behavior, path, update=False)
+            for name, items in context["mappings"].items():
+                for item in items:
+                    label = f"{item['id']} {item.get('name', '')}".strip()
+                    mappings.setdefault(name, []).append(label)
+                    if item.get("status") == "unverified_in_current_release":
+                        unverified.append(item["id"])
+        state = frameworks.status(path)
+        step("framework", "Framework mapping (ATT&CK / ATLAS / OWASP)", "attention" if unverified else "done",
+             "; ".join(f"{name}: {', '.join(labels)}" for name, labels in mappings.items()),
+             mappings=mappings, snapshots={k: {"version": v.get("version"), "status": v["status"]}
+                                           for k, v in state.items()},
+             missing=(f"Not found in the stored framework releases: {', '.join(unverified)}; run refresh_frameworks."
+                      if unverified else None))
+    elif custom_obs:
+        step("framework", "Framework mapping (ATT&CK / ATLAS / OWASP)", "attention",
+             "Custom behavior: no fixed crosswalk.",
+             missing="search_framework_techniques(<verified claim>) returns keyword candidates; an analyst assigns "
+                     "the label after comparing full definitions.")
+    else:
+        step("framework", "Framework mapping (ATT&CK / ATLAS / OWASP)", "blocked",
+             "Not applicable yet: no verified behavior to map.",
+             missing="Framework labels follow from a verified behavior; keyword search on a headline is not a mapping.")
+
+
+def _environment_step(step, threat, path):
+    """Environment risk score only from confirmed assets; otherwise withheld with the reason."""
+    cves = ([threat["id"]] if sources_cve(threat["id"]) else threat.get("mentioned_cves") or [])
+    env = environment.status(path)
+    if not cves:
+        step("environment_risk", "Environment risk score", "done",
+             "Not applicable: no CVE to match against assets. environment_risk() takes analyst-supplied context "
+             "for campaigns; leak claims use leak_claim_relevance().", score=None)
+    elif not env.get("configured") or not env.get("assets"):
+        step("environment_risk", "Environment risk score", "attention",
+             f"Withheld for {', '.join(cves[:3])}: no confirmed asset inventory is onboarded, so no score is assigned.",
+             score=None, missing="Onboard a profile and confirmed asset CSV (environment_setup_status), then "
+                                 "risk_from_asset_inventory().")
+    else:
+        result = environment.risk_from_assets(cves[0], path)
+        top = max((m["assessment"]["score"] for m in result.get("confirmed_affected", [])), default=None)
+        step("environment_risk", "Environment risk score", "done",
+             (f"{result['confirmed_affected_count']} of {result['inventory_assets']} asset(s) confirmed affected by "
+              f"{cves[0]}; highest score {top}." if top is not None else
+              f"No asset is confirmed affected by {cves[0]}; unconfirmed assets stay unknown, not low risk."),
+             score=top, assessment=result)
+
+
+def sources_cve(ident):
+    from .sources import CVE
+    return bool(CVE.fullmatch(ident.upper()))
+
+
+def _next_action(ident, current, research, draftable, rule_views, checks, steps):
+    """One concrete next action, naming the tool; nothing here performs it."""
+    key = current["key"] if current else "complete"
+    status = research.get("status")
+    if key == "research":
+        if status == "not_researched":
+            return f"research_lead('{ident}'): read-only, runs without asking the analyst."
+        if status == "observables_need_analyst_verification":
+            originals = sorted({u for d in research.get("specific_details_to_verify") or []
+                                for u in d.get("original_publication_candidates", [])})
+            return ("Analyst: verify the listed leads/quoted artifacts in the full report"
+                    + (f" and its original publication(s) {', '.join(originals)}" if originals else "")
+                    + "; then record_observed_behavior or draft_custom_detection citing that source.")
+        if status == "no_readable_source":
+            urls = [p["url"] for p in (research.get("publisher_blocked") or []) + (research.get("unreadable") or [])]
+            return "Analyst: open in a browser " + ", ".join(urls[:4]) + " and record any verified behavior."
+        return current.get("missing") or "Read a cited technical report."
+    if key == "evidence":
+        if status == "completed_insufficient_detail":
+            offer = research.get("exposure_patch_review")
+            extra = ""
+            if research.get("specific_details_to_verify"):
+                extra = " Optionally verify the quoted secondary claims in their original publications."
+            return ("No detection is supportable from the sources read. Offer the exposure/patch review"
+                    + (f" ({offer['how']})" if offer else "") + "; do not draft a rule." + extra)
+        return current.get("missing")
+    if key == "candidate" and draftable:
+        return f"draft_detection('{ident}', evidence_id={draftable[0]['id']})"
+    if key == "checks":
+        untested = [rid for rid, c in checks.items() if not (c and c["tests_current_version"])]
+        return (f"test_rule_against_samples('{untested[0]}', <labeled JSONL>) with analyst-labeled positive and "
+                "benign events." if untested else current.get("missing"))
+    if key == "decision":
+        pending = [r["id"] for r in rule_views if r["status"] == "draft"]
+        return (f"Analyst decision on {', '.join(pending)}: implement_rule(..., 'implement this rule') only on the "
+                "analyst's explicit request, or reject_draft_rule(rule_id, reason). Nothing is approved automatically.")
+    if key == "complete":
+        return "None: every step is complete. Approved means the local repository only; nothing is deployed."
+    return current.get("missing")
+
+
 def lead_progression(threat_id, path: Path | None = None):
     """Research needed -> evidence -> telemetry -> inventory -> candidate rule
     -> labeled checks -> analyst decision -> versioned repository.
@@ -346,9 +449,14 @@ def lead_progression(threat_id, path: Path | None = None):
     covered = [b for b in inventory["behaviors"] if b["status"] == "yes"]
     pending_reviews = [r for r in reviews if r["status"] == "pending"]
     answer = inventory["status"].capitalize()
+    scope = inventory.get("inventory_scope") or {}
+    scope_text = (f" Inventory scope: {scope.get('scope')} (complete={scope.get('complete')}, "
+                  f"declared {scope.get('declared_at')})." if scope.get("declared") else
+                  " Inventory scope: not declared, so the answer cannot be No.")
     if not inventory["behaviors"]:
-        step("inventory", "Inventory Yes/No/Unknown", "blocked", "Unknown: nothing verified to compare yet.",
-             answer="Unknown", missing="Verify a behavior first; inventory is compared by behavior fingerprint.")
+        step("inventory", "Inventory Yes/No/Unknown", "blocked", "Unknown: nothing verified to compare yet." + scope_text,
+             answer="Unknown", scope=scope,
+             missing="Verify a behavior first; inventory is compared by behavior fingerprint.")
     elif covered:
         proposals = []
         for b in covered:
@@ -362,13 +470,17 @@ def lead_progression(threat_id, path: Path | None = None):
                                   "effect": "Links this cited observation to the existing rule and adds +1 pattern_score once."})
         step("inventory", "Inventory Yes/No/Unknown", "done",
              "Yes: existing coverage " + ", ".join(f"{b.get('title') or b['rule_id']} ({b['rule_id']})" for b in covered),
-             answer="Yes", existing_rules=covered, pending_corroboration_reviews=pending_reviews,
+             answer="Yes", scope=scope, existing_rules=covered, pending_corroboration_reviews=pending_reviews,
              proposed_corroboration=proposals)
     else:
         step("inventory", "Inventory Yes/No/Unknown", "done" if inventory["status"] == "no" else "attention",
-             f"{answer}: " + "; ".join(b.get("note", "") for b in inventory["behaviors"]), answer=answer,
+             f"{answer}: " + "; ".join(b.get("note", "") for b in inventory["behaviors"]) + scope_text,
+             answer=answer, scope=scope,
              missing=None if inventory["status"] == "no" else
              "Declare the complete, current rule inventory (declare_inventory_scope) before this can answer No.")
+
+    _framework_step(step, template_obs, custom_obs, path)
+    _environment_step(step, threat, path)
 
     covered_fps = {rules.fingerprint_for(b["behavior"]) for b in covered if b["behavior"] in rules.TEMPLATES}
     drafted = {r["behavior"] for r in threat["rules"]}
@@ -428,11 +540,13 @@ def lead_progression(threat_id, path: Path | None = None):
 
     # "attention" is a warning (e.g. telemetry not yet confirmed), not the next action.
     current = next((s for s in steps if s["state"] in ("current", "blocked")), None)
+    next_action = _next_action(ident, current, research, draftable, rule_views, checks, steps)
     return {"threat_id": ident, "title": threat["title"], "kind": threat["kind"],
             "published": threat.get("published"), "collected": threat.get("first_seen"),
             "research_status": research["status"],
             "sources": threat["sources"], "steps": steps,
             "next_step": current["key"] if current else "complete",
+            "next_action": next_action,
             "attention": [s["key"] for s in steps if s["state"] == "attention"],
             "can_draft": bool(draftable), "draftable_evidence": [e["id"] for e in draftable],
             "draft_blocked_reason": None if draftable else
