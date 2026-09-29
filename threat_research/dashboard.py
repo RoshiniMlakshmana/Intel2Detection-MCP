@@ -106,7 +106,12 @@ def _page(title, body, active=None, flash=None, path=None):
     pending = corroboration.pending_count(path)
     reviews_label = f"Reviews ({pending})" if pending else "Reviews"
     nav_items = [("/", "Sources"), ("/threats", "All threats"), ("/reviews", reviews_label)]
-    nav = "".join(f'<a href="{href}"{" style=\"color:var(--text);font-weight:700\"" if href == active else ""}>{label}</a>'
+    # Built without a backslash inside any f-string expression part: that
+    # syntax is a SyntaxError on Python < 3.12 (PEP 701 lifted the
+    # restriction only in 3.12), and this project supports 3.11+.
+    active_style = "color:var(--text);font-weight:700"
+    nav = "".join(f'<a href="{href}" style="{active_style}">{label}</a>' if href == active else
+                  f'<a href="{href}">{label}</a>'
                   for href, label in nav_items)
     flash_html = ""
     if flash:
