@@ -10,31 +10,90 @@ happens to run locally (this repository's own CI failed on exactly this in
 threat_research/dashboard.py, undetected locally because the development
 environment used here is Python 3.13).
 
-This check does not need a 3.11 interpreter: it walks the AST of every
-shipped module and inspects each JoinedStr's FormattedValue source segments
-directly, which is exactly what the 3.11 parser itself would reject.
+The scan below is a purely lexical scanner over the raw source text (quote/
+escape scanning for the f-string's own delimiter, then brace-depth counting
+for `{`/`}`), not an ast-position-based one. That is deliberate: an earlier
+version of this test used `ast.get_source_segment()` on each `FormattedValue`
+node, and running it in CI under Python 3.11 (not 3.12+) produced false
+positives -- on 3.11, the `ast` module reports source spans for expressions
+inside f-strings far less precisely than 3.12+ does (PEP 701 rewrote the
+f-string parser and gave it exact positions), so the "expression part"
+segment it returned sometimes included surrounding literal text with its own,
+entirely legal, backslash escapes (e.g. `f"...{x}\\n"` or `f"...(\\"{x}\\"), "`,
+where the backslash sits in the literal text, not inside `{}`). That failure
+is reproduced and pinned in test_legitimate_backslash_in_literal_text_is_not_flagged
+below, so it is never silently reintroduced.
 """
 
 import ast
+import re
 import sys
 import unittest
 from pathlib import Path
 
 import threat_research
 
+FSTRING_OPEN = re.compile(r"(?i)\b[rbu]{0,2}f[rbu]{0,2}('''|\"\"\"|'|\")")
 
-def _fstring_backslash_violations(path):
+
+def _fstring_spans(src):
+    """Yield the raw text of each f-string literal in src (opening prefix
+    through its matching closing quote), scanning only for the *outer*
+    quote/escape boundary -- nothing inside is interpreted."""
+    i, n = 0, len(src)
+    while i < n:
+        match = FSTRING_OPEN.search(src, i)
+        if not match:
+            return
+        quote = match.group(1)
+        j = match.end()
+        while j < n:
+            if src[j] == "\\":
+                j += 2
+                continue
+            if src.startswith(quote, j):
+                j += len(quote)
+                yield match.start(), src[match.start():j]
+                break
+            j += 1
+        else:
+            return
+        i = j
+
+
+def _backslash_in_expression_part(literal):
+    """True if a raw backslash appears at brace-depth > 0 -- i.e. strictly
+    inside a `{...}` expression, not the literal text around it. `{{`/`}}`
+    are literal-brace escapes and never open/close an expression."""
+    depth = 0
+    k, n = 0, len(literal)
+    while k < n:
+        ch = literal[k]
+        if ch == "{":
+            if depth == 0 and k + 1 < n and literal[k + 1] == "{":
+                k += 2
+                continue
+            depth += 1
+        elif ch == "}":
+            if depth == 0 and k + 1 < n and literal[k + 1] == "}":
+                k += 2
+                continue
+            depth = max(0, depth - 1)
+        elif ch == "\\" and depth > 0:
+            return True
+        k += 1
+    return False
+
+
+def _violations(path):
     src = path.read_text(encoding="utf-8")
-    tree = ast.parse(src, filename=str(path))
-    violations = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.JoinedStr):
-            for value in node.values:
-                if isinstance(value, ast.FormattedValue):
-                    segment = ast.get_source_segment(src, value)
-                    if segment and "\\" in segment:
-                        violations.append((path.name, value.lineno, segment[:160]))
-    return violations
+    ast.parse(src, filename=str(path))  # still a real syntax check, on whatever interpreter runs this
+    found = []
+    for start, literal in _fstring_spans(src):
+        if _backslash_in_expression_part(literal):
+            line = src.count("\n", 0, start) + 1
+            found.append((path.name, line, literal[:160]))
+    return found
 
 
 class Python311CompatTest(unittest.TestCase):
@@ -44,27 +103,37 @@ class Python311CompatTest(unittest.TestCase):
         self.assertGreater(len(modules), 10)  # sanity: the scan actually covered the package
         violations = []
         for module in modules:
-            violations.extend(_fstring_backslash_violations(module))
+            violations.extend(_violations(module))
         self.assertEqual(violations, [],
                          "Backslash inside an f-string expression part is a SyntaxError on Python < 3.12 "
                          "(PEP 701 only relaxed this in 3.12); this project supports 3.11+. "
                          f"Found: {violations}")
 
-    def test_regression_fixture_the_exact_shape_that_broke_ci(self):
-        """The literal pattern that failed CI on Python 3.11/dashboard.py:110
-        (an inline conditional style attribute built with escaped quotes
-        inside the {...} of an f-string). Confirms the detector used above
-        actually flags this shape, not just that today's source is clean."""
-        broken = 'f\'<a href="{href}"{" style=\\"color:red\\"" if href == active else ""}>{label}</a>\''
-        tree = ast.parse(broken)
-        joined = tree.body[0].value
-        self.assertIsInstance(joined, ast.JoinedStr)
-        found = any("\\" in (ast.get_source_segment(broken, v) or "")
-                    for v in joined.values if isinstance(v, ast.FormattedValue))
-        self.assertTrue(found, "detector must flag the exact pattern that broke Python 3.11 CI")
+    def test_detector_flags_the_exact_shape_that_broke_ci(self):
+        broken = 'x = f\'<a href="{href}"{" style=\\"color:red\\"" if href == active else ""}>{label}</a>\''
+        spans = list(_fstring_spans(broken))
+        self.assertEqual(len(spans), 1)
+        self.assertTrue(_backslash_in_expression_part(spans[0][1]),
+                        "detector must flag the exact pattern that broke Python 3.11 CI")
         if sys.version_info < (3, 12):
             with self.assertRaises(SyntaxError):
-                compile(broken, "<broken-fixture>", "eval")
+                compile(broken, "<broken-fixture>", "exec")
+
+    def test_legitimate_backslash_in_literal_text_is_not_flagged(self):
+        """The false positives actually seen in CI under Python 3.11 with the
+        prior ast-based detector: a backslash in the f-string's literal text
+        (outside {}), which is legal on every Python version. Guards against
+        reintroducing that specific regression in the detector itself."""
+        legit_samples = [
+            'f"| where RemoteIP == \'{address}\' and RemotePort == {port}\\n"',
+            'f"index={config[\'index\']} sourcetype={config[\'sourcetype\']}\\n| where "',
+            'f"Checked against the declared complete inventory (\\"{declaration[\'scope\']}\\"), "',
+        ]
+        for sample in legit_samples:
+            spans = list(_fstring_spans(sample))
+            self.assertEqual(len(spans), 1, sample)
+            self.assertFalse(_backslash_in_expression_part(spans[0][1]), sample)
+            ast.parse(sample)  # also confirm it is simply valid Python
 
 
 if __name__ == "__main__":
