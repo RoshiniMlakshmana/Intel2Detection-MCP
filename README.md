@@ -69,8 +69,10 @@ Full setup, the analyst dashboard, and keeping a poller + daily digest running o
 
 | Dashboard tab | MCP tool |
 |---|---|
-| All leads: source dropdown, date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, status, rule_state, kind, page)` |
-| Research needed | `list_leads(status='research_needed')` |
+| All leads: source dropdown, queue/date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, queue, status, rule_state, kind, page)` |
+| Research backlog (actionable: KEV CVEs, reports citing them, reports with behavior leads) | `list_leads(queue='research_backlog')`; worked automatically by `run_research_pass()` |
+| Raw leads (untriaged collection, not a to-do list) | `list_leads(queue='raw_unreviewed')` |
+| Research completed (sources read, insufficient detection detail) | `list_leads(queue='research_completed')`, `research_lead(threat_id)` |
 | Draft rules / Approved rules | `list_rules(state='draft' \| 'approved')` |
 | Pending reviews | `pending_corroboration_reviews()` |
 | Source errors | `source_errors()` (latest fetch status per source, partial fetches, blocked articles) |
@@ -79,6 +81,23 @@ Full setup, the analyst dashboard, and keeping a poller + daily digest running o
 | Lead detail progression | `lead_progression(threat_id)`: research needed → cited evidence → required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL → labeled checks → analyst decision → rule repository, naming the missing input at each blocked step |
 
 The 50-per-page limit is local display paging; upstream API paging (NVD, GitHub, feeds) is handled by the collectors.
+
+### Automatic research pass
+
+Reading a public page that a collected record already cites is read-only, so it runs without asking the analyst: each poll, `run_research_pass()` and `research_detection_plan()` research the highest-priority backlog leads (CISA KEV CVEs first). Within fixed limits (4 leads, 14 pages per lead, 40 fetches per pass) the pass opens:
+
+- primary vendor advisories from the CVE record;
+- the CISA KEV entry and CISA alerts;
+- vendor guidance linked from those pages;
+- reports that cite the CVE.
+
+Every page is recorded with its outcome and time. Publisher blocks and script-rendered (unreadable) pages are listed separately in `source_errors()`. Each lead ends as one of:
+
+- `completed_insufficient_detail`: no primary source names a specific observable. Evidence and missing telemetry are shown, and an exposure/patch review is offered with no numeric score.
+- `observables_need_analyst_verification`: untrusted text an analyst must verify. Specific artifacts quoted by secondary reports are listed verbatim for checking against the original publication.
+- `no_readable_source`: the lead stays in the backlog with the URLs to open in a browser.
+
+The pass never records evidence, drafts or approves a rule.
 
 ### Updating an existing Windows install
 

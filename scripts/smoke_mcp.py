@@ -26,7 +26,7 @@ async def main():
                         "risk_from_asset_inventory", "draft_detection", "implement_rule",
                         "research_detection_plan", "draft_custom_detection", "search_framework_techniques",
                         "list_sources", "list_leads", "lead_progression", "workflow_counts", "list_rules",
-                        "source_errors"} <= names
+                        "source_errors", "run_research_pass", "research_lead"} <= names
                 result = await session.call_tool("evaluate_synthetic_soc_lab", {})
                 assert not result.is_error
                 report = json.loads(result.content[0].text)
@@ -81,6 +81,14 @@ async def main():
                 assert next(s for s in progression["steps"] if s["key"] == "inventory")["answer"] == "Yes"
                 counts = await call("workflow_counts", {})
                 assert counts["approved_rules"] == 1 and "source_errors" in counts
+                assert counts["evidence_recorded"] == 1 and counts["actionable_research_backlog"] == 0, counts
+                assert counts["leads_total"] == (counts["actionable_research_backlog"] + counts["raw_unreviewed_leads"]
+                                                 + counts["research_completed_insufficient_detail"]
+                                                 + counts["evidence_recorded"]), counts
+                research = await call("run_research_pass", {"max_leads": 2})
+                assert research["leads_researched"] == 0 and research["backlog_remaining"] == 0, research
+                lead = await call("research_lead", {"threat_id": registered["id"]})
+                assert lead["not_fetched_host_not_allowlisted"] == [source], lead  # example.test is never fetched
                 assert (await call("list_rules", {"state": "approved"}))["total"] == 1
                 assert "sources" in await call("source_errors", {})
                 assert any(c["name"] == "NVD" for c in (await call("list_sources", {}))["sources"])

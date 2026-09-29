@@ -153,7 +153,9 @@ class CountsAndErrorsTest(Base):
         threat_id, evidence = self.cited_lead()
         rules.propose_rule(threat_id, evidence, self.path)
         counts = workflow.workflow_counts(self.path)
-        self.assertEqual(counts["research_needed"], 2)
+        # Two non-KEV advisories are raw collection, not the actionable backlog.
+        self.assertEqual((counts["raw_unreviewed_leads"], counts["actionable_research_backlog"]), (2, 0))
+        self.assertEqual((counts["evidence_recorded"], counts["leads_total"]), (1, 3))
         self.assertEqual(counts["draft_rules"], 1)
         self.assertEqual(counts["approved_rules"], 0)
         self.assertEqual(counts["pending_reviews"], 0)
@@ -188,7 +190,7 @@ class DashboardWorkflowHttpTest(Base):
     def test_tabs_leads_pagination_and_source_dropdown(self):
         status, body, _ = self.request("GET", "/leads")
         self.assertEqual(status, 200)
-        for tab in ("Research needed", "Draft rules", "Pending reviews", "Approved rules", "Source errors", "MCP tools"):
+        for tab in ("Research backlog", "Raw leads", "Research completed", "Draft rules", "Pending reviews", "Approved rules", "Source errors", "MCP tools"):
             self.assertIn(tab, body)
         self.assertIn("Showing 1&ndash;50 of <b>61</b>", body)
         self.assertIn('href="/leads?date_field=published&page=2"', body)
@@ -224,7 +226,8 @@ class DashboardWorkflowHttpTest(Base):
         self.assertIn("None.", approved)
         _, tools, _ = self.request("GET", "/tools")
         self.assertIn("lead_progression", tools)
-        self.assertIn("list_leads(status=&#x27;research_needed&#x27;)", tools)
+        self.assertIn("list_leads(queue=&#x27;research_backlog&#x27;)", tools)
+        self.assertIn("run_research_pass", tools)
         _, api, _ = self.request("GET", f"/api/progression?id={self.threat_id}")
         self.assertEqual(json.loads(api)["next_step"], "decision")
 

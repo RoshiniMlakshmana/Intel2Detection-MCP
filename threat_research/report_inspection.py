@@ -12,10 +12,26 @@ from . import behavior_leads, research_feeds
 from .net import tls_context
 from .core import get_threat
 
-ALLOWED_HOSTS = {urlsplit(url).hostname for _, url, _ in research_feeds.FEEDS} | {
-    "unit42.paloaltonetworks.com", "thedfirreport.com", "www.thedfirreport.com",
-    "www.cisa.gov", "security.googleblog.com", "cloud.google.com",
+# Primary vendor advisory and guidance hosts. Pages here are only opened when
+# a collected record (CVE/CNA reference, KEV entry) or an already-inspected
+# primary/cited page links to them; the host list is the SSRF boundary.
+PRIMARY_HOSTS = {
+    "www.cisa.gov", "support.citrix.com", "community.citrix.com", "docs.netscaler.com",
+    "fortiguard.fortinet.com", "www.fortiguard.com", "msrc.microsoft.com",
+    "security.paloaltonetworks.com", "sec.cloudapps.cisco.com", "support.broadcom.com",
+    "forums.ivanti.com", "helpx.adobe.com", "www.oracle.com", "security.googleblog.com",
+    "chromereleases.googleblog.com", "www.sonicwall.com", "psirt.global.sonicwall.com",
+    "advisories.checkpoint.com", "kb.cert.org", "www.kb.cert.org",
 }
+ALLOWED_HOSTS = {urlsplit(url).hostname for _, url, _ in research_feeds.FEEDS} | PRIMARY_HOSTS | {
+    "unit42.paloaltonetworks.com", "thedfirreport.com", "www.thedfirreport.com",
+    "cloud.google.com",
+    # Feeds served through a redirector host: articles live on the publisher.
+    "thehackernews.com",
+}
+# The CISA CDN answers Python's TLS 1.3 handshake with 403 but serves the same
+# public pages over TLS 1.2 (same behavior as its advisories RSS feed).
+TLS12_ARTICLE_HOSTS = {"www.cisa.gov"}
 TERMS = re.compile(r"\b(CVE-\d{4}-\d{4,}|exploited|payload|powershell|command line|"
                    r"web shell|process|credential|lateral movement|persistence|"
                    r"indicator|telemetry|detection|compromise|initial access)\b", re.I)
@@ -90,9 +106,20 @@ ARTICLE_HEADERS = {
 }
 
 
+def allowed_url(url):
+    """HTTPS on a configured publisher or primary vendor host, default port, no credentials."""
+    try:
+        parsed = urlsplit(url)
+        return (isinstance(url, str) and parsed.scheme == "https" and parsed.hostname in ALLOWED_HOSTS
+                and parsed.port in (None, 443) and not parsed.username and not parsed.password and len(url) <= 500)
+    except ValueError:
+        return False
+
+
 def _open_article(url):
     request = urllib.request.Request(url, headers=ARTICLE_HEADERS)
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=tls_context()),
+    context = tls_context(max_tls12=urlsplit(url).hostname in TLS12_ARTICLE_HOSTS)
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context),
                                          _SameHostRedirectOnly())
     with opener.open(request, timeout=12) as response:
         if response.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
@@ -136,9 +163,7 @@ def fetch_article(url, open_url=_open_article):
 
 def inspect_report(threat_id, source_url, path=None, fetch=fetch_article):
     """Return relevant excerpts with page hash; unreviewed text is never detection evidence."""
-    parsed = urlsplit(source_url)
-    if (parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS or parsed.port not in (None, 443)
-            or parsed.username or parsed.password or len(source_url) > 500):
+    if not allowed_url(source_url):
         raise ValueError("report URL must be HTTPS on a configured publisher host")
     threat = get_threat(threat_id, path)
     if not threat:
@@ -174,5 +199,6 @@ def extract_report_html(threat_id, source_url, raw):
             "sha256": hashlib.sha256(raw).hexdigest(), "paragraphs_scanned": len(parser.parts),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
             "behavior_leads": behavior_leads.from_paragraphs(parser.parts),
+            "specific_details": behavior_leads.specific_details(parser.parts),
             "status": "research_leads_only",
             "next_step": "Read the linked full report, verify behavior and telemetry, then record a cited analyst observation."}

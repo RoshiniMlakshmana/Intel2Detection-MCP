@@ -34,3 +34,34 @@ def from_paragraphs(paragraphs):
                                "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."})
                 seen.add(behavior)
     return output
+
+
+ACTOR = re.compile(r"\b(?:attacker|adversar(?:y|ies)|threat actors?|actors?|MCA|intruders?|operators?|"
+                   r"exploit(?:ed|ing|ation)?)\b", re.I)
+ARTIFACT = re.compile(
+    r"(?:(?<![\w/])/(?:bin|sbin|tmp|var|etc|usr|netscaler|flash|home|opt|dev/shm)/[\w./-]+"
+    r"|\b[A-Za-z]:\[\w\. -]+"
+    r"|[\"'“‘]\.[\w.-]{2,}[\"'”’]"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:php|pl|sh|jsp|jspx|aspx?|exe|dll|ps1|py|elf|so|bat|vbs|lnk)\b"
+    r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
+    r"|\b[a-f0-9]{64}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{32}\b)", re.I)
+
+
+def specific_details(paragraphs, limit=5):
+    """Paragraphs that pair actor activity with a concrete artifact (path, file, IP, hash).
+
+    These are quoted claims to verify against their original publication,
+    never indicators: the tokens are returned exactly as written, only so the
+    analyst can see why the paragraph was flagged.
+    """
+    output = []
+    for index, paragraph in enumerate(paragraphs):
+        if NEGATION.search(paragraph) or not ACTOR.search(paragraph):
+            continue
+        tokens = list(dict.fromkeys(m.group(0) for m in ARTIFACT.finditer(paragraph)))
+        if tokens:
+            output.append({"paragraph": index + 1, "excerpt": paragraph[:700], "artifacts_as_written": tokens[:8],
+                           "status": "unverified_quoted_claim"})
+        if len(output) >= limit:
+            break
+    return output

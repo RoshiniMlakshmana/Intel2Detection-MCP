@@ -125,7 +125,10 @@ def _page(title, body, active=None, flash=None, path=None):
     def counted(label, key):
         return f'{label}<span class="count">{counts[key]}</span>'
     nav_items = [("/", "Sources"), ("/leads", "All leads"),
-                 ("/leads?status=research_needed", counted("Research needed", "research_needed")),
+                 ("/leads?queue=research_backlog", counted("Research backlog", "actionable_research_backlog")),
+                 ("/leads?queue=raw_unreviewed", counted("Raw leads", "raw_unreviewed_leads")),
+                 ("/leads?queue=research_completed",
+                  counted("Research completed", "research_completed_insufficient_detail")),
                  ("/rules?state=draft", counted("Draft rules", "draft_rules")),
                  ("/reviews", counted("Pending reviews", "pending_reviews")),
                  ("/rules?state=approved", counted("Approved rules", "approved_rules")),
@@ -240,13 +243,31 @@ def _lead_row(item):
             f'<td>{_e(item["title"][:110])}{kev}<br><small class="muted">{_e(item["kind"])}</small></td>'
             f'<td>{_e(item.get("source_name") or "unlabeled")}<br>{url_html}</td>'
             f'<td>{_fmt(item.get("published"))}</td><td>{_fmt(item.get("collected"))}</td>'
-            f'<td>{fetch_html}</td><td>{_e(item["status"].replace("_", " "))}</td><td>{_e(item["rule_state"])}</td></tr>')
+            f'<td>{fetch_html}</td><td>{_e(item["queue"].replace("_", " "))}<br>'
+            f'<small class="muted">{_e(item["status"].replace("_", " "))}</small></td><td>{_e(item["rule_state"])}</td></tr>')
+
+
+QUEUE_HEADINGS = {"research_backlog": "Research backlog", "raw_unreviewed": "Raw unreviewed leads",
+                  "research_completed": "Research completed", "evidence_recorded": "Evidence recorded"}
+QUEUE_LEDES = {
+    "research_backlog": ("Actionable: CISA KEV CVEs, reports citing a KEV CVE and reports with behavior leads that "
+                         "still need research. Polling and <code>run_research_pass()</code> read their cited pages "
+                         "automatically."),
+    "raw_unreviewed": ("Everything else that was collected (non-KEV CVEs, leak claims, general news). Untriaged "
+                       "collection, not a research to-do list."),
+    "research_completed": ("Cited sources were read automatically and none names a specific observable for a rule. "
+                           "Open a lead for the evidence, missing telemetry and the exposure/patch review offer."),
+}
+
+
+def _queue_lede(queue):
+    return f'<p class="lede"><b>{_e(QUEUE_HEADINGS[queue])}:</b> {QUEUE_LEDES[queue]}</p>' if queue in QUEUE_LEDES else ""
 
 
 def render_leads(path=None, qs=None):
     qs = qs or {}
-    params = {key: _qs_one(qs, key, "") for key in ("source", "date_from", "date_to", "date_field", "status",
-                                                    "rule_state", "kind")}
+    params = {key: _qs_one(qs, key, "") for key in ("source", "date_from", "date_to", "date_field", "queue",
+                                                    "status", "rule_state", "kind")}
     params["date_field"] = params["date_field"] or "published"
     try:
         result = workflow.list_leads(path, page=_qs_one(qs, "page", "1"), **params)
@@ -261,24 +282,27 @@ def render_leads(path=None, qs=None):
 <div><label>Date field</label><select name="date_field">{_options(date_fields, params["date_field"], None)}</select></div>
 <div><label>From</label><input type="date" name="date_from" value="{_e(params["date_from"])}"></div>
 <div><label>To</label><input type="date" name="date_to" value="{_e(params["date_to"])}"></div>
+<div><label>Queue</label><select name="queue">{_options([(v, v.replace("_", " ")) for v in workflow.QUEUES], params["queue"])}</select></div>
 <div><label>Status</label><select name="status">{_options([(v, v.replace("_", " ")) for v in workflow.STATUSES], params["status"])}</select></div>
 <div><label>Rule state</label><select name="rule_state">{_options([(v, v) for v in workflow.RULE_STATES], params["rule_state"])}</select></div>
 <div><label>Kind</label><select name="kind">{_options([(v, v) for v in workflow.KINDS], params["kind"])}</select></div>
 <div style="flex:0"><button type="submit">Apply</button></div></form>"""
     rows = "".join(_lead_row(item) for item in result["items"]) or \
         '<tr><td colspan="8"><small class="muted">No leads match these filters.</small></td></tr>'
-    heading = params["source"] or ("Research needed" if params["status"] == "research_needed" else "All leads")
+    heading = params["source"] or QUEUE_HEADINGS.get(params["queue"]) or (
+        "Research needed" if params["status"] == "research_needed" else "All leads")
     call_args = ", ".join(f"{k}='{v}'" for k, v in params.items() if v and not (k == "date_field" and v == "published"))
     body = f"""<p><a href="/">&larr; Sources</a></p><h1>{_e(heading)}</h1>
 <p class="lede">50 leads per page, newest publication first. The page size is a local display limit; upstream
 API paging (NVD, GitHub, feeds) is handled by the collectors. Each row keeps its publication date, collection
-date, original URL and that source's latest fetch status.</p>{error_html}{form}
+date, original URL and that source's latest fetch status.</p>{_queue_lede(params["queue"])}{error_html}{form}
 {_pager("/leads", params, result)}
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Source / URL</th><th>Published</th><th>Collected</th>
 <th>Latest fetch</th><th>Status</th><th>Rule</th></tr></thead><tbody>{rows}</tbody></table></div>
 {_pager("/leads", params, result)}
 {_mcp_hint(f"list_leads({call_args})" if call_args else "list_leads()")}"""
-    active = "/leads?status=research_needed" if params["status"] == "research_needed" and not params["source"] else "/leads"
+    only_queue = params["queue"] and not any(v for k, v in params.items() if k not in ("queue", "date_field"))
+    active = f"/leads?queue={params['queue']}" if only_queue else "/leads"
     return _page(heading, body, active=active, flash=_flash_from_query(qs), path=path)
 
 
@@ -318,6 +342,13 @@ def render_rules(path=None, qs=None):
                  flash=_flash_from_query(qs), path=path)
 
 
+def _research_rows(rows):
+    return "".join(f'<tr><td>{_safe_href(r["url"])}</td><td>' + ", ".join(
+        f'<a href="/threat?id={_url_escape(t)}">{_e(t)}</a>' for t in sorted(set((r["leads"] or "").split(",")))
+        if t) + f'</td><td>{_fmt(r["inspected_at"])}</td><td>{_e(r["detail"])}</td></tr>' for r in rows) or \
+        '<tr><td colspan="4"><small class="muted">None.</small></td></tr>'
+
+
 def render_errors(path=None, qs=None):
     data = workflow.source_errors(path)
     rows = "".join(f'<tr><td>{_e(a["name"])}</td><td><span class="badge {"stale" if a["status"] == "partial" else "error"}">'
@@ -337,6 +368,13 @@ not fully covered; the next poll resumes from the recorded checkpoint. Publisher
 <h2>Blocked or failed article fetches</h2><p class="lede">{_e(data["note"])}</p>
 <div class="table-wrap"><table><thead><tr><th>Lead</th><th>URL</th><th>Status</th><th>Attempts</th><th>Last error</th></tr></thead>
 <tbody>{articles}</tbody></table></div>
+<h2>Research pass: publisher blocks</h2>
+<div class="table-wrap"><table><thead><tr><th>URL</th><th>Leads</th><th>Checked</th><th>Detail</th></tr></thead>
+<tbody>{_research_rows(data["research_publisher_blocks"])}</tbody></table></div>
+<h2>Research pass: unreadable or failed pages</h2>
+<p class="lede">Fetched but no readable text (usually a script-rendered page), or a network error. Open in a browser.</p>
+<div class="table-wrap"><table><thead><tr><th>URL</th><th>Leads</th><th>Checked</th><th>Detail</th></tr></thead>
+<tbody>{_research_rows(data["research_unreadable_pages"])}</tbody></table></div>
 {_mcp_hint("source_errors()", "polling_status()")}"""
     return _page("Source errors", body, active="/errors", flash=_flash_from_query(qs or {}), path=path)
 
@@ -344,7 +382,8 @@ not fully covered; the next poll resumes from the recorded checkpoint. Publisher
 MCP_TOOL_GROUPS = (
     ("Leads and sources", ("list_sources", "list_leads", "source_errors", "polling_status", "poll_now",
                            "threat_details", "behavior_review_leads")),
-    ("Per-lead progression", ("lead_progression", "research_detection_plan", "inspect_cited_report",
+    ("Per-lead progression", ("lead_progression", "run_research_pass", "research_lead",
+                              "research_detection_plan", "inspect_cited_report",
                               "record_observed_behavior", "inventory_status", "declare_inventory_scope")),
     ("Drafting and checks", ("draft_detection", "draft_custom_detection", "check_detection_fit",
                              "test_rule_against_samples", "review_detection_for_client")),
@@ -516,8 +555,43 @@ def _hidden(**fields):
     return "".join(f'<input type="hidden" name="{_e(k)}" value="{_e(v)}">' for k, v in fields.items())
 
 
+def _research_html(research):
+    pages = "".join(
+        f'<li>{_safe_href(pg["url"])} <small class="muted">({_e(pg["role"].replace("_", " "))})</small> '
+        f'<span class="badge {RESEARCH_PAGE_BADGE.get(pg["status"], "unknown")}">{_e(pg["status"].replace("_", " "))}</span>'
+        f' <small class="muted">{_e(pg["inspected_at"])}</small>'
+        + (f'<br><small class="muted">{_e(pg["detail"])}</small>' if pg.get("detail") else "") + "</li>"
+        for pg in research.get("pages") or [])
+    evidence = "".join(f'<li>{_safe_href(e["url"])} &para;{e["paragraph"]}<br><small class="muted">'
+                       f'{_e(e["excerpt"][:420])}</small></li>' for e in research.get("evidence") or [])
+    parts = [f'<details open><summary>Pages inspected by the research pass ({len(research.get("pages") or [])})</summary>'
+             f'<ul class="bullets">{pages}</ul></details>']
+    if evidence:
+        parts.append(f'<details><summary>Cited excerpts ({len(research["evidence"])}); untrusted source text</summary>'
+                     f'<ul class="bullets">{evidence}</ul></details>')
+    quoted = research.get("specific_details_to_verify") or []
+    if quoted:
+        parts.append(f'<details open><summary>Quoted claims to verify in the original publication ({len(quoted)}); '
+                     'not indicators</summary><ul class="bullets">' + "".join(
+                         f'<li>{_safe_href(d["url"])} &para;{d["paragraph"]}<br><small class="muted">'
+                         f'{_e(d["excerpt"][:700])}</small></li>' for d in quoted) + "</ul></details>")
+    if research.get("missing_telemetry"):
+        parts.append("<p><b>Missing telemetry:</b></p>" + _bullets(research["missing_telemetry"]))
+    offer = research.get("exposure_patch_review")
+    if offer:
+        parts.append(f'<p><b>Exposure/patch review offered:</b> {_e(offer["question"])} {_e(offer["how"])} '
+                     f'<small class="muted">{_e(offer["note"])}</small></p>' + _bullets(offer["checks"]))
+    return "".join(parts)
+
+
+RESEARCH_PAGE_BADGE = {"inspected": "ok", "publisher_blocked": "error", "unreadable": "stale", "failed": "error",
+                       "not_allowlisted": "unknown"}
+
+
 def _step_extra(step, prog):
     key, parts = step["key"], []
+    if key == "research" and step.get("research"):
+        parts.append(_research_html(step["research"]))
     if key == "research" and step.get("untrusted_article_leads"):
         parts.append("<details><summary>Unverified article excerpts to check "
                      f"({len(step['untrusted_article_leads'])})</summary><ul class=\"bullets\">" + "".join(
@@ -768,7 +842,7 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json")
             elif parsed.path == "/api/leads":
                 args = {k: v[0] for k, v in qs.items() if k in ("source", "date_from", "date_to", "date_field",
-                                                                 "status", "rule_state", "kind", "page")}
+                                                                 "queue", "status", "rule_state", "kind", "page")}
                 self._send(200, json.dumps(workflow.list_leads(path, **args), default=str), "application/json")
             elif parsed.path == "/api/progression":
                 ident = (qs.get("id") or [""])[0]

@@ -10,11 +10,16 @@ import json
 import re
 from pathlib import Path
 
-from . import corroboration, environment, rule_repository, rules, soc_replay, store
+from . import corroboration, environment, research_pass, rule_repository, rules, soc_replay, store
 from .core import backfill_source_names, get_threat
 
 PAGE_SIZE = 50
 STATUSES = ("research_needed", "article_leads", "evidence_recorded")
+# Mutually exclusive work queues. research_backlog: high-priority leads (CISA
+# KEV, reports citing a KEV CVE, reports with behavior leads) still needing a
+# report read; raw_unreviewed: everything else nobody has looked at yet;
+# research_completed: sources read, insufficient detail for a detection.
+QUEUES = ("research_backlog", "raw_unreviewed", "research_completed", "evidence_recorded")
 RULE_STATES = ("none", "draft", "approved", "rejected")
 KINDS = ("advisory", "campaign", "ioc", "leak_claim", "research_update", "community_rule")
 DATE_FIELDS = ("published", "collected")
@@ -23,7 +28,8 @@ DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # MCP tool behind each dashboard tab, so the two surfaces stay discoverable
 # from each other (the dashboard prints these; README lists the same names).
 TAB_TOOLS = {
-    "research_needed": "list_leads(status='research_needed')",
+    "research_backlog": "list_leads(queue='research_backlog') / run_research_pass()",
+    "raw_unreviewed": "list_leads(queue='raw_unreviewed')",
     "draft_rules": "list_rules(state='draft')",
     "pending_reviews": "pending_corroboration_reviews()",
     "approved_rules": "list_rules(state='approved')",
@@ -34,6 +40,11 @@ _STATUS_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id
                "THEN 'evidence_recorded' "
                "WHEN EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) THEN 'article_leads' "
                "ELSE 'research_needed' END")
+_QUEUE_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id AND o.kind='analyst_observation') "
+              "THEN 'evidence_recorded' "
+              "WHEN EXISTS(SELECT 1 FROM research_outcomes ro WHERE ro.threat_id=t.id "
+              "AND ro.status='completed_insufficient_detail') THEN 'research_completed' "
+              f"WHEN {research_pass.BACKLOG_SQL} THEN 'research_backlog' ELSE 'raw_unreviewed' END")
 _RULE_STATE_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='approved') THEN 'approved' "
                    "WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='draft') THEN 'draft' "
                    "WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='rejected') THEN 'rejected' "
@@ -78,11 +89,12 @@ def source_attempts(path: Path | None = None):
 
 
 def list_leads(path: Path | None = None, source=None, date_from=None, date_to=None, date_field="published",
-               status=None, rule_state=None, kind=None, page=1, per_page=PAGE_SIZE):
+               status=None, rule_state=None, kind=None, page=1, per_page=PAGE_SIZE, queue=None):
     """One bounded page of leads with a total count; filters combine with AND."""
     store.initialize(path)
     backfill_source_names(path)
     status = _choice(status, STATUSES, "status")
+    queue = _choice(queue, QUEUES, "queue")
     rule_state = _choice(rule_state, RULE_STATES, "rule_state")
     kind = _choice(kind, KINDS, "kind")
     date_field = _choice(date_field or "published", DATE_FIELDS, "date_field")
@@ -99,16 +111,17 @@ def list_leads(path: Path | None = None, source=None, date_from=None, date_to=No
           SELECT t.id,t.title,t.kind,t.kev,t.published,t.first_seen AS collected,t.sources,
                  ({source_pick.format(col='e.source_name')}) AS source_name,
                  ({source_pick.format(col='e.source_url')}) AS source_url,
-                 {_STATUS_SQL} AS status, {_RULE_STATE_SQL} AS rule_state, {date_sql} AS filter_day
+                 {_STATUS_SQL} AS status, {_QUEUE_SQL} AS queue, {_RULE_STATE_SQL} AS rule_state, {date_sql} AS filter_day
           FROM threats t
           WHERE (:source IS NULL OR EXISTS(SELECT 1 FROM evidence e WHERE e.threat_id=t.id
                  AND e.kind='source_fact' AND e.source_name=:source))
             AND (:kind IS NULL OR t.kind=:kind))
         SELECT * FROM base WHERE (:status IS NULL OR status=:status)
+          AND (:queue IS NULL OR queue=:queue)
           AND (:rule_state IS NULL OR rule_state=:rule_state)
           AND (:date_from IS NULL OR filter_day>=:date_from)
           AND (:date_to IS NULL OR filter_day<=:date_to)"""
-    params = {"source": source, "kind": kind, "status": status, "rule_state": rule_state,
+    params = {"source": source, "kind": kind, "status": status, "queue": queue, "rule_state": rule_state,
               "date_from": date_from, "date_to": date_to}
     with store.connection(path) as db:
         total = db.execute(f"SELECT COUNT(*) FROM ({query})", params).fetchone()[0]
@@ -130,7 +143,7 @@ def list_leads(path: Path | None = None, source=None, date_from=None, date_to=No
     return {"total": total, "page": page, "per_page": per_page, "pages": pages,
             "has_previous": page > 1, "has_next": page < pages,
             "filters": {"source": source, "date_from": date_from, "date_to": date_to, "date_field": date_field,
-                        "status": status, "rule_state": rule_state, "kind": kind},
+                        "status": status, "queue": queue, "rule_state": rule_state, "kind": kind},
             "items": items,
             "note": "Display page of this local database (max 50 per page); unrelated to upstream API pagination."}
 
@@ -163,22 +176,50 @@ def source_errors(path: Path | None = None):
         articles = [dict(r) for r in db.execute(
             "SELECT threat_id,source_url,status,attempts,last_error FROM article_inspection_queue "
             "WHERE status IN ('publisher_blocked','failed') ORDER BY threat_id LIMIT 100")]
+        research = [dict(r) for r in db.execute(
+            "SELECT url,status,MAX(detail) AS detail,MAX(inspected_at) AS inspected_at,"
+            "GROUP_CONCAT(threat_id) AS leads FROM research_page_inspections "
+            "WHERE status IN ('publisher_blocked','unreadable','failed') "
+            "GROUP BY url,status ORDER BY status,url LIMIT 100")]
     return {"sources": sorted(items, key=lambda a: a["name"]), "article_fetches": articles,
+            "research_publisher_blocks": [r for r in research if r["status"] == "publisher_blocked"],
+            "research_unreadable_pages": [r for r in research if r["status"] != "publisher_blocked"],
             "note": "A publisher block is reported as-is; read that article in a browser and record behavior manually."}
 
 
 def workflow_counts(path: Path | None = None):
+    """Tab counts. The four lead queues are disjoint and add up to leads_total."""
     store.initialize(path)
     with store.connection(path) as db:
-        research_needed = db.execute(
-            "SELECT COUNT(*) FROM threats t WHERE NOT EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id "
-            "AND o.kind='analyst_observation')").fetchone()[0]
+        queues = {row[0]: row[1] for row in db.execute(
+            f"SELECT {_QUEUE_SQL} AS queue, COUNT(*) FROM threats t GROUP BY queue")}
         drafts = db.execute("SELECT COUNT(*) FROM rules WHERE status='draft'").fetchone()[0]
         approved = db.execute("SELECT COUNT(*) FROM rules WHERE status='approved'").fetchone()[0]
+        outcomes = {row[0]: row[1] for row in db.execute(
+            "SELECT status,COUNT(*) FROM research_outcomes ro WHERE NOT EXISTS(SELECT 1 FROM evidence o "
+            "WHERE o.threat_id=ro.threat_id AND o.kind='analyst_observation') GROUP BY status")}
     errors = source_errors(path)
-    return {"research_needed": research_needed, "draft_rules": drafts,
+    return {"actionable_research_backlog": queues.get("research_backlog", 0),
+            "raw_unreviewed_leads": queues.get("raw_unreviewed", 0),
+            "research_completed_insufficient_detail": queues.get("research_completed", 0),
+            "evidence_recorded": queues.get("evidence_recorded", 0),
+            "leads_total": sum(queues.values()),
+            "backlog_detail": {
+                "awaiting_analyst_verification": outcomes.get("observables_need_analyst_verification", 0),
+                "no_readable_source": outcomes.get("no_readable_source", 0)},
+            "research_publisher_blocked_pages": len(errors["research_publisher_blocks"]),
+            "draft_rules": drafts,
             "pending_reviews": corroboration.pending_count(path), "approved_rules": approved,
-            "source_errors": len(errors["sources"]) + len(errors["article_fetches"]),
+            "source_errors": len(errors["sources"]) + len(errors["article_fetches"])
+            + len(errors["research_publisher_blocks"]),
+            "definitions": {
+                "actionable_research_backlog": ("CISA KEV CVEs, reports citing a KEV CVE, and reports with behavior "
+                                                "leads that still need research; run_research_pass works this queue."),
+                "raw_unreviewed_leads": ("All other collected leads (non-KEV CVEs, leak claims, general news); "
+                                         "not triaged, and not a research to-do list."),
+                "research_completed_insufficient_detail": ("Sources were read automatically and no specific cited "
+                                                           "observable supports a rule; an exposure/patch review "
+                                                           "is offered instead.")},
             "mcp_tools": TAB_TOOLS}
 
 
@@ -238,13 +279,29 @@ def lead_progression(threat_id, path: Path | None = None):
     source_label = {"advisory": "vulnerability record", "campaign": "article/feed entry", "ioc": "IOC feed entry",
                     "leak_claim": "leak-site claim", "research_update": "repository update",
                     "community_rule": "community rule update"}.get(threat["kind"], threat["kind"])
+    research = research_pass.status(ident, path)
+    research_view = ({key: research.get(key) for key in (
+        "status", "completed_at", "summary", "pages", "evidence", "observables_found",
+        "specific_details_to_verify", "publisher_blocked",
+        "unreadable", "missing_for_detection", "missing_telemetry", "exposure_patch_review")}
+        if research["status"] != "not_researched" else None)
     if observations:
         step("research", "Research needed", "done",
              f"Research recorded: {len(observations)} analyst-verified observation(s).")
+    elif research["status"] == "completed_insufficient_detail":
+        step("research", "Research needed", "done",
+             f"{research['summary']} Completed {research['completed_at']}.", research=research_view,
+             untrusted_article_leads=article_leads)
+    elif research["status"] in ("observables_need_analyst_verification", "no_readable_source"):
+        step("research", "Research needed", "current", f"{research['summary']} ({research['completed_at']})",
+             missing=" ".join(research["missing_for_detection"]) or
+             "Verify the behavior leads in the full report, then record a cited analyst observation.",
+             research=research_view, untrusted_article_leads=article_leads)
     else:
         step("research", "Research needed", "current",
              f"Only a {source_label} is collected ({len(threat['sources'])} cited source(s)); no behavior has been verified.",
-             missing=("Read a cited technical report and verify a concrete behavior. A CVE ID, headline or NVD "
+             missing=("Read a cited technical report and verify a concrete behavior (run_research_pass and "
+                      "research_detection_plan read cited pages automatically). A CVE ID, headline or NVD "
                       "description is not behavior evidence and cannot produce a rule."),
              untrusted_article_leads=article_leads)
 
@@ -373,6 +430,7 @@ def lead_progression(threat_id, path: Path | None = None):
     current = next((s for s in steps if s["state"] in ("current", "blocked")), None)
     return {"threat_id": ident, "title": threat["title"], "kind": threat["kind"],
             "published": threat.get("published"), "collected": threat.get("first_seen"),
+            "research_status": research["status"],
             "sources": threat["sources"], "steps": steps,
             "next_step": current["key"] if current else "complete",
             "attention": [s["key"] for s in steps if s["state"] == "attention"],

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import core, corroboration, custom_rules, dashboard_data, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, workflow
+from . import core, corroboration, custom_rules, dashboard_data, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow
 
 mcp = MCPServer("ThreatResearch")
 
@@ -55,10 +55,24 @@ def list_sources() -> dict:
 
 @mcp.tool()
 def list_leads(source: str = "", date_from: str = "", date_to: str = "", date_field: str = "published",
-               status: str = "", rule_state: str = "", kind: str = "", page: int = 1, per_page: int = 50) -> dict:
-    """Page through collected leads (max 50 per page) with a total count. Filters: source (a list_sources name), date_from/date_to (YYYY-MM-DD) on date_field published|collected, status research_needed|article_leads|evidence_recorded, rule_state none|draft|approved|rejected, kind. Each item keeps publication date, collection date, URL and that source's latest fetch status. This is local display paging, not upstream API paging."""
+               status: str = "", rule_state: str = "", kind: str = "", page: int = 1, per_page: int = 50,
+               queue: str = "") -> dict:
+    """Page through collected leads (max 50 per page) with a total count. Filters: queue research_backlog|raw_unreviewed|research_completed|evidence_recorded (research_backlog is the actionable to-do list; raw_unreviewed is untriaged collection, not work to report), source (a list_sources name), date_from/date_to (YYYY-MM-DD) on date_field published|collected, status research_needed|article_leads|evidence_recorded, rule_state none|draft|approved|rejected, kind. Each item keeps publication date, collection date, URL and that source's latest fetch status. To work the backlog, call run_research_pass rather than asking the analyst whether to read a report."""
     return workflow.list_leads(source=source, date_from=date_from, date_to=date_to, date_field=date_field,
-                               status=status, rule_state=rule_state, kind=kind, page=page, per_page=per_page)
+                               status=status, rule_state=rule_state, kind=kind, page=page, per_page=per_page,
+                               queue=queue)
+
+
+@mcp.tool()
+def run_research_pass(max_leads: int = 4) -> dict:
+    """Read-only; run it without asking the analyst for permission. Researches the highest-priority backlog leads (CISA KEV CVEs first, then reports citing them): automatically opens the accessible cited reports, primary vendor advisories, CISA pages and linked vendor guidance, records every page inspected and when, lists publisher blocks and unreadable pages separately, and concludes per lead: completed_insufficient_detail (with evidence, missing telemetry and an exposure/patch review offer), observables_need_analyst_verification, or no_readable_source. Never records evidence, drafts, approves or computes a numeric risk score."""
+    return research_pass.run_pass(max_leads_=max(1, min(int(max_leads), 20)))
+
+
+@mcp.tool()
+def research_lead(threat_id: str, refresh: bool = False) -> dict:
+    """Read-only; run it without asking. Research one lead now (or return its stored result): pages inspected with times, publisher blocks, cited excerpts, observables found, missing detection detail and telemetry, and an exposure/patch review offer when no rule is supportable. refresh=True re-reads the sources."""
+    return research_pass.research_lead(threat_id, refresh=refresh)
 
 
 @mcp.tool()
@@ -69,7 +83,7 @@ def lead_progression(threat_id: str) -> dict:
 
 @mcp.tool()
 def workflow_counts() -> dict:
-    """Counts behind the dashboard tabs: research needed, draft rules, pending reviews, approved rules, source errors; plus the MCP tool for each tab."""
+    """Counts behind the dashboard tabs. Lead queues are disjoint: actionable_research_backlog (high-priority leads still needing research), raw_unreviewed_leads (untriaged collection; not a to-do list), research_completed_insufficient_detail, evidence_recorded; plus draft rules, pending reviews, approved rules, source errors, research publisher blocks and the MCP tool for each tab."""
     return workflow.workflow_counts()
 
 
@@ -81,7 +95,7 @@ def list_rules(state: str = "draft", page: int = 1) -> dict:
 
 @mcp.tool()
 def source_errors() -> dict:
-    """List sources whose latest fetch failed or was partial, and article fetches blocked by publishers; errors are reported as observed."""
+    """List sources whose latest fetch failed or was partial, article fetches blocked by publishers, and research-pass pages that were publisher-blocked or unreadable; errors are reported as observed."""
     return workflow.source_errors()
 
 
@@ -223,7 +237,7 @@ def draft_detection(threat_id: str, evidence_id: int) -> dict:
 
 @mcp.tool()
 def research_detection_plan(threat_id: str) -> dict:
-    """Give Claude cited CVE/campaign facts, distinct research pointers, verified observations and specific missing inputs. If behavior is unknown, say research needed; do not infer a signature from a CVE title."""
+    """Give Claude cited CVE/campaign facts, the automatic research result (cited pages read without asking the analyst, publisher blocks, excerpts, missing detail), verified observations and specific missing inputs. If no cited observable exists, report research completed with insufficient detail and offer an exposure/patch review; never infer a signature, indicator or score from a CVE title."""
     threat = core.get_threat(threat_id)
     if not threat and core.sources.CVE.fullmatch(threat_id.upper()):
         try:
@@ -241,17 +255,26 @@ def research_detection_plan(threat_id: str) -> dict:
             "SELECT threat_id,source_url,behavior,paragraph,excerpt,status FROM article_behavior_leads "
             "WHERE threat_id IN (" + ",".join("?" for _ in related[:31]) + ") "
             "ORDER BY first_seen DESC LIMIT 20", related[:31])]
+    try:
+        automatic_research = research_pass.research_lead(threat_id)
+    except ValueError as exc:
+        automatic_research = {"status": "error", "summary": str(exc)[:200]}
     risk = (environment.risk_from_assets(threat_id) if core.sources.CVE.fullmatch(threat_id.upper())
             and environment.status().get("configured") else
             {"score": None, "priority": "verify_client_assets", "reason": "No verified client asset inventory is configured."})
     return {"threat_id": threat_id, "title": threat["title"], "summary": threat["summary"],
             "sources": threat["sources"], "related_reports": threat.get("related_reports", []),
-            "research": view, "unverified_article_behavior_leads": leads, "client_risk": risk,
+            "research": view, "automatic_research": automatic_research,
+            "unverified_article_behavior_leads": leads, "client_risk": risk,
             "questions_for_analyst": [
                 "Which cited technical report or tested local observation confirms the behavior?",
                 "What specific fields and literal values identify it in your process, network or MCP audit logs?",
                 "Which assets are confirmed affected, and what benign activity might match?"],
-            "next_step": "Use draft_custom_detection after the analyst verifies a claim and supplies 2-8 bounded predicates; otherwise research_needed."}
+            "next_step": ("Research completed with insufficient detection detail: report the evidence and missing "
+                          "telemetry, and offer the exposure/patch review. Do not draft a rule."
+                          if automatic_research.get("status") == "completed_insufficient_detail" else
+                          "Use draft_custom_detection after the analyst verifies a claim and supplies 2-8 bounded "
+                          "predicates; otherwise research_needed.")}
 
 
 @mcp.tool()

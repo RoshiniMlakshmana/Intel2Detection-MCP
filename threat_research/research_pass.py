@@ -1,0 +1,500 @@
+"""Bounded, prioritized, read-only research pass over high-priority leads.
+
+Reading a public page that a collected record already cites is read-only
+research, so it runs automatically (from polling, from the MCP tools and from
+research_detection_plan) without asking the analyst first. For each lead it
+opens, within fixed budgets:
+
+1. primary references from the CVE/CNA record on primary vendor hosts, and
+   the lead's CISA KEV entry;
+2. CISA and vendor guidance linked from those pages, and reports that cite
+   the CVE (or, for a report lead, its own article).
+
+Every page tried is recorded with its outcome and time. Publisher blocks,
+unreadable (script-rendered) pages and hosts outside the allowlist are kept
+apart from pages that were actually read. The conclusion is one of:
+
+- completed_insufficient_detail: the sources were read and none names a
+  specific observable a rule could be built on. Research is done; the lead
+  leaves the backlog and an exposure/patch review is offered instead.
+- observables_need_analyst_verification: a page contains a lexical behavior
+  lead. It is stored as an untrusted article lead for the analyst to verify.
+- no_readable_source: nothing primary could be read automatically; the lead
+  stays in the backlog with the exact URLs to open in a browser.
+
+Nothing here records an analyst observation, drafts or approves a rule, or
+computes a numeric environment risk score.
+"""
+
+import html
+import json
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from . import environment, lead_queue, report_inspection, sources, store
+from .core import get_threat, now
+
+MAX_LEADS = 4
+MAX_PAGES_PER_LEAD = 14
+MAX_FETCHES_PER_PASS = 40
+MAX_LINKED_GUIDANCE = 3
+MAX_EVIDENCE = 15
+NO_SOURCE_RETRY = timedelta(hours=12)
+KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+# The collected record itself; its facts are already stored as source facts.
+RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
+PRIMARY_ROLES = ("primary_advisory", "kev_entry", "cisa_guidance", "linked_guidance")
+ROLE_ORDER = {"primary_advisory": 0, "kev_entry": 1, "cisa_guidance": 2, "linked_guidance": 3, "cited_report": 4}
+HREF = re.compile(rb"""href\s*=\s*["'](https://[^"'<>\s]{1,500})["']""", re.I)
+
+# High-priority leads that need a report read before anything else can
+# happen: CISA KEV advisories, reports that cite a KEV CVE, and reports whose
+# text already produced a behavior lead. Everything else is a raw lead.
+BACKLOG_SQL = ("((t.kind='advisory' AND t.kev=1) "
+               "OR (t.kind='campaign' AND EXISTS(SELECT 1 FROM report_cves rc JOIN threats c ON c.id=rc.cve_id "
+               "WHERE rc.report_id=t.id AND c.kev=1)) "
+               "OR EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id))")
+NO_OBSERVATION_SQL = ("NOT EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id "
+                      "AND o.kind='analyst_observation')")
+
+
+def max_leads():
+    value = int(os.environ.get("RESEARCH_PASS_MAX_LEADS", str(MAX_LEADS)))
+    if not 1 <= value <= 20:
+        raise ValueError("RESEARCH_PASS_MAX_LEADS must be 1-20")
+    return value
+
+
+def _clean_url(url):
+    """Drop fragments, tracking parameters and a trailing slash so one page is fetched once.
+
+    Publishers link the same page with and without the slash (observed: the
+    Citrix bulletin from two CISA pages); fetch_article retries the slash
+    form itself when a publisher insists on it.
+    """
+    parts = urlsplit(url)
+    query = urlencode([(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                       if not k.lower().startswith("utm_")])
+    path = parts.path.rstrip("/") if len(parts.path) > 1 else parts.path
+    return urlunsplit(parts._replace(path=path, query=query, fragment=""))
+
+
+def _host(url):
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _reference_role(url):
+    host = _host(url)
+    if host in RECORD_HOSTS or url == KEV_CATALOG:
+        return None
+    if url.startswith(KEV_CATALOG + "?"):
+        return "kev_entry"
+    if host == "www.cisa.gov":
+        return "cisa_guidance"
+    if host in report_inspection.PRIMARY_HOSTS:
+        return "primary_advisory"
+    return "cited_report"
+
+
+def _candidates(threat, path):
+    """(url, role, via, owner) in priority order; owner is the lead the page belongs to."""
+    seen, out = set(), []
+
+    def add(url, role, via, owner):
+        if role and url not in seen and isinstance(url, str) and url.startswith("https://"):
+            seen.add(url)
+            out.append({"url": url, "role": role, "via": via, "owner": owner})
+
+    for url in threat["sources"]:
+        add(url, _reference_role(url), None, threat["id"])
+    for item in threat["evidence"]:
+        if item["kind"] in ("source_fact", "reference_pointer"):
+            add(item["source_url"], _reference_role(item["source_url"]), None, threat["id"])
+    for report in threat.get("related_reports", []):
+        for url in report["sources"]:
+            role = "cisa_guidance" if _host(url) == "www.cisa.gov" else "cited_report"
+            add(url, role, report["id"], report["id"])
+    return sorted(out, key=lambda c: ROLE_ORDER[c["role"]])
+
+
+def _linked_guidance(raw, from_url):
+    """Vendor guidance linked from a primary page (never CISA site navigation)."""
+    found = []
+    for match in HREF.findall(raw[:report_inspection.MAX_BYTES]):
+        url = _clean_url(html.unescape(match.decode("utf-8", errors="replace")))
+        host = _host(url)
+        if (host in report_inspection.PRIMARY_HOSTS and host != "www.cisa.gov" and url != from_url
+                and report_inspection.allowed_url(url) and url not in found):
+            found.append(url)
+    return found
+
+
+def _fetch(url, fetch, cache, budget):
+    """One network fetch per URL per pass; returns None when the pass budget is spent."""
+    if url in cache:
+        return cache[url]
+    if not report_inspection.allowed_url(url):
+        cache[url] = {"status": "not_allowlisted", "inspected_at": now(), "raw": None,
+                      "detail": "Host is not a configured publisher or primary vendor host; not fetched automatically."}
+        return cache[url]
+    if budget["remaining"] <= 0:
+        return None
+    budget["remaining"] -= 1
+    budget["fetched"] += 1
+    try:
+        cache[url] = {"status": "fetched", "raw": fetch(url), "inspected_at": now(), "detail": None}
+    except ValueError as exc:
+        blocked = "publisher blocked" in str(exc)
+        cache[url] = {"status": "publisher_blocked" if blocked else "failed", "raw": None,
+                      "inspected_at": now(), "detail": str(exc)[:200]}
+    except (OSError, UnicodeError) as exc:
+        cache[url] = {"status": "failed", "raw": None, "inspected_at": now(), "detail": str(exc)[:200]}
+    return cache[url]
+
+
+def _read(threat_id, candidate, fetched):
+    """Turn a fetch into a page record plus (for readable pages) its extraction."""
+    record = {"url": candidate["url"], "role": candidate["role"], "via": candidate["via"],
+              "status": fetched["status"], "detail": fetched["detail"], "sha256": None,
+              "paragraphs_scanned": None, "inspected_at": fetched["inspected_at"]}
+    if fetched["status"] != "fetched":
+        return record, None
+    try:
+        page = report_inspection.extract_report_html(threat_id, candidate["url"], fetched["raw"])
+    except ValueError as exc:
+        record.update(status="unreadable", detail=str(exc)[:200])
+        return record, None
+    record.update(sha256=page["sha256"], paragraphs_scanned=page["paragraphs_scanned"])
+    if not page["paragraphs_scanned"]:
+        record.update(status="unreadable",
+                      detail="No readable article text (the page is likely rendered by script); open it in a browser.")
+        return record, None
+    record["status"] = "inspected"
+    return record, page
+
+
+def _save_page(db, threat_id, record):
+    db.execute("INSERT INTO research_page_inspections (threat_id,url,role,via,status,detail,sha256,"
+               "paragraphs_scanned,inspected_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(threat_id,url) DO UPDATE SET "
+               "role=excluded.role,via=excluded.via,status=excluded.status,detail=excluded.detail,"
+               "sha256=excluded.sha256,paragraphs_scanned=excluded.paragraphs_scanned,"
+               "inspected_at=excluded.inspected_at",
+               (threat_id, record["url"], record["role"], record["via"], record["status"], record["detail"],
+                record["sha256"], record["paragraphs_scanned"], record["inspected_at"]))
+
+
+def _keywords(threat):
+    words = {threat["id"].upper(), *(c.upper() for c in threat.get("mentioned_cves", []))}
+    words.update(w.upper() for item in threat.get("affected", []) for w in item.split() if len(w) > 3)
+    return words
+
+
+def _excerpts(threat, record, page, limit=3):
+    """Excerpts that name the lead (its CVE, product or cited CVEs); site boilerplate is dropped."""
+    words = _keywords(threat)
+    relevant = [e for e in page["excerpts"] if any(w in e["excerpt"].upper() for w in words)]
+    if not relevant and not sources.CVE.fullmatch(threat["id"]):
+        relevant = page["excerpts"][:2]  # a report lead's own page is relevant by citation
+    ranked = sorted(relevant, key=lambda e: threat["id"].upper() not in e["excerpt"].upper())
+    return [{"url": record["url"], "role": record["role"], "paragraph": e["paragraph"], "excerpt": e["excerpt"]}
+            for e in ranked[:limit]]
+
+
+SHARE_HOSTS = {"twitter.com", "x.com", "facebook.com", "linkedin.com", "reddit.com", "t.me", "google.com",
+               "feedburner.com", "youtube.com", "bsky.app", "mastodon.social", "whatsapp.com"}
+
+
+def _original_candidates(raw, page, from_url):
+    """Links on a quoting page to the publisher it names (e.g. a research firm's own post).
+
+    Only hosts whose name appears in the page's relevant text qualify. They
+    are listed, never fetched: these hosts are outside the fetch allowlist.
+    """
+    text = " ".join([e["excerpt"] for e in page["excerpts"]] +
+                    [d["excerpt"] for d in page.get("specific_details", [])]).lower()
+    own, found = _host(from_url), []
+    for match in HREF.findall(raw[:report_inspection.MAX_BYTES]):
+        url = _clean_url(html.unescape(match.decode("utf-8", errors="replace")))
+        host = _host(url)
+        labels = host.split(".")
+        name = labels[-2] if len(labels) >= 2 else ""
+        if (host and host != own and host not in report_inspection.ALLOWED_HOSTS and len(name) >= 5
+                and ".".join(labels[-2:]) not in SHARE_HOSTS and name in text and url not in found):
+            found.append(url)
+    return found[:5]
+
+
+def _details(record, page, raw=b""):
+    details = page.get("specific_details", [])
+    originals = _original_candidates(raw, page, record["url"]) if details and raw else []
+    return [{"url": record["url"], "role": record["role"], **d,
+             "original_publication_candidates": originals} for d in details]
+
+
+def _cves_for(threat):
+    if sources.CVE.fullmatch(threat["id"]):
+        return [threat["id"]]
+    return threat.get("mentioned_cves", [])
+
+
+def _exposure_offer(threat, path, pending_verification=False):
+    cves = _cves_for(threat)
+    if not cves:
+        return None
+    env = environment.status(path)
+    has_assets = bool(env.get("configured") and env.get("assets"))
+    return {
+        "offered": True,
+        "question": ("While the leads above are verified, run an exposure/patch review?" if pending_verification else
+                     "No detection can be justified from these sources. Run an exposure/patch review instead?"),
+        "cves": cves,
+        "checks": ["Which assets run the affected products named in the vendor advisory",
+                   "Their installed versions against the fixed versions the vendor lists",
+                   "Whether those assets are internet-exposed",
+                   "Whether the fix or vendor mitigation has been applied, and when"],
+        "affected_products": threat.get("affected", []),
+        "vendor_statement": ({"text": threat["summary"][:600], "source": threat["sources"][0] if threat["sources"] else None}
+                             if sources.CVE.fullmatch(threat["id"]) else None),
+        "how": (f"risk_from_asset_inventory('{cves[0]}') uses the {env['assets']} confirmed asset(s) on file."
+                if has_assets else
+                "No confirmed asset inventory is configured (environment_setup_status); list the affected "
+                "assets, versions and exposure, or import an asset snapshot, before any risk is scored."),
+        "numeric_risk_score": None,
+        "note": "No numeric environment risk score is given without confirmed asset data.",
+    }
+
+
+def _conclude(threat, pages, evidence, observables, details, path):
+    is_cve = bool(sources.CVE.fullmatch(threat["id"]))
+    # For a CVE, only primary vendor/CISA pages decide; leads and claims found
+    # in other reports stay on those report leads (which go to analyst
+    # verification) and are listed here for context. For a report lead, its
+    # own cited page is the source.
+    decisive = [d for d in details if d["role"] in PRIMARY_ROLES or not is_cve]
+    quoted = [d for d in details if d not in decisive]
+    decisive_leads = [o for o in observables if o["role"] in PRIMARY_ROLES or not is_cve]
+    inspected = [p for p in pages if p["status"] == "inspected"]
+    read_primary = [p for p in inspected if p["role"] in PRIMARY_ROLES]
+    blocked = [p for p in pages if p["status"] == "publisher_blocked"]
+    unreadable = [p for p in pages if p["status"] in ("unreadable", "failed")]
+    outside = [p for p in pages if p["status"] == "not_allowlisted"]
+    if decisive_leads or decisive:
+        status = "observables_need_analyst_verification"
+        summary = (f"{len(decisive_leads)} behavior lead(s) and {len(decisive)} paragraph(s) with specific artifacts "
+                   f"found in {len(inspected)} inspected page(s). They are untrusted source text until an analyst "
+                   "verifies them in the full report and its original publication.")
+    elif read_primary if is_cve else inspected:
+        status = "completed_insufficient_detail"
+        summary = (f"Research completed: {len(inspected)} page(s) inspected ({len(read_primary)} primary vendor/CISA). "
+                   "Insufficient detection detail: " +
+                   ("no primary vendor or CISA source names a specific observable a rule could use." if is_cve else
+                    "the report names no specific observable a rule could use."))
+        if quoted:
+            summary += (f" {len(quoted)} paragraph(s) in secondary reports quote third-party findings with specific "
+                        "artifacts; they are listed for verification against the original publication and were not "
+                        "turned into indicators or rules.")
+        if observables:
+            summary += (f" {len(observables)} lexical behavior lead(s) in secondary reports were queued on those "
+                        "reports for analyst verification.")
+    else:
+        status = "no_readable_source"
+        summary = ("No primary vendor/CISA page could be read automatically." if is_cve else
+                   "The cited report could not be read automatically.") + " Open the listed URLs in a browser."
+    manual = [p["url"] for p in blocked + unreadable if p["role"] in PRIMARY_ROLES or not is_cve]
+    missing = []
+    if status == "completed_insufficient_detail":
+        missing.append("A specific, cited observable attributed to the exploitation or intrusion (for example a "
+                       "process or command line, a file path or name, an HTTP request pattern, or a network "
+                       "indicator) from a primary vendor, CISA or original-research source. None of the inspected "
+                       "primary pages provides one.")
+    if quoted or decisive:
+        originals = list(dict.fromkeys(u for d in details for u in d.get("original_publication_candidates", [])))
+        missing.append("Verify the quoted claims under specific_details_to_verify in the original researcher's "
+                       "publication" + (f" (linked from the quoting report: {', '.join(originals)})" if originals else "")
+                       + "; only then record them (record_observed_behavior or draft_custom_detection) citing that "
+                       "publication. Until then they are not detection evidence.")
+    if manual:
+        missing.append("Automation could not read: " + ", ".join(manual) +
+                       ". Open these in a browser; if one lists concrete indicators, record them with "
+                       "record_observed_behavior or draft_custom_detection.")
+    env = environment.status(path)
+    telemetry = ["Cannot be determined yet: required telemetry follows from a cited observable, and none was found."
+                 if not decisive_leads else
+                 "Follows from the behavior once an analyst verifies it; see the lead's behavior template.",
+                 (f"Configured telemetry families: {', '.join(env['telemetry_families'])}; none can be matched until "
+                  "an observable is cited.") if env.get("configured") else
+                 "No telemetry profile is configured for this installation, so the collected log sources are also unknown."]
+    return {
+        "status": status, "summary": summary,
+        "pages_inspected": len(inspected),
+        "evidence": evidence[:MAX_EVIDENCE],
+        "observables_found": observables,
+        "specific_details_to_verify": details[:10],
+        "publisher_blocked": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in blocked],
+        "unreadable": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in unreadable],
+        "not_fetched_host_not_allowlisted": [p["url"] for p in outside],
+        "missing_for_detection": missing,
+        "missing_telemetry": telemetry,
+        "exposure_patch_review": _exposure_offer(threat, path, status == "observables_need_analyst_verification"),
+        "rule_drafting": ("Not drafted. Drafting needs a cited, analyst-verified observation "
+                          "(record_observed_behavior, then draft_detection or draft_custom_detection), and approval "
+                          "needs the analyst's explicit 'implement this rule'. Nothing was drafted or approved."),
+    }
+
+
+def _store_outcome(db, threat_id, conclusion):
+    db.execute("INSERT INTO research_outcomes (threat_id,status,completed_at,detail) VALUES (?,?,?,?) "
+               "ON CONFLICT(threat_id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at,"
+               "detail=excluded.detail", (threat_id, conclusion["status"], now(), json.dumps(conclusion)))
+
+
+def _research(threat_id, path, fetch, cache, budget):
+    threat = get_threat(threat_id, path)
+    if not threat:
+        raise ValueError("unknown threat")
+    ident = threat["id"]
+    queue = _candidates(threat, path)
+    pages, evidence, observables, details, owned = [], [], [], [], {}
+    linked_added = 0
+    index = 0
+    while index < len(queue) and len(pages) < MAX_PAGES_PER_LEAD:
+        candidate = queue[index]
+        index += 1
+        fetched = _fetch(candidate["url"], fetch, cache, budget)
+        if fetched is None:
+            break
+        record, page = _read(ident, candidate, fetched)
+        pages.append(record)
+        if candidate["owner"] != ident:
+            owned.setdefault(candidate["owner"], []).append((record, page))
+        if not page:
+            continue
+        evidence.extend(_excerpts(threat, record, page))
+        details.extend(_details(record, page, fetched["raw"]))
+        for lead in page["behavior_leads"]:
+            observables.append({"url": record["url"], "role": record["role"], **lead})
+        lead_queue.store_page_leads(candidate["owner"], candidate["url"], page, path)
+        if candidate["role"] in ("primary_advisory", "kev_entry", "cisa_guidance"):
+            known = {_clean_url(c["url"]) for c in queue}
+            for url in _linked_guidance(fetched["raw"], candidate["url"]):
+                if linked_added >= MAX_LINKED_GUIDANCE:
+                    break
+                if url not in known:
+                    queue.append({"url": url, "role": "linked_guidance", "via": candidate["url"], "owner": ident})
+                    linked_added += 1
+            queue[index:] = sorted(queue[index:], key=lambda c: ROLE_ORDER[c["role"]])
+    conclusion = _conclude(threat, pages, evidence, observables, details, path)
+    with store.connection(path) as db:
+        # A re-read replaces this lead's page set, so it never shows stale pages.
+        db.execute("DELETE FROM research_page_inspections WHERE threat_id=?", (ident,))
+        for record in pages:
+            _save_page(db, ident, record)
+        _store_outcome(db, ident, conclusion)
+        # A report read while researching its CVE is itself researched: it
+        # has exactly that one cited page, so conclude it from that page.
+        for owner, results in owned.items():
+            for record, _ in results:
+                _save_page(db, owner, {**record, "role": "cited_report", "via": None})
+    for owner, results in owned.items():
+        report = get_threat(owner, path)
+        if report and not any(e["kind"] == "analyst_observation" for e in report["evidence"]):
+            report_pages = [{**r, "role": "cited_report"} for r, _ in results]
+            report_evidence = [x for r, p in results if p for x in _excerpts(report, r, p)]
+            report_obs = [{"url": r["url"], "role": "cited_report", **lead}
+                          for r, p in results if p for lead in p["behavior_leads"]]
+            report_details = [{**d, "role": "cited_report"} for r, p in results if p
+                              for d in _details(r, p, cache[r["url"]]["raw"])]
+            with store.connection(path) as db:
+                _store_outcome(db, owner, _conclude(report, report_pages, report_evidence, report_obs,
+                                                    report_details, path))
+    return status(ident, path)
+
+
+def status(threat_id, path: Path | None = None):
+    """Stored research result for one lead: outcome, every page tried and when."""
+    store.initialize(path)
+    ident = threat_id.upper()
+    with store.connection(path) as db:
+        outcome = db.execute("SELECT * FROM research_outcomes WHERE threat_id=?", (ident,)).fetchone()
+        pages = [dict(r) for r in db.execute(
+            "SELECT url,role,via,status,detail,sha256,paragraphs_scanned,inspected_at FROM research_page_inspections "
+            "WHERE threat_id=? ORDER BY inspected_at,url", (ident,))]
+    if not outcome:
+        return {"threat_id": ident, "status": "not_researched", "pages": pages}
+    detail = json.loads(outcome["detail"])
+    return {"threat_id": ident, **detail, "status": outcome["status"], "completed_at": outcome["completed_at"],
+            "pages": pages,
+            "note": "Automatic read-only research. Page text is untrusted; nothing was recorded as analyst evidence."}
+
+
+def research_lead(threat_id, path: Path | None = None, fetch=None, refresh=False, cache=None, budget=None):
+    """Research one lead now unless it already has a result (refresh=True re-reads)."""
+    store.initialize(path)
+    current = status(threat_id, path)
+    if current["status"] != "not_researched" and not refresh:
+        return current
+    budget = budget if budget is not None else {"remaining": MAX_PAGES_PER_LEAD, "fetched": 0}
+    return _research(threat_id, path, fetch or report_inspection.fetch_article,
+                     cache if cache is not None else {}, budget)
+
+
+def backlog_count(path: Path | None = None):
+    """Actionable backlog: high-priority leads without verified behavior or completed research."""
+    store.initialize(path)
+    with store.connection(path) as db:
+        return db.execute(f"SELECT COUNT(*) FROM threats t WHERE {NO_OBSERVATION_SQL} AND {BACKLOG_SQL} "
+                          "AND NOT EXISTS(SELECT 1 FROM research_outcomes ro WHERE ro.threat_id=t.id "
+                          "AND ro.status='completed_insufficient_detail')").fetchone()[0]
+
+
+def due_leads(path: Path | None = None, limit=MAX_LEADS):
+    """Backlog leads to research next, highest priority first."""
+    store.initialize(path)
+    retry = (datetime.now(timezone.utc) - NO_SOURCE_RETRY).isoformat(timespec="seconds").replace("+00:00", "Z")
+    with store.connection(path) as db:
+        rows = db.execute(f"""
+            SELECT t.id FROM threats t LEFT JOIN research_outcomes ro ON ro.threat_id=t.id
+            WHERE {NO_OBSERVATION_SQL} AND {BACKLOG_SQL}
+              AND (ro.threat_id IS NULL
+                   OR (ro.status='no_readable_source' AND ro.completed_at<=:retry)
+                   OR EXISTS(SELECT 1 FROM report_cves rc JOIN threats r ON r.id=rc.report_id
+                             WHERE rc.cve_id=t.id AND r.first_seen>ro.completed_at))
+            ORDER BY (t.kind='advisory' AND t.kev=1) DESC,
+                     EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) DESC,
+                     COALESCE(t.published,t.first_seen) DESC, t.id
+            LIMIT :limit""", {"retry": retry, "limit": max(1, min(int(limit), 20))}).fetchall()
+    return [r["id"] for r in rows]
+
+
+def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=None):
+    """One bounded pass: up to max_leads backlog leads, MAX_FETCHES_PER_PASS fetches in total."""
+    store.initialize(path)
+    started = now()
+    ids = [i.upper() for i in threat_ids] if threat_ids else due_leads(path, max_leads_ or max_leads())
+    cache, budget = {}, {"remaining": MAX_FETCHES_PER_PASS, "fetched": 0}
+    results = []
+    for ident in ids:
+        if budget["remaining"] <= 0:
+            break
+        try:
+            result = research_lead(ident, path, fetch=fetch, refresh=True, cache=cache, budget=budget)
+        except ValueError as exc:
+            results.append({"threat_id": ident, "status": "error", "summary": str(exc)[:200]})
+            continue
+        results.append({key: result.get(key) for key in (
+            "threat_id", "status", "summary", "completed_at", "pages_inspected", "publisher_blocked", "unreadable",
+            "evidence", "observables_found", "specific_details_to_verify", "missing_for_detection", "missing_telemetry", "exposure_patch_review",
+            "rule_drafting")} | {"pages": result["pages"]})
+    blocked = sorted({p["url"] for r in results for p in r.get("publisher_blocked") or []})
+    return {"started": started, "completed": now(), "leads_researched": len(results),
+            "pages_fetched": budget["fetched"], "results": results,
+            "publisher_blocked_pages": blocked,
+            "backlog_remaining": backlog_count(path),
+            "note": ("Read-only research ran automatically; no analyst permission is needed to read cited public "
+                     "pages. Nothing was recorded as evidence, drafted, approved or risk-scored.")}

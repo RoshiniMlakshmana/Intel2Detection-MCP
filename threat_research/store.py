@@ -147,6 +147,19 @@ def initialize(path: Path | None = None):
                 decided_at TEXT, decided_reason TEXT, evidence_id INTEGER,
                 UNIQUE(rule_kind,rule_id,threat_id,source_url,paragraph,behavior)
             );
+            CREATE TABLE IF NOT EXISTS research_page_inspections (
+                threat_id TEXT NOT NULL REFERENCES threats(id), url TEXT NOT NULL,
+                role TEXT NOT NULL, via TEXT,
+                status TEXT NOT NULL CHECK(status IN ('inspected','publisher_blocked','unreadable','failed','not_allowlisted')),
+                detail TEXT, sha256 TEXT, paragraphs_scanned INTEGER, inspected_at TEXT NOT NULL,
+                PRIMARY KEY(threat_id,url)
+            );
+            CREATE TABLE IF NOT EXISTS research_outcomes (
+                threat_id TEXT PRIMARY KEY REFERENCES threats(id),
+                status TEXT NOT NULL CHECK(status IN ('completed_insufficient_detail',
+                    'observables_need_analyst_verification','no_readable_source')),
+                completed_at TEXT NOT NULL, detail TEXT NOT NULL
+            );
         """)
         # Existing local stores from the first release remain usable.
         for table, columns in {

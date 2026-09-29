@@ -8,6 +8,26 @@ polls. It never claims a rule was deployed to a SIEM; approval only adds a
 rule to the local detection repository (`rules` table), exactly like the
 existing `implement_rule` MCP tool.
 
+## Research backlog vs raw leads
+
+The single "Research needed" tab (every collected lead without verified
+behavior, 1,584 on the 2026-09-29 database) is split into disjoint queues,
+each with its own tab and `list_leads(queue=...)` filter:
+
+- **Research backlog**: CISA KEV CVEs, reports citing a KEV CVE, and reports
+  with behavior leads that still need research. The automatic research pass
+  works this queue each poll (`run_research_pass()`).
+- **Raw leads**: everything else collected (non-KEV CVEs, leak claims,
+  general news). Untriaged collection, not a research to-do list.
+- **Research completed**: cited sources were read and none names a specific
+  observable; the lead page shows the pages inspected (with times), cited
+  excerpts, missing telemetry and an exposure/patch review offer.
+- **Evidence recorded**: an analyst-verified observation exists.
+
+The lead page's research step lists every page the pass tried. The Source
+errors tab lists research-pass publisher blocks and unreadable pages
+separately from source feed errors.
+
 ## 0.11.0: leads, per-lead progression, tabs
 
 - **Tabs with live counts**: Research needed, Draft rules, Pending reviews,

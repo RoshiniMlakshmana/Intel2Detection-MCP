@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, digest, lead_queue, store
+from . import __version__, digest, lead_queue, research_pass, store
 from .core import collect_daily, now
 
 
@@ -153,6 +153,16 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
         if adapters is None:
             article_review["queued"] = lead_queue.queue_new_report_articles(result["new_ids"], path)
             article_review.update(lead_queue.inspect_due(path))
+        research = None
+        if adapters is None:
+            try:
+                research = research_pass.run_pass(path)
+                research = {"leads_researched": research["leads_researched"], "pages_fetched": research["pages_fetched"],
+                            "outcomes": {r["threat_id"]: r["status"] for r in research["results"]},
+                            "publisher_blocked_pages": research["publisher_blocked_pages"],
+                            "backlog_remaining": research["backlog_remaining"]}
+            except (OSError, ValueError) as exc:
+                research = {"error": str(exc)[:200]}
         framework_update = None
         if adapters is None:
             from . import frameworks
@@ -164,6 +174,7 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
         summary = {"status": "degraded" if result["errors"] or article_review["errors"] or (framework_update and framework_update["errors"]) else "collected", "started": started, "completed": now(),
                    "new_records": result["new_records"], "alert_leads_queued": queued,
                    "article_review": article_review,
+                   "research_pass": research,
                    "framework_update": framework_update,
                    "notification": notification, "source_counts": result["sources"],
                    "source_errors": result["errors"], "partial_sources": result.get("partial", {}),

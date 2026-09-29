@@ -4,7 +4,6 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import corroboration, report_inspection, store
 from .core import now
@@ -18,13 +17,7 @@ def batch_size():
 
 
 def _eligible(url):
-    parsed = urlsplit(url)
-    try:
-        return (parsed.scheme == "https" and parsed.hostname in report_inspection.ALLOWED_HOSTS
-                and parsed.port in (None, 443) and not parsed.username and not parsed.password
-                and len(url) <= 500)
-    except ValueError:
-        return False
+    return report_inspection.allowed_url(url)
 
 
 def queue_new_report_articles(new_ids, path: Path | None = None):
@@ -65,30 +58,13 @@ def inspect_due(path: Path | None = None, fetch=None, limit=None):
         try:
             kwargs = {"fetch": fetch} if fetch else {}
             page = report_inspection.inspect_report(row["threat_id"], row["source_url"], path, **kwargs)
-            new_leads = []
             with store.connection(path) as db:
-                for lead in page["behavior_leads"]:
-                    inserted = db.execute(
-                        "INSERT OR IGNORE INTO article_behavior_leads "
-                        "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (row["threat_id"], row["source_url"], page["sha256"], lead["behavior"],
-                         lead["paragraph"], lead["excerpt"], now())).rowcount
-                    result["leads"] += inserted
-                    if inserted:
-                        # Only a genuinely new lead (this exact source/paragraph/
-                        # behavior was never seen before) is eligible to queue a
-                        # corroboration review, so a re-poll, retry, or re-fetch
-                        # of the same article can never queue -- let alone
-                        # approve -- a duplicate.
-                        new_leads.append(lead)
                 db.execute("UPDATE article_inspection_queue SET status='inspected',attempts=attempts+1,"
                            "inspected_at=?,last_error=NULL WHERE threat_id=? AND source_url=?",
                            (now(), row["threat_id"], row["source_url"]))
-            for lead in new_leads:
-                if corroboration.queue_from_lead(row["threat_id"], row["source_url"], lead["paragraph"],
-                                                 lead["behavior"], lead["excerpt"], path):
-                    result["corroboration_reviews_queued"] += 1
+            stored = store_page_leads(row["threat_id"], row["source_url"], page, path)
+            result["leads"] += stored["leads"]
+            result["corroboration_reviews_queued"] += stored["corroboration_reviews_queued"]
             result["inspected"] += 1
         except (OSError, ValueError, UnicodeError, TypeError) as exc:
             attempts = row["attempts"] + 1
@@ -105,6 +81,30 @@ def inspect_due(path: Path | None = None, fetch=None, limit=None):
                             row["threat_id"], row["source_url"]))
             result["errors"][row["threat_id"]] = str(exc)[:200]
     return result
+
+
+def store_page_leads(threat_id, source_url, page, path: Path | None = None):
+    """Persist an inspected page's lexical behavior leads (untrusted, review-only)."""
+    new_leads, count = [], 0
+    with store.connection(path) as db:
+        for lead in page["behavior_leads"]:
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO article_behavior_leads "
+                "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (threat_id, source_url, page["sha256"], lead["behavior"],
+                 lead["paragraph"], lead["excerpt"], now())).rowcount
+            count += inserted
+            if inserted:
+                # Only a genuinely new lead (this exact source/paragraph/
+                # behavior was never seen before) is eligible to queue a
+                # corroboration review, so a re-poll, retry, or re-fetch
+                # of the same article can never queue -- let alone
+                # approve -- a duplicate.
+                new_leads.append(lead)
+    queued = sum(1 for lead in new_leads if corroboration.queue_from_lead(
+        threat_id, source_url, lead["paragraph"], lead["behavior"], lead["excerpt"], path))
+    return {"leads": count, "corroboration_reviews_queued": queued}
 
 
 def list_leads(path: Path | None = None, limit=20, days=None):
