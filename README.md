@@ -63,6 +63,34 @@ claude mcp add --scope user threat-research -- "C:\path\to\ThreatResearch-MCP\.v
 
 Full setup, the analyst dashboard, and keeping a poller + daily digest running on Windows: **[QUICKSTART.md](QUICKSTART.md)**, **[DASHBOARD.md](DASHBOARD.md)**.
 
+### Dashboard tabs and their MCP tools
+
+`threat-research-dashboard` (http://127.0.0.1:8765) and Claude read the same database. Each tab shows a live count, and `/tools` lists every tool.
+
+| Dashboard tab | MCP tool |
+|---|---|
+| All leads: source dropdown, date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, status, rule_state, kind, page)` |
+| Research needed | `list_leads(status='research_needed')` |
+| Draft rules / Approved rules | `list_rules(state='draft' \| 'approved')` |
+| Pending reviews | `pending_corroboration_reviews()` |
+| Source errors | `source_errors()` (latest fetch status per source, partial fetches, blocked articles) |
+| Sources | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
+| Tab counts | `workflow_counts()` |
+| Lead detail progression | `lead_progression(threat_id)`: research needed → cited evidence → required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL → labeled checks → analyst decision → rule repository, naming the missing input at each blocked step |
+
+The 50-per-page limit is local display paging; upstream API paging (NVD, GitHub, feeds) is handled by the collectors.
+
+### Updating an existing Windows install
+
+```powershell
+cd C:\path\to\ThreatResearch-MCP
+git pull
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m threat_research.cli doctor
+```
+
+Then fully quit and reopen Claude Desktop (tray icon → Quit) so it restarts the MCP server, and run `poll_now`. A `polling_status` result marked `last_result_stale` describes an older run and may list errors that are already fixed.
+
 ## 5. Deploy for a team
 
 Each organization gets an isolated database and rule repository:

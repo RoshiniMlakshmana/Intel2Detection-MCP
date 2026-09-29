@@ -91,6 +91,11 @@ def initialize(path: Path | None = None):
             CREATE TABLE IF NOT EXISTS source_state (
                 name TEXT PRIMARY KEY, last_success TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS source_attempts (
+                name TEXT PRIMARY KEY, attempted_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('ok','partial','error')),
+                records INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
             CREATE TABLE IF NOT EXISTS alert_queue (
                 threat_id TEXT PRIMARY KEY REFERENCES threats(id),
                 queued_at TEXT NOT NULL, sent_at TEXT

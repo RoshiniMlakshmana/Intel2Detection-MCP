@@ -10,6 +10,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from .net import tls_context
+
 CVE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 KEV_URL = "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -20,7 +22,7 @@ CVE_URL = "https://cveawg.mitre.org/api/cve/"
 
 def fetch_json(url, headers=None, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": "ThreatResearchMCP/0.1", "Accept": "application/json", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with urllib.request.urlopen(req, timeout=timeout, context=tls_context()) as response:
         if response.status != 200:
             raise ValueError(f"source returned HTTP {response.status}")
         raw = response.read(8_000_001)
@@ -34,7 +36,7 @@ def post_json(url, body, headers=None, timeout=20):
     req = urllib.request.Request(url, data=raw_body, headers={
         "User-Agent": "ThreatResearchMCP/0.1", "Content-Type": "application/json",
         "Accept": "application/json", **(headers or {})}, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with urllib.request.urlopen(req, timeout=timeout, context=tls_context()) as response:
         raw = response.read(4_000_001)
         if len(raw) > 4_000_000:
             raise ValueError("ThreatFox response too large")
@@ -60,50 +62,82 @@ def collect_kev(since, fetch=fetch_json):
         }
 
 
-def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, rate_limit=True):
-    """Page through NVD's modified-CVE window.
+class PartialCollection(RuntimeError):
+    """A source stopped before covering its whole window.
 
-    A cold-start or post-outage catch-up window can span the full 7-day
-    retry floor the poller allows, and NVD's lastModified filter also
-    catches bulk revisions to existing records (observed: >1000/day is
-    routine). 2000/page (NVD's documented maximum) x 25 pages covers that
-    comfortably; the RuntimeError below remains as a last-resort signal if
-    a window still exceeds it. NVD asks for a short pause between requests
-    (0.6s with an API key, 6s without); rate_limit=False is for tests.
+    Carries the records it did fetch and the timestamp through which the
+    window is known to be complete, so the caller can ingest what arrived
+    and checkpoint only the covered part. It is never reported as a complete
+    collection.
     """
-    start = 0
+
+    def __init__(self, message, records, complete_through):
+        super().__init__(message)
+        self.records = records
+        self.complete_through = complete_through
+
+
+def _nvd_record(item):
+    cve = item.get("cve", {})
+    ident = cve.get("id", "").upper()
+    if not CVE.fullmatch(ident) or cve.get("vulnStatus") == "Rejected":
+        return None
+    description = next((x.get("value", "") for x in cve.get("descriptions", []) if x.get("lang") == "en"), "")
+    metrics = cve.get("metrics", {})
+    score = next((v[0].get("cvssData", {}).get("baseScore") for k in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30") if (v := metrics.get(k))), None)
+    return {
+        "id": ident, "title": ident, "summary": description,
+        "published": cve.get("published"), "updated": cve.get("lastModified"),
+        "cvss": score, "affected": [], "source": f"https://nvd.nist.gov/vuln/detail/{ident}",
+        "claim": "NVD published or updated this vulnerability record.",
+        "references": [r["url"] for r in cve.get("references", [])
+                       if isinstance(r.get("url"), str) and r["url"].startswith("https://")][:20],
+    }
+
+
+def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, rate_limit=True,
+                chunk=timedelta(days=1)):
+    """Page through NVD's modified-CVE window in chronological day-sized chunks.
+
+    NVD's lastModified filter also catches bulk revisions to old records
+    (observed: >1000/day is routine), so a catch-up window after an outage
+    can be large. The window is split into chunks; each chunk is paged to
+    completion before the next starts, sharing one page budget per run.
+    If the budget runs out, PartialCollection carries every fetched record
+    and the end of the last fully paged chunk, so the next run resumes from
+    there instead of failing the whole window forever (the observed
+    "NVD page cap reached" loop). NVD asks for a short pause between
+    requests (0.6s with an API key, 6s without); rate_limit=False is for tests.
+    """
     api_key = os.environ.get("NVD_API_KEY")
     headers = {"apiKey": api_key} if api_key else {}
-    for page in range(max_pages):
-        if rate_limit and page > 0:
-            time.sleep(0.6 if api_key else 6.0)
-        params = urllib.parse.urlencode({
-            "lastModStartDate": _iso(since), "lastModEndDate": _iso(until),
-            "startIndex": start, "resultsPerPage": page_size,
-        })
-        data = fetch(f"{NVD_URL}?{params}", headers=headers)
-        records = data.get("vulnerabilities", [])
-        for item in records:
-            cve = item.get("cve", {})
-            ident = cve.get("id", "").upper()
-            if not CVE.fullmatch(ident) or cve.get("vulnStatus") == "Rejected":
-                continue
-            description = next((x.get("value", "") for x in cve.get("descriptions", []) if x.get("lang") == "en"), "")
-            metrics = cve.get("metrics", {})
-            score = next((v[0].get("cvssData", {}).get("baseScore") for k in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30") if (v := metrics.get(k))), None)
-            yield {
-                "id": ident, "title": ident, "summary": description,
-                "published": cve.get("published"), "updated": cve.get("lastModified"),
-                "cvss": score, "affected": [], "source": f"https://nvd.nist.gov/vuln/detail/{ident}",
-                "claim": "NVD published or updated this vulnerability record.",
-                "references": [r["url"] for r in cve.get("references", [])
-                               if isinstance(r.get("url"), str) and r["url"].startswith("https://")][:20],
-            }
-        start += len(records)
-        if not records or start >= data.get("totalResults", start):
-            break
-    else:
-        raise RuntimeError("NVD page cap reached; narrow the collection window")
+    records, pages = [], 0
+    chunk_start = since
+    while True:
+        chunk_end = min(until, chunk_start + chunk)
+        start = 0
+        while True:
+            if pages >= max_pages:
+                raise PartialCollection(
+                    f"NVD page cap reached ({max_pages} pages); ingested {len(records)} records, "
+                    f"complete through {_iso(chunk_start)}; the next poll resumes from there",
+                    records, chunk_start)
+            if rate_limit and pages > 0:
+                time.sleep(0.6 if api_key else 6.0)
+            params = urllib.parse.urlencode({
+                "lastModStartDate": _iso(chunk_start), "lastModEndDate": _iso(chunk_end),
+                "startIndex": start, "resultsPerPage": page_size,
+            })
+            data = fetch(f"{NVD_URL}?{params}", headers=headers)
+            pages += 1
+            batch = data.get("vulnerabilities", [])
+            records.extend(r for r in map(_nvd_record, batch) if r)
+            start += len(batch)
+            if not batch or start >= data.get("totalResults", start):
+                break
+        if chunk_end >= until:
+            return records
+        chunk_start = chunk_end
 
 
 def collect_ghsa(since, fetch=fetch_json, max_pages=5):

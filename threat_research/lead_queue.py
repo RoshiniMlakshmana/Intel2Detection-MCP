@@ -92,12 +92,16 @@ def inspect_due(path: Path | None = None, fetch=None, limit=None):
             result["inspected"] += 1
         except (OSError, ValueError, UnicodeError, TypeError) as exc:
             attempts = row["attempts"] + 1
+            # A publisher block is reported honestly and stops retrying after
+            # a confirming second attempt; it is not a transient failure.
+            blocked = "publisher blocked" in str(exc)
             delay = timedelta(minutes=min(15 * 2 ** (attempts - 1), 720))
             next_try = (datetime.now(timezone.utc) + delay).isoformat(timespec="seconds").replace("+00:00", "Z")
             with store.connection(path) as db:
                 db.execute("UPDATE article_inspection_queue SET attempts=?,status=?,next_try=?,last_error=? "
                            "WHERE threat_id=? AND source_url=?",
-                           (attempts, "failed" if attempts >= 5 else "pending", next_try, str(exc)[:200],
+                           (attempts, "publisher_blocked" if blocked and attempts >= 2 else
+                            "failed" if attempts >= 5 else "pending", next_try, str(exc)[:200],
                             row["threat_id"], row["source_url"]))
             result["errors"][row["threat_id"]] = str(exc)[:200]
     return result

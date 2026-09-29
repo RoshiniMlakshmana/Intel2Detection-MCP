@@ -93,13 +93,20 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
         for name, repo, repo_path, kind in repo_updates.REPOSITORIES:
             adapters["GitHub: " + name] = (lambda r=repo, p=repo_path, k=kind, n=name:
                                                    repo_updates.collect_repo(r, p, k, source_since.get("GitHub: " + n, since), until))
-    result = {"new_records": 0, "sources": {}, "errors": {}}
+    result = {"new_records": 0, "sources": {}, "errors": {}, "partial": {}}
     newly_inserted = []
     promoted = []
     ids = set()
     for name, collect in adapters.items():
         try:
-            records = list(collect())
+            try:
+                records = list(collect())
+            except sources.PartialCollection as partial:
+                # Keep what arrived, but report the source as incomplete; the
+                # poller checkpoints only through partial.complete_through.
+                records = partial.records
+                result["errors"][name] = str(partial)[:300]
+                result["partial"][name] = partial.complete_through.isoformat().replace("+00:00", "Z")
             for record in records:
                 record.setdefault("reported_by", name)
             inserted, fresh, changed = ingest(records, path, return_new_ids=True)

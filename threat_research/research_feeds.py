@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .net import tls_context
+
 # Independent public-source catalog. Feed availability is checked on every run;
 # a configured URL is not a promise that its publisher still serves RSS/Atom.
 FEEDS = (
@@ -45,7 +47,9 @@ FEEDS = (
     ("Objective-See", "https://objective-see.org/rss.xml", "research"),
     ("Snyk", "https://snyk.io/blog/feed/", "research"),
     ("Semgrep", "https://semgrep.dev/blog/rss/", "research"),
-    ("JFrog Security Research", "https://jfrog.com/blog/tag/security-research/feed/", "research"),
+    # jfrog.com/blog feeds answer every automated client (curl included) with an
+    # empty HTTP 202 bot challenge; JFrog's research site publishes its own RSS.
+    ("JFrog Security Research", "https://research.jfrog.com/rss.xml", "research"),
     ("BleepingComputer", "https://www.bleepingcomputer.com/feed/", "news"),
     ("Krebs on Security", "https://krebsonsecurity.com/feed/", "news"),
     ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews", "news"),
@@ -64,12 +68,16 @@ DEFAULT_MAX_BYTES = 3_000_000
 # Google Project Zero in particular ships its entire non-paginated post
 # history in one feed.xml (~9MB observed live); 16MB gives real headroom.
 SIZE_OVERRIDES = {"Google Project Zero": 16_000_000, "Zero Day Initiative": 4_000_000}
+# CISA's CDN answers Python's TLS 1.3 handshake with HTTP 403 regardless of
+# headers, while serving the same official public RSS over TLS 1.2 (observed
+# 2026-09-28). Certificate and hostname verification are unchanged.
+TLS12_FEEDS = {"CISA advisories"}
 # Some publisher WAFs (Cloudflare/CloudFront bot management) answer an
 # automated GET with an empty interim response rather than a normal error;
 # a browser-shaped header set reduces, but cannot fully eliminate, this.
 FEED_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ThreatResearchMCP/0.10 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ThreatResearchMCP/0.11 "
                    "(+research feed reader; contact via project README)",
     "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -77,11 +85,11 @@ FEED_HEADERS = {
 }
 
 
-def fetch_feed(url, timeout=12, max_bytes=DEFAULT_MAX_BYTES):
+def fetch_feed(url, timeout=12, max_bytes=DEFAULT_MAX_BYTES, max_tls12=False):
     if urlsplit(url).scheme != "https":
         raise ValueError("feed URL must be HTTPS")
     req = urllib.request.Request(url, headers=FEED_HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with urllib.request.urlopen(req, timeout=timeout, context=tls_context(max_tls12)) as response:
         raw = response.read(max_bytes + 1)
         encoding = (response.headers.get("Content-Encoding") or "").lower()
         status = response.status
@@ -185,14 +193,14 @@ def collect_research(since, until=None, feeds=FEEDS, fetch=fetch_feed, max_worke
     if len(names) != len(set(names)):
         raise ValueError("duplicate feed names")
 
-    def fetch_with_retry(url, limit):
+    def fetch_with_retry(url, limit, tls12=False):
         # A transient connection reset/refusal is worth one short retry; a
         # publisher-level error (403/oversized/empty) is not, so this only
         # retries OSError, not the ValueErrors raised above for those cases.
         last = None
         for attempt in range(retries + 1):
             try:
-                return fetch(url, max_bytes=limit) if fetch is fetch_feed else fetch(url)
+                return fetch(url, max_bytes=limit, max_tls12=tls12) if fetch is fetch_feed else fetch(url)
             except OSError as exc:
                 last = exc
                 if attempt < retries:
@@ -203,7 +211,7 @@ def collect_research(since, until=None, feeds=FEEDS, fetch=fetch_feed, max_worke
         name, url, kind = feed
         effective_since = (since_by_name or {}).get("RSS: " + name, since)
         limit = SIZE_OVERRIDES.get(name, DEFAULT_MAX_BYTES)
-        raw = fetch_with_retry(url, limit)
+        raw = fetch_with_retry(url, limit, name in TLS12_FEEDS)
         return parse_feed(raw, name, kind, effective_since, until, max_bytes=limit)
 
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 8))) as pool:

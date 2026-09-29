@@ -43,26 +43,39 @@ def sources_overview(path: Path | None = None):
             "SELECT e.source_name, MAX(t.published) AS latest FROM evidence e "
             "JOIN threats t ON t.id=e.threat_id WHERE e.kind='source_fact' AND e.source_name IS NOT NULL "
             "GROUP BY e.source_name")}
+    from .workflow import source_attempts
+    attempts = source_attempts(path)
     cards = []
     for name, category in source_catalog():
         row = rows.get(name)
-        error = source_errors.get(name) or (row["last_error"] if row else None)
+        attempt = attempts.get(name)
+        if attempt:
+            error = attempt["detail"] if attempt["status"] in ("error", "partial") else None
+            status = {"error": "error", "partial": "partial"}.get(attempt["status"], "ok")
+        else:
+            error = source_errors.get(name) or (row["last_error"] if row else None)
+            status = "error" if error else "ok" if row else "never_collected"
         cards.append({
             "name": name, "category": category,
             "last_success": row["last_success"] if row else None,
             "record_count": counts.get(name, 0),
             "latest_publication": latest_pub.get(name),
-            "error": error, "error_at": row["last_error_at"] if row and row["last_error"] else None,
-            "status": "error" if error else "ok" if row else "never_collected",
+            "latest_fetch": attempt["attempted_at"] if attempt else None,
+            "error": error, "error_at": attempt["attempted_at"] if attempt and error else
+            (row["last_error_at"] if row and row["last_error"] else None),
+            "status": status,
         })
     framework_state = frameworks.status(path)
     framework_errors = (last_result.get("framework_update") or {}).get("errors", {})
-    for fw_name, label in (("attack", "MITRE ATT&CK"), ("atlas", "MITRE ATLAS"), ("owasp", "OWASP LLM Top 10")):
+    for fw_name, label in frameworks.LABELS.items():
         info = framework_state[fw_name]
-        error = framework_errors.get(fw_name)
+        attempt = attempts.get(label)
+        error = (attempt["detail"] if attempt["status"] == "error" else None) if attempt else framework_errors.get(fw_name)
         cards.append({
             "name": label, "category": "framework release", "last_success": info.get("fetched_at"),
-            "record_count": None, "latest_publication": info.get("version"), "error": error, "error_at": None,
+            "record_count": None, "latest_publication": info.get("version"),
+            "latest_fetch": attempt["attempted_at"] if attempt else None,
+            "error": error, "error_at": attempt["attempted_at"] if attempt and error else None,
             "status": "error" if error else "stale" if info.get("status") == "stale" else
                       "ok" if info.get("status") == "current" else "never_collected",
         })
@@ -70,14 +83,16 @@ def sources_overview(path: Path | None = None):
     pending = queue["article_queue"].get("pending", 0)
     cards.append({
         "name": "Article review queue", "category": "internal backlog", "last_success": None,
-        "record_count": queue["review_required_behavior_leads"], "latest_publication": None,
+        "record_count": queue["review_required_behavior_leads"], "latest_publication": None, "latest_fetch": None,
         "error": f"{pending} articles pending review" if pending >= 25 else None, "error_at": None,
         "status": "backlogged" if pending >= 25 else "ok",
     })
     return {"as_of": now(), "poll_interval_minutes": state["interval_minutes"],
             "poll_running": state["running"], "last_poll_completed": state["last_completed"],
             "email_configured": state["email_configured"],
-            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "backlogged"), c["name"]))}
+            "last_result_stale": state["last_result_stale"],
+            "last_result_age_minutes": state["last_result_age_minutes"],
+            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "partial", "backlogged"), c["name"]))}
 
 
 def threats_for_source(name, path: Path | None = None, limit=50):

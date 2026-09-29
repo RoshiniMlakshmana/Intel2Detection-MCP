@@ -137,7 +137,7 @@ def rule_content_hash(rule):
     return hashlib.sha256(f"{rule.get('sigma','')}|{rule.get('kql','')}|{rule.get('spl','')}".encode()).hexdigest()
 
 
-def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=True):
+def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=True, sample_label=None):
     """Reproducible local check: replay one rule's own selection logic
     against analyst-labeled positive/benign JSONL samples (the same
     {event_id, event_type, timestamp, scenario, expected_malicious, ...}
@@ -165,7 +165,7 @@ def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=Tr
         raise ValueError("events file has no records")
     result = replay(events, candidates)
     rule_hash = rule_content_hash(rule)
-    rule_repository.record_test_result(rule_id, result, rule_hash, str(events_file), path)
+    rule_repository.record_test_result(rule_id, result, rule_hash, sample_label or str(events_file), path)
     rule_repository.export_rule(rule_id, path)
     return {**result, "rule_id": rule_id, "rule_hash": rule_hash,
             "scope": "Local reference matching against analyst-labeled samples, not production SIEM accuracy; "

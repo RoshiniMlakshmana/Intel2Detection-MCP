@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import digest, lead_queue, store
+from . import __version__, digest, lead_queue, store
 from .core import collect_daily, now
 
 
@@ -23,10 +23,26 @@ def poll_status(path: Path | None = None):
         state = db.execute("SELECT * FROM poll_state WHERE id=1").fetchone()
         pending = db.execute("SELECT COUNT(*) FROM alert_queue WHERE sent_at IS NULL").fetchone()[0]
         sources = db.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
+        attempts = [dict(r) for r in db.execute("SELECT * FROM source_attempts ORDER BY status!='error',name")]
+    last_result = json.loads(state["last_result"]) if state and state["last_result"] else None
+    age_minutes = None
+    if state and state["last_completed"]:
+        completed = datetime.fromisoformat(state["last_completed"].replace("Z", "+00:00"))
+        age_minutes = round((datetime.now(timezone.utc) - completed).total_seconds() / 60)
+    produced_by = (last_result or {}).get("collector_version")
     return {"interval_minutes": interval_minutes(), "running": bool(state and state["lease_until"] and state["lease_until"] > now()),
+            "installed_collector_version": __version__,
+            "last_result_age_minutes": age_minutes,
+            # A result older than two intervals, or produced by different
+            # collector code, may describe failures this installation has
+            # already fixed; re-run poll_now before acting on its errors.
+            "last_result_stale": bool(age_minutes is None or age_minutes > 2 * interval_minutes()
+                                      or produced_by != __version__),
+            "last_result_collector_version": produced_by or "unknown (older than 0.11.0)",
+            "source_attempts": attempts,
             "last_started": state["last_started"] if state else None,
             "last_completed": state["last_completed"] if state else None,
-            "last_result": json.loads(state["last_result"]) if state and state["last_result"] else None,
+            "last_result": last_result,
             "pending_alerts": pending, "sources_with_successful_checkpoint": sources,
             "email_configured": bool(os.environ.get("SMTP_HOST") and
               (os.environ.get("ALERT_TO") or os.environ.get("DIGEST_TO"))),
@@ -102,18 +118,37 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
         result = collect_daily(path, adapters=adapters, include_ids=True, until=until, source_since=source_since)
         with store.connection(path) as db:
             stamp = until.isoformat().replace("+00:00", "Z")
+            partial = result.get("partial", {})
+            complete = [name for name in result["sources"] if name != "FIRST EPSS" and name not in partial]
             db.executemany("INSERT INTO source_state(name,last_success,total_records,last_error) VALUES (?,?,?,NULL) "
                            "ON CONFLICT(name) DO UPDATE SET last_success=excluded.last_success,"
                            "total_records=source_state.total_records+excluded.total_records,last_error=NULL",
-                           [(name, stamp, result["sources"][name]) for name in result["sources"]
-                            if name != "FIRST EPSS"])
+                           [(name, stamp, result["sources"][name]) for name in complete])
+            # A partial fetch checkpoints only through the part it fully
+            # covered, and never moves an existing checkpoint backwards; its
+            # error stays set so it is never shown as a complete refresh.
+            for name, through in partial.items():
+                db.execute("INSERT INTO source_state(name,last_success,total_records,last_error,last_error_at) "
+                           "VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                           "last_success=MAX(source_state.last_success,excluded.last_success),"
+                           "total_records=source_state.total_records+excluded.total_records,"
+                           "last_error=excluded.last_error,last_error_at=excluded.last_error_at",
+                           (name, through, result["sources"].get(name, 0), result["errors"][name], stamp))
             # Only a source with a prior successful checkpoint gets its row
             # touched here; a source that has never once succeeded must not
             # gain a source_state row from a bare failure (that would corrupt
-            # sources_with_successful_checkpoint's meaning). Its error is
-            # still visible via this run's own source_errors in poll_state.
+            # sources_with_successful_checkpoint's meaning). Every attempt,
+            # including a never-successful source's, is in source_attempts.
             db.executemany("UPDATE source_state SET last_error=?,last_error_at=? WHERE name=?",
-                           [(message, stamp, name) for name, message in result["errors"].items()])
+                           [(message, stamp, name) for name, message in result["errors"].items()
+                            if name not in partial])
+            attempts = [(name, stamp, "partial" if name in partial else "ok", count,
+                         result["errors"].get(name)) for name, count in result["sources"].items()]
+            attempts += [(name, stamp, "error", 0, message) for name, message in result["errors"].items()
+                         if name not in result["sources"]]
+            db.executemany("INSERT INTO source_attempts(name,attempted_at,status,records,detail) VALUES (?,?,?,?,?) "
+                           "ON CONFLICT(name) DO UPDATE SET attempted_at=excluded.attempted_at,status=excluded.status,"
+                           "records=excluded.records,detail=excluded.detail", attempts)
         article_review = {"queued": 0, "attempted": 0, "inspected": 0, "leads": 0, "errors": {}}
         if adapters is None:
             article_review["queued"] = lead_queue.queue_new_report_articles(result["new_ids"], path)
@@ -131,7 +166,8 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
                    "article_review": article_review,
                    "framework_update": framework_update,
                    "notification": notification, "source_counts": result["sources"],
-                   "source_errors": result["errors"]}
+                   "source_errors": result["errors"], "partial_sources": result.get("partial", {}),
+                   "collector_version": __version__}
         return summary
     except Exception as exc:
         summary = {"status": "failed", "started": started, "completed": now(),

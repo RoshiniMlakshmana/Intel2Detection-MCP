@@ -3,12 +3,13 @@
 import hashlib
 import html
 import re
-import ssl
+import urllib.error
 import urllib.request
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from . import behavior_leads, research_feeds
+from .net import tls_context
 from .core import get_threat
 
 ALLOWED_HOSTS = {urlsplit(url).hostname for _, url, _ in research_feeds.FEEDS} | {
@@ -69,6 +70,12 @@ class _SameHostRedirectOnly(urllib.request.HTTPRedirectHandler):
         parsed = urlsplit(newurl)
         original_host = urlsplit(request.full_url).hostname
         self.hops += 1
+        if parsed.scheme == "http" and parsed.hostname == original_host and parsed.port in (None, 80):
+            # Some publishers (observed: research.checkpoint.com) canonicalize
+            # the path but emit an http:// Location; the https form of that
+            # same host/path serves the article, so never downgrade.
+            parsed = parsed._replace(scheme="https", netloc=parsed.hostname)
+            newurl = urlunsplit(parsed)
         if self.hops > 3 or parsed.scheme != "https" or parsed.hostname != original_host or parsed.username or parsed.password:
             return None
         return urllib.request.Request(newurl, headers=request.headers, method=request.get_method())
@@ -76,17 +83,16 @@ class _SameHostRedirectOnly(urllib.request.HTTPRedirectHandler):
 
 ARTICLE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ThreatResearchMCP/0.10 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ThreatResearchMCP/0.11 "
                    "(+cited-article inspector; contact via project README)",
     "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
 
-def fetch_article(url):
-    """Fetch HTML from an explicit publisher host, bounded same-host redirects only, no credentials."""
+def _open_article(url):
     request = urllib.request.Request(url, headers=ARTICLE_HEADERS)
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=tls_context()),
                                          _SameHostRedirectOnly())
     with opener.open(request, timeout=12) as response:
         if response.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
@@ -95,6 +101,37 @@ def fetch_article(url):
     if len(raw) > MAX_BYTES:
         raise ValueError("article exceeds inspection limit")
     return raw
+
+
+def _canonical_slash(url):
+    """Feed URLs are stored without a trailing slash for stable IDs, but some
+    publisher WAFs (observed: SecurityWeek) answer that non-canonical form
+    with 403 for non-browser clients while serving the slash form normally."""
+    parsed = urlsplit(url)
+    last = parsed.path.rsplit("/", 1)[-1]
+    if parsed.path.endswith("/") or not last or "." in last:
+        return None
+    return urlunsplit(parsed._replace(path=parsed.path + "/"))
+
+
+def fetch_article(url, open_url=_open_article):
+    """Fetch HTML from an explicit publisher host, bounded same-host redirects only, no credentials."""
+    try:
+        return open_url(url)
+    except urllib.error.HTTPError as exc:
+        first = exc
+    alternate = _canonical_slash(url) if first.code in (301, 302, 403, 404) else None
+    if alternate:
+        try:
+            return open_url(alternate)
+        except urllib.error.HTTPError as exc:
+            first = exc
+    if first.code == 429:
+        raise ValueError("HTTP 429: publisher rate limit; the queue retries later with backoff") from first
+    if first.code in (401, 403):
+        raise ValueError(f"HTTP {first.code}: publisher blocked the automated article fetch; "
+                         "open the cited URL in a browser and record verified behavior manually") from first
+    raise ValueError(f"HTTP {first.code}: {first.reason}") from first
 
 
 def inspect_report(threat_id, source_url, path=None, fetch=fetch_article):

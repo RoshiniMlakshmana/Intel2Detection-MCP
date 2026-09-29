@@ -8,6 +8,53 @@ polls. It never claims a rule was deployed to a SIEM; approval only adds a
 rule to the local detection repository (`rules` table), exactly like the
 existing `implement_rule` MCP tool.
 
+## 0.11.0: leads, per-lead progression, tabs
+
+- **Tabs with live counts**: Research needed, Draft rules, Pending reviews,
+  Approved rules, Source errors, plus **MCP tools** (`/tools`), which lists
+  the MCP tool behind every view. Each page footer also names its MCP call.
+- **All leads** (`/leads`): source dropdown, publication/collection date
+  range, status (`research_needed`, `article_leads`, `evidence_recorded`),
+  rule state (`none`, `draft`, `approved`, `rejected`) and kind filters. Shows
+  50 per page with Previous/Next and a total count. Every row keeps
+  publication date, collection date, original URL and its source's
+  latest fetch status. The same query is `list_leads` over MCP. The page size
+  is local display paging, not upstream API paging.
+- **Lead detail progression**: research needed → cited behavior/evidence →
+  required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL →
+  labeled checks → analyst decision → versioned rule repository. **Research /
+  Draft detection** appears only when a cited analyst observation supports a
+  behavior; otherwise the page states the exact missing input. On an
+  inventory match it shows the existing rule, any pending corroboration
+  review, and a proposed corroboration (+1, never a status change) instead of a
+  duplicate draft. Labeled JSONL events can be pasted to replay against a rule;
+  the result is stored with the rule's content hash and nothing is approved.
+  MCP: `lead_progression(threat_id)`.
+- Cross-origin form posts are refused, so another web page cannot drive
+  approvals on the local dashboard.
+
+### Source failures from the 2026-09-28T19:36Z poll
+
+That poll ran code older than this repository's first commit. Re-checked live
+on 2026-09-29 with 0.11.0 against a copy of the same database:
+
+| Source | Cause found | 0.11.0 result |
+| --- | --- | --- |
+| NVD page cap | Whole window was retried until it fit in one run's page budget | Day-sized chunks; a capped run ingests what arrived and checkpoints only fully paged days (`partial`, never "complete"). Live: 1,386 records, ok |
+| CISA advisories 403 | CDN refuses Python's TLS 1.3 handshake regardless of headers; the same official RSS is served over TLS 1.2 | TLS 1.2 for this feed only, verification unchanged. Live: ok |
+| Google Project Zero "too large" | ~9MB full-history feed | 16MB override (already in 0.10.0). Live: ok |
+| Zero Day Initiative XML | Bare DOCTYPE was rejected | DOCTYPE stripped, ENTITY still blocked (0.10.0). Live: ok |
+| JFrog empty response | `jfrog.com/blog` feeds return an empty HTTP 202 bot challenge to every automated client, curl included | Switched to JFrog's official `research.jfrog.com/rss.xml`. Live: ok |
+| Malpedia refused / TLS | Valid chain to HARICA TLS RSA Root CA 2021, which Python on Windows does not see | Adds Mozilla's CA bundle (`certifi`) to the system store. Live: ok |
+| Article 301 | Check Point redirects HTTPS to `http://` | Same-host redirect upgraded to HTTPS. Live: inspected |
+| Article 403 (SecurityWeek) | Stored URL lacks the trailing slash; the WAF 403s that form for non-browser clients | Retries the canonical slash form. Live: inspected |
+| Genuine publisher blocks | Dark Reading 403 on article pages | Reported as `publisher_blocked` after two attempts; read in a browser and record behavior manually. HTTP 429 is retried with backoff |
+| ATLAS / OWASP | Symlink pointer and PDF size (fixed in 0.10.0) | Live: ATLAS 2026.09 (208), OWASP 2026 (10). A failed refresh keeps the last-known-good snapshot and says so |
+
+`polling_status` now reports `last_result_age_minutes`, `last_result_stale`
+and the collector version, so an old result cannot be mistaken for a current
+failure.
+
 ## What it shows
 
 - **Sources page** (`/`): one card per configured source (CISA KEV, NVD,

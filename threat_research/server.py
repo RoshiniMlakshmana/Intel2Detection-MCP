@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import core, corroboration, custom_rules, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay
+from . import core, corroboration, custom_rules, dashboard_data, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, workflow
 
 mcp = MCPServer("ThreatResearch")
 
@@ -43,8 +43,46 @@ def poll_now() -> dict:
 
 @mcp.tool()
 def polling_status() -> dict:
-    """Show durable collector health, last source failures, queued alerts, and email configuration without secrets."""
+    """Show collector health: last result age, whether it is stale or from older collector code, latest fetch status per source, queued alerts and email configuration (no secrets). Re-run poll_now before acting on a stale result."""
     return poller.poll_status()
+
+
+@mcp.tool()
+def list_sources() -> dict:
+    """List every configured source with its latest fetch status and time, last successful refresh, latest publication date, record count and current error."""
+    return dashboard_data.sources_overview()
+
+
+@mcp.tool()
+def list_leads(source: str = "", date_from: str = "", date_to: str = "", date_field: str = "published",
+               status: str = "", rule_state: str = "", kind: str = "", page: int = 1, per_page: int = 50) -> dict:
+    """Page through collected leads (max 50 per page) with a total count. Filters: source (a list_sources name), date_from/date_to (YYYY-MM-DD) on date_field published|collected, status research_needed|article_leads|evidence_recorded, rule_state none|draft|approved|rejected, kind. Each item keeps publication date, collection date, URL and that source's latest fetch status. This is local display paging, not upstream API paging."""
+    return workflow.list_leads(source=source, date_from=date_from, date_to=date_to, date_field=date_field,
+                               status=status, rule_state=rule_state, kind=kind, page=page, per_page=per_page)
+
+
+@mcp.tool()
+def lead_progression(threat_id: str) -> dict:
+    """Show one lead's progress: research needed -> cited evidence -> required telemetry -> inventory Yes/No/Unknown -> candidate Sigma/KQL/SPL -> labeled checks -> analyst decision -> rule repository, with the exact missing input at each blocked step. Read-only."""
+    return workflow.lead_progression(threat_id)
+
+
+@mcp.tool()
+def workflow_counts() -> dict:
+    """Counts behind the dashboard tabs: research needed, draft rules, pending reviews, approved rules, source errors; plus the MCP tool for each tab."""
+    return workflow.workflow_counts()
+
+
+@mcp.tool()
+def list_rules(state: str = "draft", page: int = 1) -> dict:
+    """Page through local rules by state draft|approved|rejected (50 per page) with their latest labeled-check counts. Approved means the local repository only; nothing is deployed."""
+    return workflow.list_rules(state=state, page=page)
+
+
+@mcp.tool()
+def source_errors() -> dict:
+    """List sources whose latest fetch failed or was partial, and article fetches blocked by publishers; errors are reported as observed."""
+    return workflow.source_errors()
 
 
 @mcp.tool()
@@ -165,7 +203,22 @@ def record_observed_behavior(threat_id: str, source_url: str, claim: str, behavi
 @mcp.tool()
 def draft_detection(threat_id: str, evidence_id: int) -> dict:
     """Create a review-only Sigma/KQL/SPL draft after local inventory comparison; then call review_detection_for_client for current mappings, risk and live inventory candidates."""
-    return rules.propose_rule(threat_id, evidence_id)
+    try:
+        return rules.propose_rule(threat_id, evidence_id)
+    except ValueError as exc:
+        # Return the refusal as data: a raised error reaches the MCP client only
+        # as a generic "Error executing tool", hiding which input is missing.
+        try:
+            progression = workflow.lead_progression(threat_id)
+            draftable = progression["draftable_evidence"]
+            missing = (f"Evidence #{evidence_id} is not a cited analyst observation with a supported behavior; "
+                       f"draft from evidence id(s) {draftable} instead." if draftable else
+                       progression["draft_blocked_reason"])
+        except ValueError:
+            missing, draftable = "Collect or register this lead first.", []
+        return {"status": "research_needed", "rule_id": None, "reason": str(exc),
+                "missing_input": missing, "draftable_evidence_ids": draftable,
+                "note": "No rule was drafted. A CVE title or headline is never used to generate a rule."}
 
 
 @mcp.tool()

@@ -19,6 +19,7 @@ from pypdf import PdfReader
 
 from . import store
 from .core import now
+from .net import tls_context
 
 
 ATTACK_INDEX = "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/index.md"
@@ -33,6 +34,7 @@ ATLAS_MAX_POINTER_HOPS = 5
 HOME_PAGE_MAX_BYTES = 1_500_000
 MAX_BYTES = {"attack": 65_000_000, "atlas": 12_000_000, "owasp": 40_000_000}
 TTL = timedelta(hours=24)
+LABELS = {"attack": "MITRE ATT&CK", "atlas": "MITRE ATLAS", "owasp": "OWASP LLM Top 10"}
 
 # These are narrow semantic relationships. Each ID is checked against the
 # downloaded release; an absent or changed ID is returned as unavailable.
@@ -50,7 +52,7 @@ CROSSWALK = {
 
 def _fetch(url, limit):
     req = urllib.request.Request(url, headers={"User-Agent": "ThreatResearch-MCP/0.9 (framework refresh)", "Accept": "application/json,text/html,application/pdf,text/yaml,*/*"})
-    with urllib.request.urlopen(req, timeout=12) as response:
+    with urllib.request.urlopen(req, timeout=12, context=tls_context()) as response:
         if response.url.split("/", 3)[2] not in {"raw.githubusercontent.com", "genai.owasp.org"} or not response.url.startswith("https://"):
             raise ValueError("unexpected framework redirect")
         content_length = response.headers.get("Content-Length")
@@ -238,7 +240,20 @@ def refresh(path: Path | None = None, force=False, fetch=_fetch):
         except Exception as exc:
             # A failed refresh is visible and cannot make a stale cached release appear current.
             output["errors"][name] = str(exc)[:200]
-            output["sources"][name] = {"status": "stale" if prior else "unavailable", "version": prior["version"] if prior else None}
+            output["sources"][name] = {"status": "stale" if prior else "unavailable", "version": prior["version"] if prior else None,
+                                       "error": str(exc)[:200],
+                                       "retained_snapshot": {"version": prior["version"], "fetched_at": prior["fetched_at"],
+                                                             "source_url": prior["source_url"]} if prior else None}
+    with store.connection(path) as db:
+        db.executemany("INSERT INTO source_attempts(name,attempted_at,status,records,detail) VALUES (?,?,?,?,?) "
+                       "ON CONFLICT(name) DO UPDATE SET attempted_at=excluded.attempted_at,status=excluded.status,"
+                       "records=excluded.records,detail=excluded.detail",
+                       [(LABELS[name], output["checked_at"], "error" if name in output["errors"] else "ok",
+                         info.get("entries") or 0,
+                         (output["errors"][name] + (f"; kept last-known-good {info['version']}" if info.get("version") else
+                                                    "; no earlier snapshot to fall back on"))
+                         if name in output["errors"] else info["status"])
+                        for name, info in output["sources"].items()])
     return output
 
 

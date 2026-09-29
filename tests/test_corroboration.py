@@ -257,7 +257,7 @@ class CorroborationDashboardTest(unittest.TestCase):
     def test_reviews_page_lists_pending_review_and_nav_shows_count(self):
         status, body = self._get("/")
         self.assertEqual(status, 200)
-        self.assertIn("Reviews (1)", body)
+        self.assertIn('Pending reviews<span class="count">1</span>', body)
         status, body = self._get("/reviews")
         self.assertEqual(status, 200)
         self.assertIn("w3wp.exe", body)

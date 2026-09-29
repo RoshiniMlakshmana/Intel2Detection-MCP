@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threat-research-mcp"
-version = "0.10.0"
+version = "0.11.0"
 description = "Evidence-gated threat intelligence research and detection workflow for Claude"
 requires-python = ">=3.11"
-dependencies = ["mcp>=2.2,<3", "tzdata>=2025.2", "PyYAML>=6,<7", "pypdf>=5,<7"]
+dependencies = ["mcp>=2.2,<3", "tzdata>=2025.2", "PyYAML>=6,<7", "pypdf>=5,<7", "certifi>=2024.2.2"]
 
 [project.scripts]
 threat-research = "threat_research.cli:main"
