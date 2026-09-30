@@ -461,7 +461,7 @@ def rule_repository_status() -> dict:
 
 @mcp.tool()
 def test_rule_against_samples(rule_id: str, events_file: str) -> dict:
-    """Replay one draft or approved rule's own selection logic against a local JSONL file of analyst-labeled positive/benign events (same shape as the synthetic SOC lab); records a hash of the exact tested rule text and every match/miss, and refreshes its on-disk repository snapshot. Records sample provenance: the bundled lab fixtures or events marked synthetic are 'bundled_synthetic_fixture' and never satisfy the approval gate of a source-linked draft; only analyst-supplied labeled events from the real environment do. Local reference matching only -- never SIEM validation; use test_draft_in_siem for that once a SIEM is configured."""
+    """Replay one draft or approved rule's own selection logic against a local JSONL file of analyst-labeled positive/benign events; use events_file='bundled:needymantis' for six synthetic NeedyMantis examples without a Windows path. Records a hash of the tested rule and every match/miss. Synthetic examples are tagged bundled_synthetic_fixture and never prove detection in your environment. This is local reference matching, not native SIEM validation."""
     return _refused_as_data(soc_replay.test_rule_against_samples, rule_id, events_file)
 
 

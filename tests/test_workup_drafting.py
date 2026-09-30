@@ -144,8 +144,8 @@ class NeedyMantisSyntheticReplayTest(Base):
         draft = drafting.propose(ident, REPORT_URL, 3, spec, "WinSparkle sample selector (synthetic test)",
                                  "The fictional cited paragraph names this DLL and hash.",
                                  "A genuine same-name DLL has a different hash.", self.path)
-        fixture = resources.files("threat_research") / "lab_fixtures" / "needymantis_synthetic_file_events.jsonl"
-        result = soc_replay.test_rule_against_samples(draft["rule_id"], str(fixture), self.path)
+        with patch.dict("os.environ", {"THREAT_RESEARCH_DB": str(self.path)}):
+            result = server.test_rule_against_samples(draft["rule_id"], "bundled:needymantis")
         self.assertEqual(result["sample_provenance"], "bundled_synthetic_fixture")
         self.assertEqual(result["counts"], {"tp": 2, "fp": 0, "fn": 2, "tn": 2})
         self.assertEqual([case["event_id"] for case in result["cases"] if case["outcome"] == "fn"],
@@ -153,6 +153,10 @@ class NeedyMantisSyntheticReplayTest(Base):
         self.assertEqual(rules.get_rule(draft["rule_id"], self.path)["status"], "draft")
         with self.assertRaisesRegex(ValueError, "has not verified"):
             rules.implement_rule(draft["rule_id"], "implement this rule", path=self.path)
+        with patch.dict("os.environ", {"THREAT_RESEARCH_DB": str(self.path)}):
+            missing = server.test_rule_against_samples(draft["rule_id"], str(Path(self.tmp.name) / "absent.jsonl"))
+        self.assertEqual(missing["status"], "refused")
+        self.assertIn("cannot read labeled events file", missing["reason"])
 
 
 class ProposalTest(Base):

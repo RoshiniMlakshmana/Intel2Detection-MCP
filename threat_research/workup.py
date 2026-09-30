@@ -317,7 +317,9 @@ def _review_path(draft, inventory, reviews, path):
              needs=(f"Read that paragraph yourself. If it says what the draft encodes: verify_draft_source('{rid}', "
                     f"'I verified this source paragraph'). If not: reject_draft_rule('{rid}', '<reason>')."))
     check = draft["labeled_checks"]
-    tested = bool(check.get("tests_current_version"))
+    fixture_only = bool(check.get("tests_current_version") and
+                        check.get("sample_provenance") == "bundled_synthetic_fixture")
+    tested = bool(check.get("tests_current_version")) and not fixture_only
     fields = ", ".join(draft["required_fields"] or [])
     if tested:
         provenance = check.get("sample_provenance")
@@ -327,13 +329,16 @@ def _review_path(draft, inventory, reviews, path):
         step("labeled_events", "2. Labeled-event check", "done",
              f"{check['sample_size']} labeled events: {check['counts']} at {check['tested_at']}. {scope}")
     else:
-        prior = "A check exists for an older rule version. " if check.get("tests_current_version") is False else ""
+        prior = (f"{check['sample_size']} synthetic examples were replayed: {check['counts']}. "
+                 "This demonstrates logic but cannot satisfy the approval gate. " if fixture_only else
+                 "A check exists for an older rule version. " if check.get("tests_current_version") is False else "")
         step("labeled_events", "2. Labeled-event check", "current" if verified else "waiting",
-             prior + "No labeled check covers this exact rule version.",
+             prior + ("Labeled events from your environment are still needed." if fixture_only else
+                      "No labeled check covers this exact rule version."),
              needs=("A JSONL file of labeled events, one per line: event_id, timestamp, "
                     f"event_type, {fields}, expected_malicious (true/false), scenario; include benign look-alikes. "
-                    f"Then test_rule_against_samples('{rid}', '<path to that file>'). Synthetic examples "
-                    "must remain labeled as synthetic."))
+                    f"Then test_rule_against_samples('{rid}', '<path to that file>'). Use real labeled events "
+                    "for approval; synthetic examples must remain labeled as synthetic."))
     answer = inventory["answer"]
     scope = inventory.get("scope") or {}
     step("inventory", "3. Inventory comparison", "done" if answer in ("Yes", "No") else "attention",

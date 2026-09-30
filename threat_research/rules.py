@@ -443,6 +443,10 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
             if not check or check["rule_hash"] != rule_content_hash(dict(row)):
                 raise ValueError("no labeled-event check covers this exact rule version; run "
                                  "test_rule_against_samples(rule_id, <your labeled JSONL>) before approval")
+            if check["sample_provenance"] == "bundled_synthetic_fixture":
+                raise ValueError("the latest check uses synthetic fixture events; this demonstrates matching logic "
+                                 "but cannot approve a source-linked draft. Supply labeled events from your "
+                                 "environment and rerun test_rule_against_samples before approval")
         external = db.execute("SELECT id,title,source_url,pattern_score FROM external_inventory WHERE fingerprint=?",
                               (row["fingerprint"],)).fetchone()
         if external:
@@ -470,8 +474,7 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
                 db.execute("INSERT INTO rule_evidence(rule_id,evidence_id) VALUES (?,?)", (rule_id, evidence_id))
                 db.execute("UPDATE rules SET pattern_score=pattern_score+1 WHERE id=?", (rule_id,))
         db.execute("UPDATE rules SET status='approved' WHERE id=?", (rule_id,))
-        validation_scope = ("fixture_only" if source_link and check["sample_provenance"] == "bundled_synthetic_fixture"
-                            else "sample_origin_unverified" if source_link else "not_required_for_legacy_rule")
+        validation_scope = "sample_origin_unverified" if source_link else "not_required_for_legacy_rule"
         db.execute("INSERT INTO audit (at,action,target,detail) VALUES (?,?,?,?)",
                    (now(), "rule_approved", rule_id,
                     json.dumps({"evidence_id": evidence_id, "validation_scope": validation_scope})))

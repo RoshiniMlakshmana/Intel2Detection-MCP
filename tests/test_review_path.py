@@ -135,7 +135,7 @@ class ProvenanceAndGateOrderTest(Base):
         self.assertEqual(lab["sample_provenance"], "bundled_synthetic_fixture")
         marked = soc_replay.test_rule_against_samples(rule_id, self.events("marked.jsonl", True), self.path)
         self.assertEqual(marked["sample_provenance"], "bundled_synthetic_fixture")
-        self.assertEqual(states()["approval"], "current")
+        self.assertEqual((states()["labeled_events"], states()["approval"]), ("current", "waiting"))
         unverified = soc_replay.test_rule_against_samples(rule_id, self.events("analyst.jsonl"), self.path)
         self.assertEqual((unverified["sample_provenance"], unverified["counts"]["tp"], unverified["counts"]["tn"]),
                          ("analyst_supplied_origin_unverified", 1, 1))
@@ -148,17 +148,22 @@ class ProvenanceAndGateOrderTest(Base):
         self.assertIn("approved/", final["repository"]["detail"])
         self.assertEqual(final["native_siem_test"]["state"], "pending")
 
-    def test_fixture_only_local_approval_does_not_claim_production_validation(self):
+    def test_synthetic_fixture_cannot_approve_source_linked_draft(self):
         rule_id = self.draft()
         drafting.verify(rule_id, "I verified this source paragraph", path=self.path)
         soc_replay.test_rule_against_samples(rule_id, self.events("synthetic.jsonl", True), self.path)
-        approval = rules.implement_rule(rule_id, "implement this rule", path=self.path)
-        self.assertEqual(approval["validation_scope"], "fixture_only")
-        self.assertEqual(approval["deployment"], "not_deployed")
-        self.assertIn("native SIEM", approval["validation_note"])
-        self.assertIn("Synthetic fixtures", next(s["detail"] for s in
-                      workup.lead_workup("REPORT-FICTLOADER0001", self.path)["drafts"][0]["review_path"]
-                      if s["key"] == "labeled_events"))
+        with self.assertRaisesRegex(ValueError, "synthetic fixture events"):
+            rules.implement_rule(rule_id, "implement this rule", path=self.path)
+        view = workup.lead_workup("REPORT-FICTLOADER0001", self.path)["drafts"][0]["review_path"]
+        labeled = next(s for s in view if s["key"] == "labeled_events")
+        self.assertEqual(labeled["state"], "current")
+        self.assertIn("synthetic examples", labeled["detail"])
+        self.assertEqual(next(s for s in view if s["key"] == "approval")["state"], "waiting")
+        checks = next(s for s in workflow.lead_progression("REPORT-FICTLOADER0001", self.path)["steps"]
+                      if s["key"] == "checks")
+        self.assertEqual(checks["state"], "current")
+        self.assertIn("Synthetic replay", checks["summary"])
+        self.assertEqual(rules.get_rule(rule_id, self.path)["status"], "draft")
 
     def test_matching_source_stays_pending_until_approved(self):
         rule_id = self.draft()

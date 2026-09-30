@@ -320,7 +320,7 @@ def sources_cve(ident):
     return bool(CVE.fullmatch(ident.upper()))
 
 
-def _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links=()):
+def _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links=(), source_rule_ids=()):
     """One concrete next action, naming the tool; nothing here performs it."""
     key = current["key"] if current else "complete"
     status = research.get("status")
@@ -354,9 +354,10 @@ def _next_action(ident, current, research, draftable, rule_views, checks, steps,
     if key == "candidate" and draftable:
         return f"draft_detection('{ident}', evidence_id={draftable[0]['id']})"
     if key == "checks":
-        untested = [rid for rid, c in checks.items() if not (c and c["tests_current_version"])]
+        untested = [rid for rid, c in checks.items() if not (c and c["tests_current_version"])
+                    or (rid in source_rule_ids and c.get("sample_provenance") == "bundled_synthetic_fixture")]
         return (f"test_rule_against_samples('{untested[0]}', <labeled JSONL>) with analyst-labeled positive and "
-                "benign events." if untested else current.get("missing"))
+                "benign events from your environment." if untested else current.get("missing"))
     if key == "decision":
         pending = [r["id"] for r in rule_views if r["status"] == "draft"]
         return (f"Analyst decision on {', '.join(pending)}: implement_rule(..., 'implement this rule') only on the "
@@ -536,17 +537,23 @@ def lead_progression(threat_id, path: Path | None = None):
                       if custom_obs else "Needs a cited, analyst-verified behavior; never generated from a CVE title."))
 
     checks = {r["id"]: latest_check(r["id"], path) for r in rule_views}
+    source_rule_ids = {link["rule_id"] for link in source_links}
+    fixture_only = [rid for rid, c in checks.items() if rid in source_rule_ids and c and
+                    c["tests_current_version"] and c.get("sample_provenance") == "bundled_synthetic_fixture"]
     if not rule_views:
         step("checks", "Labeled checks", "blocked", "Nothing to test yet.", missing="Draft a candidate rule first.")
-    elif all(c and c["tests_current_version"] for c in checks.values()):
+    elif all(c and c["tests_current_version"] for c in checks.values()) and not fixture_only:
         step("checks", "Labeled checks", "done",
              "; ".join(f"{rid}: TP {c['counts']['tp']} / FP {c['counts']['fp']} / FN {c['counts']['fn']} / "
                        f"TN {c['counts']['tn']} on {c['sample_size']} labeled events" for rid, c in checks.items()),
              checks=checks)
     else:
-        step("checks", "Labeled checks", "current", "At least one rule version has no labeled check.", checks=checks,
-             missing=("Replay labeled positive and benign events (JSONL with event_id, event_type, scenario, "
-                      "expected_malicious) via test_rule_against_samples or the dashboard form."))
+        step("checks", "Labeled checks", "current",
+             ("Synthetic replay is a logic demonstration; source-linked drafts still need labeled events from "
+              "your environment." if fixture_only else "At least one rule version has no labeled check."),
+             checks=checks,
+             missing=("Replay labeled positive and benign events from your environment (JSONL with event_id, "
+                      "event_type, scenario, expected_malicious) via test_rule_against_samples or the dashboard form."))
 
     decided = [r for r in rule_views if r["status"] in ("approved", "rejected")]
     if not rule_views:
@@ -570,7 +577,8 @@ def lead_progression(threat_id, path: Path | None = None):
 
     # "attention" is a warning (e.g. telemetry not yet confirmed), not the next action.
     current = next((s for s in steps if s["state"] in ("current", "blocked")), None)
-    next_action = _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links)
+    next_action = _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links,
+                               source_rule_ids)
     return {"threat_id": ident, "title": threat["title"], "kind": threat["kind"],
             "published": threat.get("published"), "collected": threat.get("first_seen"),
             "research_status": research["status"],

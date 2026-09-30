@@ -8,6 +8,7 @@ import hashlib
 import json
 import sys
 import time
+from importlib import resources
 from pathlib import Path
 
 from . import store
@@ -95,14 +96,17 @@ def detect(event, rules):
 
 def read_jsonl(file):
     """Require bounded, complete JSONL records; a broken fixture fails clearly."""
-    with Path(file).open("rb") as stream:
-        for line_number, raw in enumerate(stream, 1):
-            if len(raw) > MAX_EVENT_BYTES or not raw.endswith(b"\n"):
-                raise ValueError(f"line {line_number} is oversized or incomplete")
-            try:
-                yield json.loads(raw)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError(f"line {line_number} is invalid JSON") from exc
+    try:
+        with Path(file).open("rb") as stream:
+            for line_number, raw in enumerate(stream, 1):
+                if len(raw) > MAX_EVENT_BYTES or not raw.endswith(b"\n"):
+                    raise ValueError(f"line {line_number} is oversized or incomplete")
+                try:
+                    yield json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"line {line_number} is invalid JSON") from exc
+    except OSError as exc:
+        raise ValueError(f"cannot read labeled events file {str(file)!r}: {exc.strerror or exc}") from exc
 
 
 def replay(events, rules):
@@ -176,6 +180,11 @@ def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=Tr
     candidates = [r for r in local_rules(path, include_drafts=include_drafts) if r["id"] == rule_id]
     if not candidates:
         raise ValueError("rule could not be loaded for replay (unsupported behavior, expired, or missing)")
+    if events_file == "bundled:needymantis":
+        events_file = str(resources.files("threat_research") / "lab_fixtures" /
+                          "needymantis_synthetic_file_events.jsonl")
+    elif str(events_file).startswith("bundled:"):
+        raise ValueError("unknown bundled fixture; available: bundled:needymantis")
     events = list(read_jsonl(events_file))
     if not events:
         raise ValueError("events file has no records")
