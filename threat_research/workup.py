@@ -258,8 +258,8 @@ def risk_view(threat_id, path: Path | None = None):
 def _review_path(draft, inventory, reviews, path):
     """The analyst gates for one draft, in order, each with its state and the exact input it needs.
 
-    Only the analyst can complete steps 1, 2 (with real labeled events), 3 (declaring the inventory
-    complete) and 4; nothing here performs them.
+    Only the analyst can complete source verification, provide labeled samples,
+    declare inventory scope and approve. Sample checks do not prove SIEM accuracy.
     """
     rid, link = draft["rule_id"], draft["source"]
     steps = []
@@ -280,20 +280,23 @@ def _review_path(draft, inventory, reviews, path):
              needs=(f"Read that paragraph yourself. If it says what the draft encodes: verify_draft_source('{rid}', "
                     f"'I verified this source paragraph'). If not: reject_draft_rule('{rid}', '<reason>')."))
     check = draft["labeled_checks"]
-    real = (check.get("tests_current_version") and check.get("sample_provenance") == "analyst_supplied_file")
+    tested = bool(check.get("tests_current_version"))
     fields = ", ".join(draft["required_fields"] or [])
-    if real:
+    if tested:
+        provenance = check.get("sample_provenance")
+        scope = ("Synthetic fixtures: checks only the listed examples; no production accuracy claim."
+                 if provenance == "bundled_synthetic_fixture" else
+                 "File origin is unverified: checks only the listed examples; no production accuracy claim.")
         step("labeled_events", "2. Labeled-event check", "done",
-             f"{check['sample_size']} analyst-supplied events: {check['counts']} at {check['tested_at']}.")
+             f"{check['sample_size']} labeled events: {check['counts']} at {check['tested_at']}. {scope}")
     else:
-        prior = ("A check exists but used synthetic fixture events, which never count. "
-                 if check.get("sample_provenance") == "bundled_synthetic_fixture" else
-                 "A check exists for an older rule version. " if check.get("tests_current_version") is False else "")
+        prior = "A check exists for an older rule version. " if check.get("tests_current_version") is False else ""
         step("labeled_events", "2. Labeled-event check", "current" if verified else "waiting",
-             prior + "No labeled check on real events from your environment covers this rule version.",
-             needs=("A JSONL file of real labeled events from your environment, one per line: event_id, timestamp, "
+             prior + "No labeled check covers this exact rule version.",
+             needs=("A JSONL file of labeled events, one per line: event_id, timestamp, "
                     f"event_type, {fields}, expected_malicious (true/false), scenario; include benign look-alikes. "
-                    f"Then test_rule_against_samples('{rid}', '<path to that file>')."))
+                    f"Then test_rule_against_samples('{rid}', '<path to that file>'). Synthetic examples "
+                    "must remain labeled as synthetic."))
     answer = inventory["answer"]
     scope = inventory.get("scope") or {}
     step("inventory", "3. Inventory comparison", "done" if answer in ("Yes", "No") else "attention",
@@ -308,11 +311,11 @@ def _review_path(draft, inventory, reviews, path):
     elif draft["status"] == "rejected":
         step("approval", "4. Approval", "rejected", "You rejected this draft; reopen_rejected_rule to revisit.")
     else:
-        ready = verified and real
+        ready = verified and tested
         step("approval", "4. Approval", "current" if ready else "waiting",
              "Steps 1 and 2 are complete." if ready else "Needs steps 1 and 2 first; approval is refused until then.",
              needs=(f"Your explicit request: implement_rule('{rid}', 'implement this rule'). Local repository only; "
-                    "nothing is deployed."))
+                    "nothing is deployed or declared production validated."))
     repo = draft["repository"]
     step("repository", "5. Repository snapshot", "done" if repo["exists"] else "attention",
          f"{repo['folder']}/{rid}.json" + ("" if repo["exists"] else " (not written yet)")

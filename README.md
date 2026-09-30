@@ -131,7 +131,7 @@ The pass never records evidence, drafts or approves a rule.
   6. corroboration;
   7. native SIEM test.
   
-  A source-linked draft's approval is refused until step 1 is done and step 2 has run on **analyst-supplied** events for the current rule version. `test_rule_against_samples` records sample provenance: the bundled lab events, or events marked synthetic, never satisfy the gate.
+  A source-linked draft's local approval requires analyst source verification and a labeled check on the current rule version. Synthetic fixtures may check the logic, but the approval record labels validation as `fixture_only`; an arbitrary JSONL file is `sample_origin_unverified`, never proof of production telemetry. Approval never deploys the rule or claims native SIEM accuracy.
 - **Environment risk attribution**: a score uses only the asset named in the local event context. For a CVE, that asset must itself be confirmed affected. An event on one asset is never combined with another asset's confirmation, exposure or criticality.
 - **Manual source review** (`record_manual_source_review`) for blocked, script-rendered or non-allowlisted pages. It stores the URL (which must be one the lead cites or already tried), your quoted text, how you retrieved it and your decision, with provenance `analyst_manual_entry`. It is never treated as verified; a draft from it (`manual_review_id`) still needs `verify_draft_source`.
 - **`triage_status()`** groups open leads by need, based on each lead's current queue:

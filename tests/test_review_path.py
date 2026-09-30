@@ -107,7 +107,7 @@ class RiskAttributionTest(Base):
 
 
 class ProvenanceAndGateOrderTest(Base):
-    def test_fixture_events_never_satisfy_the_gate_and_steps_open_in_order(self):
+    def test_fixture_events_are_explicitly_labeled_and_steps_open_in_order(self):
         rule_id = self.draft()
         ident = "REPORT-FICTLOADER0001"
 
@@ -123,19 +123,30 @@ class ProvenanceAndGateOrderTest(Base):
         self.assertEqual(lab["sample_provenance"], "bundled_synthetic_fixture")
         marked = soc_replay.test_rule_against_samples(rule_id, self.events("marked.jsonl", True), self.path)
         self.assertEqual(marked["sample_provenance"], "bundled_synthetic_fixture")
-        with self.assertRaisesRegex(ValueError, "synthetic fixture events"):
-            rules.implement_rule(rule_id, "implement this rule", path=self.path)
-        self.assertEqual(states()["approval"], "waiting")
-        real = soc_replay.test_rule_against_samples(rule_id, self.events("analyst.jsonl"), self.path)
-        self.assertEqual((real["sample_provenance"], real["counts"]["tp"], real["counts"]["tn"]),
-                         ("analyst_supplied_file", 1, 1))
+        self.assertEqual(states()["approval"], "current")
+        unverified = soc_replay.test_rule_against_samples(rule_id, self.events("analyst.jsonl"), self.path)
+        self.assertEqual((unverified["sample_provenance"], unverified["counts"]["tp"], unverified["counts"]["tn"]),
+                         ("analyst_supplied_origin_unverified", 1, 1))
         self.assertEqual((states()["labeled_events"], states()["approval"]), ("done", "current"))
         self.assertEqual(states()["inventory"], "attention")  # scope undeclared; the analyst's call, not a gate
-        rules.implement_rule(rule_id, "implement this rule", path=self.path)
+        approval = rules.implement_rule(rule_id, "implement this rule", path=self.path)
+        self.assertEqual(approval["validation_scope"], "sample_origin_unverified")
         final = {s["key"]: s for s in workup.lead_workup(ident, self.path)["drafts"][0]["review_path"]}
         self.assertEqual(final["approval"]["state"], "done")
         self.assertIn("approved/", final["repository"]["detail"])
         self.assertEqual(final["native_siem_test"]["state"], "pending")
+
+    def test_fixture_only_local_approval_does_not_claim_production_validation(self):
+        rule_id = self.draft()
+        drafting.verify(rule_id, "I verified this source paragraph", path=self.path)
+        soc_replay.test_rule_against_samples(rule_id, self.events("synthetic.jsonl", True), self.path)
+        approval = rules.implement_rule(rule_id, "implement this rule", path=self.path)
+        self.assertEqual(approval["validation_scope"], "fixture_only")
+        self.assertEqual(approval["deployment"], "not_deployed")
+        self.assertIn("native SIEM", approval["validation_note"])
+        self.assertIn("Synthetic fixtures", next(s["detail"] for s in
+                      workup.lead_workup("REPORT-FICTLOADER0001", self.path)["drafts"][0]["review_path"]
+                      if s["key"] == "labeled_events"))
 
     def test_matching_source_stays_pending_until_approved(self):
         rule_id = self.draft()

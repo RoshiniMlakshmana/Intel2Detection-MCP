@@ -422,20 +422,17 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
             raise ValueError("unknown rule")
         if row["expires_at"] and row["expires_at"] <= now():
             raise ValueError("IOC hunt has expired; refresh source before approval")
-        link = db.execute("SELECT status FROM rule_source_links WHERE rule_id=?", (rule_id,)).fetchone()
-        if link and link["status"] != "verified":
+        source_link = db.execute("SELECT status FROM rule_source_links WHERE rule_id=?", (rule_id,)).fetchone()
+        if source_link and source_link["status"] != "verified":
             raise ValueError("this draft was proposed from a cited paragraph that the analyst has not verified; "
                              "run verify_draft_source(rule_id, 'I verified this source paragraph') before approval")
-        if link:
+        if source_link:
             from .soc_replay import rule_content_hash
             check = db.execute("SELECT rule_hash,sample_provenance FROM rule_tests WHERE rule_id=? "
                                "ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()
             if not check or check["rule_hash"] != rule_content_hash(dict(row)):
                 raise ValueError("no labeled-event check covers this exact rule version; run "
                                  "test_rule_against_samples(rule_id, <your labeled JSONL>) before approval")
-            if check["sample_provenance"] != "analyst_supplied_file":
-                raise ValueError("the latest labeled check used synthetic fixture events; approval needs a check "
-                                 "on analyst-supplied labeled events from your environment")
         external = db.execute("SELECT id,title,source_url,pattern_score FROM external_inventory WHERE fingerprint=?",
                               (row["fingerprint"],)).fetchone()
         if external:
@@ -454,8 +451,8 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
                 binding = db.execute("SELECT fingerprint FROM custom_rule_observations WHERE evidence_id=?", (evidence_id,)).fetchone()
                 if not binding or binding["fingerprint"] != row["fingerprint"]:
                     raise ValueError("custom observation must match this exact behavior spec")
-            link = db.execute("SELECT 1 FROM rule_evidence WHERE rule_id=? AND evidence_id=?", (rule_id, evidence_id)).fetchone()
-            if not link:
+            existing_link = db.execute("SELECT 1 FROM rule_evidence WHERE rule_id=? AND evidence_id=?", (rule_id, evidence_id)).fetchone()
+            if not existing_link:
                 if row["behavior"] == "custom" and db.execute(
                     "SELECT 1 FROM rule_evidence re JOIN evidence e ON e.id=re.evidence_id "
                     "WHERE re.rule_id=? AND e.source_url=?", (rule_id, evidence["source_url"])).fetchone():
@@ -463,13 +460,17 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
                 db.execute("INSERT INTO rule_evidence(rule_id,evidence_id) VALUES (?,?)", (rule_id, evidence_id))
                 db.execute("UPDATE rules SET pattern_score=pattern_score+1 WHERE id=?", (rule_id,))
         db.execute("UPDATE rules SET status='approved' WHERE id=?", (rule_id,))
+        validation_scope = ("fixture_only" if source_link and check["sample_provenance"] == "bundled_synthetic_fixture"
+                            else "sample_origin_unverified" if source_link else "not_required_for_legacy_rule")
         db.execute("INSERT INTO audit (at,action,target,detail) VALUES (?,?,?,?)",
-                   (now(), "rule_approved", rule_id, json.dumps({"evidence_id": evidence_id})))
+                   (now(), "rule_approved", rule_id,
+                    json.dumps({"evidence_id": evidence_id, "validation_scope": validation_scope})))
         score = db.execute("SELECT pattern_score FROM rules WHERE id=?", (rule_id,)).fetchone()[0]
     rule_repository.export_rule(rule_id, path)
     return {"status": "approved_in_local_inventory", "rule_id": rule_id, "pattern_score": score,
             "suspicion": "higher_corroboration" if score >= 2 else "investigate_context",
-            "deployment": "not_deployed"}
+            "deployment": "not_deployed", "validation_scope": validation_scope,
+            "validation_note": "Local sample logic check only; native SIEM and production accuracy remain unverified."}
 
 
 def acknowledge_existing(rule_id, evidence_id, approval_phrase, path: Path | None = None):

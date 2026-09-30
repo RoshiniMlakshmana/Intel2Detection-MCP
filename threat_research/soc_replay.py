@@ -141,8 +141,7 @@ SYNTHETIC_MARKERS = ("synthetic", "fixture", "fictional")
 
 
 def sample_provenance(events_file, events):
-    """'bundled_synthetic_fixture' for the packaged lab events or any event marked synthetic;
-    otherwise 'analyst_supplied_file'. Only the latter can satisfy an approval gate."""
+    """Classify known fixtures; an arbitrary file path cannot prove the events are real."""
     from importlib import resources
     try:
         fixtures = Path(str(resources.files("threat_research") / "lab_fixtures")).resolve()
@@ -151,7 +150,7 @@ def sample_provenance(events_file, events):
         inside = False
     marked = any(event.get("synthetic") is True or any(
         word in str(event.get("scenario", "")).lower() for word in SYNTHETIC_MARKERS) for event in events)
-    return "bundled_synthetic_fixture" if inside or marked else "analyst_supplied_file"
+    return "bundled_synthetic_fixture" if inside or marked else "analyst_supplied_origin_unverified"
 
 
 def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=True, sample_label=None):
