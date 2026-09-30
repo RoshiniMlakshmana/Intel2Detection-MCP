@@ -200,10 +200,17 @@ def extract_report_html(threat_id, source_url, raw):
             clean = html.unescape(paragraph)
             selected.append({"paragraph": index + 1, "excerpt": clean[:420],
                              "truncated": len(clean) > 420})
+    leads = behavior_leads.from_paragraphs(parser.parts)
+    details = behavior_leads.specific_details(parser.parts)
+    # Full text of every paragraph this result cites, so a later detection
+    # proposal can be checked against the exact inspected wording.
+    cited = sorted({e["paragraph"] for e in selected[:10]} | {d["paragraph"] for d in details}
+                   | {lead["paragraph"] for lead in leads})
     return {"threat_id": threat_id.upper(), "source": source_url,
             "sha256": hashlib.sha256(raw).hexdigest(), "paragraphs_scanned": len(parser.parts),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
-            "behavior_leads": behavior_leads.from_paragraphs(parser.parts),
-            "specific_details": behavior_leads.specific_details(parser.parts),
+            "behavior_leads": leads,
+            "specific_details": details,
+            "paragraph_text": {n: html.unescape(parser.parts[n - 1]) for n in cited[:40]},
             "status": "research_leads_only",
             "next_step": "Read the linked full report, verify behavior and telemetry, then record a cited analyst observation."}

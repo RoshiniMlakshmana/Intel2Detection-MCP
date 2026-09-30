@@ -65,7 +65,8 @@ def _generated_rule_only(rule, path):
         from . import custom_rules
         spec = custom_rules.get_spec(rule["id"], path)
         if not spec or custom_rules.fingerprint(spec) != rule["fingerprint"] or rule["sigma"] != custom_rules._sigma(
-                rule["title"], spec, _custom_false_positives(rule["sigma"])):
+                rule["title"], spec, _custom_false_positives(rule["sigma"]),
+                **custom_rules.sigma_extras(rule["sigma"])):
             raise ValueError("custom draft differs from the generated spec")
         return
     if rule["behavior"] != "ioc_network":

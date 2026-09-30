@@ -99,6 +99,30 @@ Every page is recorded with its outcome and time. Publisher blocks and script-re
 
 The pass never records evidence, drafts or approves a rule.
 
+### Raw triage, lead workup and source-linked drafts
+
+- **`triage_raw_leads()` / `triage_status()`**: bounded, resumable triage of raw leads, round-robin across sources. It runs after the KEV-first pass on its own budget (8 researched leads, 16 fetches, up to 200 no-fetch closures per run). Every triaged lead records why it is closed or still open: not researchable (leak claim, repository commit), no allowlisted source (with the cited hosts), publisher blocked, or unreadable. Queue `triaged_open` holds the open ones.
+- **`lead_workup(threat_id)`**: one answer per lead, and the dashboard's Workup panel renders the same dict. It covers:
+  - source URL and dates;
+  - patterns quoted from inspected paragraphs, each artifact labelled as a hash, a name (not sufficient alone) or a path;
+  - why the publisher calls it malicious, which is the publisher's claim, never activity in your environment;
+  - inventory Yes/No/Unknown;
+  - the draft or the exact drafting blocker;
+  - labelled and native SIEM test status;
+  - pending corroboration reviews and the next analyst decision.
+- **`propose_detection_from_paragraph(...)`**: Claude proposes 2-8 bounded predicates from one stored, inspected paragraph.
+  - Families: `process_creation`, `network_connection`, Windows `file_event`, `mcp_audit`.
+  - Every value must appear verbatim in the paragraph, and a file name alone is refused.
+  - Local and imported inventory is compared first.
+  - The draft is stored **unverified**. Approval is refused until you run `verify_draft_source(rule_id, 'I verified this source paragraph')`.
+  - KQL/SPL are generated only from a configured field mapping. Native SIEM tests show `pending` until `test_draft_in_siem` runs.
+- **Risk**: `lead_workup` keeps three measures apart.
+  - Environment risk is numeric only with a confirmed asset and `record_local_event_context`; otherwise it shows *score unavailable* and the missing inputs.
+  - Threat priority is qualitative factors only.
+  - `pattern_score` counts approved independent corroborations.
+  - `environment_risk()` stays a what-if calculator on typed inputs.
+- **Corroboration**: a fresh inspected paragraph that contains every literal value of an existing custom rule queues a pending review. Approval adds exactly +1.
+
 ### Updating an existing Windows install
 
 ```powershell

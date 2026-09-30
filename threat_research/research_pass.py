@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from . import environment, lead_queue, report_inspection, research_feeds, sources, store
+from . import drafting, environment, lead_queue, report_inspection, research_feeds, sources, store
 from .core import get_threat, now
 
 MAX_LEADS = 4
@@ -57,10 +57,12 @@ BACKLOG_SQL = ("((t.kind='advisory' AND t.kev=1) "
                "OR (t.kind='campaign' AND EXISTS(SELECT 1 FROM report_cves rc JOIN threats c ON c.id=rc.cve_id "
                "WHERE rc.report_id=t.id AND c.kev=1)) "
                "OR EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) "
-               # A lead the pass itself sent to verification (or could not
-               # read) stays actionable even if it started as a raw lead.
+               # A lead the pass itself sent to verification stays actionable
+               # even if it started as a raw lead. An unreadable raw lead does
+               # not: triage records why it stays open instead of flooding the
+               # backlog with every non-KEV CVE whose sources are blocked.
                "OR EXISTS(SELECT 1 FROM research_outcomes rv WHERE rv.threat_id=t.id "
-               "AND rv.status IN ('observables_need_analyst_verification','no_readable_source')))")
+               "AND rv.status='observables_need_analyst_verification'))")
 NO_OBSERVATION_SQL = ("NOT EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id "
                       "AND o.kind='analyst_observation')")
 
@@ -370,7 +372,7 @@ def _store_outcome(db, threat_id, conclusion):
                "detail=excluded.detail", (threat_id, conclusion["status"], now(), json.dumps(conclusion)))
 
 
-def _research(threat_id, path, fetch, cache, budget):
+def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEAD):
     threat = get_threat(threat_id, path)
     if not threat:
         raise ValueError("unknown threat")
@@ -379,7 +381,7 @@ def _research(threat_id, path, fetch, cache, budget):
     pages, evidence, observables, details, owned = [], [], [], [], {}
     linked_added = 0
     index = 0
-    while index < len(queue) and len(pages) < MAX_PAGES_PER_LEAD:
+    while index < len(queue) and len(pages) < max_pages:
         candidate = queue[index]
         index += 1
         fetched = _fetch(candidate["url"], fetch, cache, budget)
@@ -395,6 +397,7 @@ def _research(threat_id, path, fetch, cache, budget):
         details.extend(_details(record, page, fetched["raw"]))
         for lead in page["behavior_leads"]:
             observables.append({"url": record["url"], "role": record["role"], **lead})
+        drafting.record_paragraphs(candidate["url"], page, path)
         lead_queue.store_page_leads(candidate["owner"], candidate["url"], page, path)
         if candidate["role"] in ("primary_advisory", "kev_entry", "cisa_guidance"):
             known = {_clean_url(c["url"]) for c in queue}
@@ -449,7 +452,8 @@ def status(threat_id, path: Path | None = None):
             "note": "Automatic read-only research. Page text is untrusted; nothing was recorded as analyst evidence."}
 
 
-def research_lead(threat_id, path: Path | None = None, fetch=None, refresh=False, cache=None, budget=None):
+def research_lead(threat_id, path: Path | None = None, fetch=None, refresh=False, cache=None, budget=None,
+                  max_pages=MAX_PAGES_PER_LEAD):
     """Research one lead now unless it already has a result (refresh=True re-reads)."""
     store.initialize(path)
     current = status(threat_id, path)
@@ -457,7 +461,7 @@ def research_lead(threat_id, path: Path | None = None, fetch=None, refresh=False
         return current
     budget = budget if budget is not None else {"remaining": MAX_PAGES_PER_LEAD, "fetched": 0}
     return _research(threat_id, path, fetch or report_inspection.fetch_article,
-                     cache if cache is not None else {}, budget)
+                     cache if cache is not None else {}, budget, max_pages)
 
 
 def backlog_count(path: Path | None = None):
@@ -514,3 +518,150 @@ def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=N
             "backlog_remaining": backlog_count(path),
             "note": ("Read-only research ran automatically; no analyst permission is needed to read cited public "
                      "pages. Nothing was recorded as evidence, drafted, approved or risk-scored.")}
+
+
+# ---------------------------------------------------------------------------
+# Raw-lead triage: bounded, resumable, round-robin across sources.
+#
+# The priority pass above works KEV CVEs and reports citing them first, with
+# its own larger budget; triage runs after it with a separate small budget,
+# so raw coverage grows every poll without ever taking KEV capacity. Each
+# processed lead gets one triage_results row saying why it is closed or why
+# it stays open; the next run resumes with leads that have no row.
+# ---------------------------------------------------------------------------
+
+TRIAGE_MAX_LEADS = 8
+TRIAGE_MAX_FETCHES = 16
+TRIAGE_PAGES_PER_LEAD = 4
+TRIAGE_MAX_SKIPS = 200
+TRIAGE_SKIP = {
+    "leak_claim": ("Leak-site claim: names a claimed victim and carries no technical behavior to research; "
+                   "check relevance with leak_claim_relevance."),
+    "research_update": "Repository commit: review the linked diff; there is no report page to research.",
+    "community_rule": "Community rule commit: compare it with your inventory; there is no report page to research.",
+    "ioc": "IOC feed entry: use draft_c2_ioc_hunt for a recent high-confidence indicator; no report page to research.",
+}
+
+
+def raw_triage_candidates(path: Path | None = None):
+    """Untriaged raw leads, newest first within each source, interleaved across sources."""
+    store.initialize(path)
+    with store.connection(path) as db:
+        rows = db.execute(f"""
+            SELECT t.id,t.kind,COALESCE((SELECT e.source_name FROM evidence e WHERE e.threat_id=t.id
+                   AND e.kind='source_fact' AND e.source_name IS NOT NULL ORDER BY e.id LIMIT 1),'unlabeled')
+                   AS source_name, COALESCE(t.published,t.first_seen) AS day
+            FROM threats t
+            WHERE {NO_OBSERVATION_SQL} AND NOT {BACKLOG_SQL}
+              AND NOT EXISTS(SELECT 1 FROM research_outcomes ro WHERE ro.threat_id=t.id)
+              AND NOT EXISTS(SELECT 1 FROM triage_results tr WHERE tr.threat_id=t.id)
+            ORDER BY day DESC, t.id""").fetchall()
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["source_name"], []).append(dict(row))
+    ordered, names = [], sorted(groups)
+    while any(groups[name] for name in names):
+        for name in names:
+            if groups[name]:
+                ordered.append(groups[name].pop(0))
+    return ordered
+
+
+def _record_triage(threat_id, source_name, result, reason, path):
+    with store.connection(path) as db:
+        db.execute("INSERT INTO triage_results (threat_id,source_name,result,reason,triaged_at) VALUES (?,?,?,?,?) "
+                   "ON CONFLICT(threat_id) DO UPDATE SET source_name=excluded.source_name,result=excluded.result,"
+                   "reason=excluded.reason,triaged_at=excluded.triaged_at",
+                   (threat_id, source_name, result, reason[:600], now()))
+
+
+def _open_reason(result):
+    blocked = result.get("publisher_blocked") or []
+    unreadable = result.get("unreadable") or []
+    outside = result.get("not_fetched_host_not_allowlisted") or []
+    parts = []
+    if blocked:
+        parts.append("publisher blocked: " + ", ".join(p["url"] for p in blocked[:3]))
+    if unreadable:
+        parts.append("unreadable or failed: " + ", ".join(p["url"] for p in unreadable[:3]))
+    if outside:
+        parts.append("not on an allowlisted host: " + ", ".join(outside[:3]))
+    return "; ".join(parts) or result.get("summary") or "no readable primary source"
+
+
+def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None, max_fetches=TRIAGE_MAX_FETCHES):
+    """Triage the next raw leads; returns before/after counts and why each lead is closed or still open."""
+    from . import workflow
+    store.initialize(path)
+    before = workflow.workflow_counts(path)
+    candidates = raw_triage_candidates(path)
+    cache, budget = {}, {"remaining": max(1, min(int(max_fetches), 60)), "fetched": 0}
+    researched, skips, processed = 0, 0, []
+    limit = max(1, min(int(max_leads), 40))
+    for lead in candidates:
+        if skips >= TRIAGE_MAX_SKIPS:
+            break
+        ident, source_name = lead["id"], lead["source_name"]
+        if lead["kind"] in TRIAGE_SKIP:
+            skips += 1
+            _record_triage(ident, source_name, "skipped_not_researchable", TRIAGE_SKIP[lead["kind"]], path)
+            processed.append({"threat_id": ident, "source": source_name, "kind": lead["kind"],
+                              "result": "skipped_not_researchable", "reason": TRIAGE_SKIP[lead["kind"]], "open": True})
+            continue
+        threat = get_threat(ident, path)
+        readable = [c for c in _candidates(threat, path) if report_inspection.allowed_url(c["url"])]
+        if not readable:
+            cited = sorted({_host(u) for u in threat["sources"] + [e["source_url"] for e in threat["evidence"]]
+                            if _host(u) and _host(u) not in RECORD_HOSTS})
+            reason = ("No cited page is on a configured publisher or vendor host" +
+                      (f" (cited hosts: {', '.join(cited[:5])})" if cited else " (only the collected record itself)") +
+                      "; open the references manually or add a vetted host.")
+            skips += 1
+            _record_triage(ident, source_name, "no_allowlisted_source", reason, path)
+            processed.append({"threat_id": ident, "source": source_name, "kind": lead["kind"],
+                              "result": "no_allowlisted_source", "reason": reason, "open": True})
+            continue
+        if researched >= limit or budget["remaining"] <= 0:
+            # Resumable: this lead keeps no triage row and is picked up next
+            # run; cheaper no-fetch leads after it are still closed now.
+            continue
+        result = research_lead(ident, path, fetch=fetch, refresh=True, cache=cache, budget=budget,
+                               max_pages=TRIAGE_PAGES_PER_LEAD)
+        researched += 1
+        status = result["status"]
+        if status == "completed_insufficient_detail":
+            outcome, reason, still_open = "researched_insufficient_detail", result["summary"], False
+        elif status == "observables_need_analyst_verification":
+            outcome, reason, still_open = "moved_to_research_backlog", result["summary"], False
+        else:
+            outcome = "publisher_blocked" if result.get("publisher_blocked") else "unreadable_source"
+            reason, still_open = _open_reason(result), True
+        _record_triage(ident, source_name, outcome, reason, path)
+        processed.append({"threat_id": ident, "source": source_name, "kind": lead["kind"], "result": outcome,
+                          "reason": reason, "open": still_open,
+                          "publisher_blocked": [p["url"] for p in result.get("publisher_blocked") or []]})
+    after = workflow.workflow_counts(path)
+    keys = ("actionable_research_backlog", "raw_unreviewed_leads", "triaged_open",
+            "research_completed_insufficient_detail", "evidence_recorded", "leads_total")
+    return {"before": {k: before.get(k) for k in keys}, "after": {k: after.get(k) for k in keys},
+            "processed": processed, "researched": researched, "skipped_without_fetch": skips,
+            "pages_fetched": budget["fetched"],
+            "publisher_blocks": sorted({u for p in processed for u in p.get("publisher_blocked", [])}),
+            "untriaged_remaining": len(raw_triage_candidates(path)),
+            "note": ("Raw triage is read-only and resumable. The KEV-first priority pass runs before it with its own "
+                     "budget, so triage never takes KEV capacity. Nothing was recorded as evidence, drafted, approved "
+                     "or risk-scored.")}
+
+
+def triage_summary(path: Path | None = None, limit=50):
+    """Why triaged leads remain open, grouped by result."""
+    store.initialize(path)
+    with store.connection(path) as db:
+        groups = {r["result"]: r["n"] for r in db.execute(
+            "SELECT result,COUNT(*) AS n FROM triage_results GROUP BY result")}
+        rows = [dict(r) for r in db.execute(
+            "SELECT tr.threat_id,tr.source_name,tr.result,tr.reason,tr.triaged_at,t.title FROM triage_results tr "
+            "JOIN threats t ON t.id=tr.threat_id WHERE tr.result NOT IN "
+            "('researched_insufficient_detail','moved_to_research_backlog') ORDER BY tr.triaged_at DESC,tr.threat_id "
+            "LIMIT ?", (max(1, min(int(limit), 200)),))]
+    return {"results": groups, "open_leads": rows, "untriaged_remaining": len(raw_triage_candidates(path))}

@@ -163,6 +163,16 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
                             "backlog_remaining": research["backlog_remaining"]}
             except (OSError, ValueError) as exc:
                 research = {"error": str(exc)[:200]}
+            # Raw triage runs only after the KEV-first pass, on its own small
+            # budget, so it widens coverage without taking priority capacity.
+            try:
+                triage = research_pass.triage_raw(path)
+                research["raw_triage"] = {"researched": triage["researched"],
+                                          "skipped_without_fetch": triage["skipped_without_fetch"],
+                                          "pages_fetched": triage["pages_fetched"],
+                                          "untriaged_remaining": triage["untriaged_remaining"]}
+            except (OSError, ValueError) as exc:
+                research["raw_triage"] = {"error": str(exc)[:200]}
         framework_update = None
         if adapters is None:
             from . import frameworks

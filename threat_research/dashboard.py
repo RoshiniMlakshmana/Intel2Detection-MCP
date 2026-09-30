@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import core, corroboration, custom_rules, dashboard_data, environment, poller, rules, soc_replay, store, workflow
+from . import core, corroboration, custom_rules, dashboard_data, environment, poller, rules, soc_replay, store, workflow, workup
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -127,6 +127,7 @@ def _page(title, body, active=None, flash=None, path=None):
     nav_items = [("/", "Sources"), ("/leads", "All leads"),
                  ("/leads?queue=research_backlog", counted("Research backlog", "actionable_research_backlog")),
                  ("/leads?queue=raw_unreviewed", counted("Raw leads", "raw_unreviewed_leads")),
+                 ("/leads?queue=triaged_open", counted("Triaged open", "triaged_open")),
                  ("/leads?queue=research_completed",
                   counted("Research completed", "research_completed_insufficient_detail")),
                  ("/rules?state=draft", counted("Draft rules", "draft_rules")),
@@ -248,11 +249,14 @@ def _lead_row(item):
 
 
 QUEUE_HEADINGS = {"research_backlog": "Research backlog", "raw_unreviewed": "Raw unreviewed leads",
+                  "triaged_open": "Triaged, still open",
                   "research_completed": "Research completed", "evidence_recorded": "Evidence recorded"}
 QUEUE_LEDES = {
     "research_backlog": ("Actionable: CISA KEV CVEs, reports citing a KEV CVE and reports with behavior leads that "
                          "still need research. Polling and <code>run_research_pass()</code> read their cited pages "
                          "automatically."),
+    "triaged_open": ("Raw leads that triage looked at but could not close: not researchable, no allowlisted "
+                     "source, publisher blocked or unreadable. <code>triage_status()</code> gives each reason."),
     "raw_unreviewed": ("Everything else that was collected (non-KEV CVEs, leak claims, general news). Untriaged "
                        "collection, not a research to-do list."),
     "research_completed": ("Cited sources were read automatically and none names a specific observable for a rule. "
@@ -637,6 +641,64 @@ def _progression_html(prog):
     return f'{action}<ol class="steps">{"".join(items)}</ol>'
 
 
+def _workup_html(w):
+    """Render lead_workup exactly; the MCP tool returns the same dict."""
+    parts = [f'<p><b>Next analyst decision:</b> {_e(w["next_analyst_decision"])}</p>',
+             f'<p><b>Source:</b> {_e(w["source"]["name"])} {_safe_href(w["source"]["url"]) if w["source"]["url"] else ""}'
+             f' &middot; <b>Published:</b> {_fmt(w["published"])} &middot; <b>Collected:</b> {_fmt(w["collected"])}</p>']
+    patterns = w["pattern_analysis"]["patterns"]
+    if not patterns:
+        parts.append(f'<p class="missing">No pattern: {_e(w["pattern_analysis"].get("reason") or "no specific artifact in inspected text")}</p>')
+    for item in patterns[:6]:
+        artifacts = (item["observable"].get("artifacts") or [])
+        why = item["why_malicious_per_source"]
+        parts.append(
+            f'<details><summary>{_safe_href(item["source_url"])} &para;{item["paragraph"]} '
+            f'<span class="badge stale">{_e(item["status"])}</span></summary>'
+            f'<p><small class="muted">Published {_fmt(item["published"])} &middot; collected {_fmt(item["collected"])} '
+            f'&middot; inspected {_fmt(item["inspected_at"])}</small></p>'
+            f'<blockquote>{_e(item["quoted_paragraph"][:1500])}</blockquote>'
+            + _bullets([f'{a["value"]} ({a["kind"]}): {a["sufficiency"]}' for a in artifacts]
+                       or [f'Lexical behavior: {item["observable"].get("lexical_behavior")}'])
+            + f'<p><b>Why the source calls it malicious:</b> {_e(why["explanation"])}</p>'
+            + _bullets([f'“{sentence}”' for sentence in why["publisher_statements"]])
+            + f'<p><small class="muted">{_e(item["claim_scope"])}</small></p></details>')
+    inv = w["inventory"]
+    parts.append(f'<p><b>Inventory:</b> {_e(inv["answer"])} &middot; <small class="muted">'
+                 f'{_e((inv.get("scope") or {}).get("reason") or (inv.get("scope") or {}).get("scope") or "")}</small></p>')
+    for draft in w["drafts"]:
+        queries = draft["queries"]
+        checks = draft["labeled_checks"]
+        parts.append(
+            f'<h3>Draft {_e(draft["title"])} <code>{_e(draft["rule_id"])}</code></h3>'
+            f'<p>Status <b>{_e(draft["status"])}</b> &middot; source verification <b>{_e(draft["source_verification"])}</b>'
+            f' &middot; pattern_score {draft["pattern_score"]}</p>'
+            f'<p><b>Required fields:</b> {_e(", ".join(draft["required_fields"] or []))}<br>'
+            f'<small class="muted">{_e(draft["telemetry_requirements"])}</small></p>'
+            f'<pre>{_e(draft["sigma"])}</pre>'
+            f'<p><b>KQL/SPL:</b> {_e(queries.get("query") or "not generated: " + str(queries.get("reason")))}</p>'
+            f'<p><b>Labeled checks:</b> {_e(checks.get("detail") if checks.get("status") == "not run" else checks.get("counts"))}'
+            f' &middot; <b>Native SIEM test:</b> {_e(queries["native_test"]["status"])}</p>')
+    if w["drafting_blocker"]:
+        parts.append(f'<p class="missing">Drafting: {_e(w["drafting_blocker"])}</p>')
+    risk = w["risk"]
+    env = risk["environment_risk"]
+    parts.append('<h3>Risk (three separate measures)</h3>'
+                 + (f'<p><b>Environment risk:</b> {env["score"]}/100</p>'
+                    + _bullets([f"{k}: {v}" for k, v in env["components"].items()])
+                    if env["score"] is not None else
+                    '<p><b>Environment risk:</b> score unavailable</p>' + _bullets(env["missing_inputs"]))
+                 + f'<p><b>Threat priority:</b> {_e(risk["threat_priority"]["label"])}</p>'
+                 + _bullets(risk["threat_priority"]["factors"])
+                 + '<p><b>pattern_score:</b> '
+                 + (_e("; ".join(f'{r["title"]}: {r["pattern_score"]}' for r in risk["pattern_score"])) or "no rules")
+                 + f'</p><p><small class="muted">{_e(risk["note"])}</small></p>')
+    for review in w["corroboration_reviews"]:
+        parts.append(f'<p>Pending corroboration review <a href="/reviews">#{review["id"]}</a> for '
+                     f'<code>{_e(review["rule_id"])}</code> from {_safe_href(review["source_url"])}.</p>')
+    return "".join(parts)
+
+
 def render_threat(threat_id, path=None, qs=None):
     qs = qs or {}
     view = dashboard_data.threat_detail_view(threat_id, path)
@@ -648,9 +710,11 @@ def render_threat(threat_id, path=None, qs=None):
     evidence_options = "".join(f'<option value="{e["id"]}">#{e["id"]} ({_e(e["kind"])}{" - " + _e(e["behavior"]) if e.get("behavior") else ""})</option>'
                                for e in t["evidence"] if e["kind"] == "analyst_observation")
     risk = view["environment_risk"]
-    risk_html = (f'<p><b>Score:</b> {risk.get("score")} &middot; <b>Priority:</b> {_e(risk.get("priority"))}</p>'
-                if risk.get("score") is not None else
-                f'<p><span class="badge unknown">Unknown</span> {_e(risk.get("reason") or "Environment not configured; score cannot be asserted.")}</p>')
+    risk_html = (f'<p><b>Environment score:</b> {risk["score"]}/100 (asset {_e(risk.get("asset_id"))})</p>'
+                 + _bullets([f"{k}: {v}" for k, v in (risk.get("components") or {}).items()])
+                 if risk.get("score") is not None else
+                 '<p><span class="badge unknown">Score unavailable</span></p>'
+                 + _bullets(risk.get("missing_inputs") or []))
     telemetry_bullets = _bullets(sorted({rules.TEMPLATES[b]["telemetry"] for b in
                                           {e["behavior"] for e in t["evidence"] if e["kind"] == "analyst_observation" and e["behavior"] in rules.TEMPLATES}}))
     fp_bullets = _bullets(["Authorized administration or application maintenance can match the same pattern; "
@@ -661,6 +725,9 @@ def render_threat(threat_id, path=None, qs=None):
 
 <h2>Progress</h2>
 <div class="panel">{_progression_html(progression)}</div>
+
+<h2>Workup</h2>
+<div class="panel">{_workup_html(workup.lead_workup(t["id"], path))}</div>
 
 <h2>1. Source and evidence</h2>
 <div class="panel">

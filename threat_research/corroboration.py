@@ -67,6 +67,56 @@ def queue_from_lead(threat_id, source_url, paragraph, behavior, excerpt, path: P
     return row["id"] if row else None
 
 
+def queue_custom_matches(threat_id, source_url, page, path: Path | None = None):
+    """Queue a pending review when a fresh inspected paragraph contains every literal
+    predicate value of an existing custom rule (draft or approved).
+
+    The match is exact on the rule's own literals (e.g. the same SHA-256 and
+    file name), never similarity. The rule's own cited source, or any source
+    that already corroborated it, is skipped, so a re-read can never queue a
+    self-corroboration. Nothing is attached or scored here.
+    """
+    texts = page.get("paragraph_text") or {}
+    if not texts:
+        return []
+    with store.connection(path) as db:
+        candidates = db.execute("SELECT r.id,r.status,r.fingerprint,c.spec FROM rules r "
+                                "JOIN custom_rule_specs c ON c.rule_id=r.id "
+                                "WHERE r.status IN ('draft','approved')").fetchall()
+    queued = []
+    for row in candidates:
+        values = [p["value"].casefold() for p in json.loads(row["spec"])["predicates"]]
+        if source_url in _existing_source_urls("local", row["id"], path):
+            continue
+        for number, text in sorted(texts.items(), key=lambda item: int(item[0])):
+            if all(value in text.casefold() for value in values):
+                with store.connection(path) as db:
+                    inserted = db.execute("""INSERT OR IGNORE INTO corroboration_reviews
+                        (rule_kind,rule_id,threat_id,source_url,paragraph,behavior,excerpt,fingerprint,
+                         matched_rule_status,status,created_at)
+                        VALUES ('local',?,?,?,?,'custom',?,?,?,'pending',?)""",
+                                          (row["id"], threat_id.upper(), source_url, int(number), text[:420],
+                                           row["fingerprint"], row["status"], now())).rowcount
+                if inserted:
+                    queued.append(row["id"])
+                break
+    return queued
+
+
+def _custom_observation(review, path):
+    """Approving a custom review is the analyst confirming that exact paragraph."""
+    claim = f"Corroboration review approved (paragraph {review['paragraph']}): {review['excerpt']}"[:1000]
+    with store.connection(path) as db:
+        db.execute("INSERT OR IGNORE INTO evidence (threat_id,source_url,claim,kind,behavior,observed_at) "
+                   "VALUES (?,?,?,?,?,?)", (review["threat_id"], review["source_url"], claim,
+                                            "analyst_observation", "custom", now()))
+        evidence_id = db.execute("SELECT id FROM evidence WHERE threat_id=? AND source_url=? AND claim=? "
+                                 "AND kind='analyst_observation'",
+                                 (review["threat_id"], review["source_url"], claim)).fetchone()[0]
+        db.execute("INSERT OR IGNORE INTO custom_rule_observations VALUES (?,?)", (evidence_id, review["fingerprint"]))
+    return evidence_id
+
+
 def _rule_context(rule_kind, rule_id, path):
     """Live title/status/pattern_score -- never the stale value captured at
     queue time, so a rule already approved (or corroborated) since the lead
@@ -149,7 +199,8 @@ def approve(review_id, approval_phrase, path: Path | None = None):
         raise ValueError("this source already corroborated this rule (directly or via an earlier review); "
                          "a mirrored or repeated source must not increment the score again")
     claim = f"Corroboration review approved: {review['excerpt']}"[:1000]
-    evidence_id = core.add_behavior_evidence(review["threat_id"], review["source_url"], claim, review["behavior"], path)
+    evidence_id = (_custom_observation(review, path) if review["behavior"] == "custom" else
+                   core.add_behavior_evidence(review["threat_id"], review["source_url"], claim, review["behavior"], path))
     if review["rule_kind"] == "local":
         result = rules.corroborate_local_rule(review["rule_id"], evidence_id, path)
     else:

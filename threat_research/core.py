@@ -163,6 +163,8 @@ def backfill_source_names(path: Path | None = None):
             return 0
         rows = db.execute("SELECT id,source_url FROM evidence WHERE kind='source_fact' AND source_name IS NULL").fetchall()
         rss_hosts = {urlsplit(url).hostname: "RSS: " + name for name, url, _ in research_feeds.FEEDS}
+        # Feeds served through a redirector host publish articles elsewhere.
+        rss_hosts["thehackernews.com"] = "RSS: The Hacker News"
         repo_prefixes = {f"https://github.com/{repo}/commit/": "GitHub: " + name for name, repo, _, _ in repo_updates.REPOSITORIES}
         updated = 0
         for row in rows:

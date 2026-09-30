@@ -154,6 +154,30 @@ def initialize(path: Path | None = None):
                 detail TEXT, sha256 TEXT, paragraphs_scanned INTEGER, inspected_at TEXT NOT NULL,
                 PRIMARY KEY(threat_id,url)
             );
+            CREATE TABLE IF NOT EXISTS inspected_paragraphs (
+                url TEXT NOT NULL, paragraph INTEGER NOT NULL, page_sha256 TEXT NOT NULL,
+                text TEXT NOT NULL, inspected_at TEXT NOT NULL,
+                PRIMARY KEY(url, paragraph, page_sha256)
+            );
+            CREATE TABLE IF NOT EXISTS rule_source_links (
+                rule_id TEXT PRIMARY KEY REFERENCES rules(id), threat_id TEXT NOT NULL,
+                source_url TEXT NOT NULL, paragraph INTEGER NOT NULL, page_sha256 TEXT NOT NULL,
+                quoted_text TEXT NOT NULL, proposed_by TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('unverified','verified')),
+                created_at TEXT NOT NULL, verified_at TEXT, verified_note TEXT
+            );
+            CREATE TABLE IF NOT EXISTS local_event_context (
+                threat_id TEXT PRIMARY KEY REFERENCES threats(id), asset_id TEXT,
+                observed INTEGER NOT NULL, detail TEXT NOT NULL, recorded_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS native_siem_tests (
+                id INTEGER PRIMARY KEY, rule_id TEXT NOT NULL REFERENCES rules(id), rule_hash TEXT NOT NULL,
+                ran_at TEXT NOT NULL, siem TEXT, status TEXT NOT NULL, result TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS triage_results (
+                threat_id TEXT PRIMARY KEY REFERENCES threats(id), source_name TEXT,
+                result TEXT NOT NULL, reason TEXT NOT NULL, triaged_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS research_outcomes (
                 threat_id TEXT PRIMARY KEY REFERENCES threats(id),
                 status TEXT NOT NULL CHECK(status IN ('completed_insufficient_detail',

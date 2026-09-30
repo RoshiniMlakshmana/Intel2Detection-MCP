@@ -152,13 +152,12 @@ def threat_detail_view(threat_id, path: Path | None = None):
     research = research_view(threat_id, path)
     inventory = rules.inventory_status(threat_id, path)
     env_state = environment.status(path)
-    if threat["kind"] == "advisory":
-        risk = (environment.risk_from_assets(threat_id, path) if env_state.get("configured")
-                else {"score": None, "priority": "verify_client_assets",
-                      "reason": "No verified client asset inventory is configured; run onboard first."})
-    else:
-        from .core import assess_risk
-        risk = assess_risk(threat_id, {}, path)
+    # Same environment-risk logic as the lead_workup MCP tool: a number only
+    # with a confirmed asset and recorded local event context. (Previously a
+    # non-advisory lead got assess_risk(threat, {}) -- a score from default
+    # inputs with no asset at all.)
+    from .workup import risk_view
+    risk = risk_view(threat_id, path)["environment_risk"]
     behaviors = sorted({e["behavior"] for e in threat["evidence"]
                         if e["kind"] == "analyst_observation" and e["behavior"] in rules.TEMPLATES})
     framework_context = {behavior: frameworks.retrieve(behavior, path, update=False) for behavior in behaviors}

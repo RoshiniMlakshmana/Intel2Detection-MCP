@@ -43,6 +43,11 @@ ACTOR = re.compile(r"\b(?:attacker|adversar(?:y|ies)|threat actors?|actors?|MCA|
                    r"exploit(?:ed|ing|ation)?|malware|malicious|loader|sample|payload|backdoor|implant|"
                    r"dropper|stealer|ransomware|beacon|shellcode|web ?shell|C2|command[- ]and[- ]control)\b", re.I)
 HASH = re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.I)
+# SHA-256/SHA-1 lengths are specific on their own. A 32-hex value is also the
+# shape of reporter handles and IDs (observed: Chrome release notes' "Reported
+# by c6eed09f..."), so it counts only when labeled as a hash or in context.
+STRONG_HASH = re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40})\b", re.I)
+HASH_LABEL = re.compile(r"\b(?:md5|sha-?1|sha-?256|hash(?:es)?)\b", re.I)
 ARTIFACT = re.compile(
     r"(?:(?<![\w/])/(?:bin|sbin|tmp|var|etc|usr|netscaler|flash|home|opt|dev/shm)/[\w./-]+"
     r"|\b[A-Za-z]:\\[\w\\.-]+"
@@ -63,7 +68,8 @@ def specific_details(paragraphs, limit=5):
     for index, paragraph in enumerate(paragraphs):
         # A file hash in a threat report is itself a specific artifact; other
         # tokens (paths, file names, IPs) need actor or malware context.
-        if NEGATION.search(paragraph) or not (ACTOR.search(paragraph) or HASH.search(paragraph)):
+        labeled = HASH.search(paragraph) and HASH_LABEL.search(paragraph)
+        if NEGATION.search(paragraph) or not (ACTOR.search(paragraph) or STRONG_HASH.search(paragraph) or labeled):
             continue
         tokens = list(dict.fromkeys(m.group(0) for m in ARTIFACT.finditer(paragraph)))
         if tokens:

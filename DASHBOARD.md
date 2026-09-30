@@ -8,6 +8,16 @@ polls. It never claims a rule was deployed to a SIEM; approval only adds a
 rule to the local detection repository (`rules` table), exactly like the
 existing `implement_rule` MCP tool.
 
+## Workup panel and triage tab
+
+- The lead page's **Workup** panel renders `lead_workup(threat_id)` exactly. It shows:
+  - the next analyst decision, source and dates;
+  - quoted patterns with artifact sufficiency and the publisher's own reasoning;
+  - inventory, and each draft's Sigma, required fields, source-verification status, KQL/SPL status and tests;
+  - the three separate risk measures.
+- The page's environment risk no longer derives a number from default inputs. With no confirmed asset and local event context it shows *Score unavailable* and the missing inputs.
+- **Triaged open** tab: raw leads triage could not close. `triage_status()` gives each reason.
+
 ## Research backlog vs raw leads
 
 The single "Research needed" tab (every collected lead without verified

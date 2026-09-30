@@ -15,7 +15,7 @@ from .core import now
 from .rules import TEMPLATES
 
 MAX_EVENT_BYTES = 64_000
-EVENT_TYPES = {"process_creation", "network_connection", "tool_invocation"}
+EVENT_TYPES = {"process_creation", "network_connection", "file_event", "tool_invocation"}
 
 
 def local_rules(path=None, include_drafts=False):

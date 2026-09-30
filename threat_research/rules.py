@@ -422,6 +422,10 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
             raise ValueError("unknown rule")
         if row["expires_at"] and row["expires_at"] <= now():
             raise ValueError("IOC hunt has expired; refresh source before approval")
+        link = db.execute("SELECT status FROM rule_source_links WHERE rule_id=?", (rule_id,)).fetchone()
+        if link and link["status"] != "verified":
+            raise ValueError("this draft was proposed from a cited paragraph that the analyst has not verified; "
+                             "run verify_draft_source(rule_id, 'I verified this source paragraph') before approval")
         external = db.execute("SELECT id,title,source_url,pattern_score FROM external_inventory WHERE fingerprint=?",
                               (row["fingerprint"],)).fetchone()
         if external:

@@ -26,7 +26,9 @@ async def main():
                         "risk_from_asset_inventory", "draft_detection", "implement_rule",
                         "research_detection_plan", "draft_custom_detection", "search_framework_techniques",
                         "list_sources", "list_leads", "lead_progression", "workflow_counts", "list_rules",
-                        "source_errors", "run_research_pass", "research_lead"} <= names
+                        "source_errors", "run_research_pass", "research_lead", "lead_workup", "triage_raw_leads",
+                        "triage_status", "propose_detection_from_paragraph", "verify_draft_source",
+                        "record_local_event_context"} <= names
                 result = await session.call_tool("evaluate_synthetic_soc_lab", {})
                 assert not result.is_error
                 report = json.loads(result.content[0].text)
@@ -90,6 +92,22 @@ async def main():
                 assert counts["leads_total"] == (counts["actionable_research_backlog"] + counts["raw_unreviewed_leads"]
                                                  + counts["research_completed_insufficient_detail"]
                                                  + counts["evidence_recorded"]), counts
+                work = await call("lead_workup", {"threat_id": registered["id"]})
+                assert work["risk"]["environment_risk"]["status"] == "score unavailable", work["risk"]
+                assert work["inventory"]["answer"] == "Yes" and work["next_analyst_decision"], work
+                unread = await call("propose_detection_from_paragraph", {
+                    "threat_id": registered["id"], "source_url": source, "paragraph": 1,
+                    "spec": {"event_family": "file_event", "platform": "windows", "predicates": [
+                        {"field": "SHA256", "operator": "equals", "value": "a" * 64},
+                        {"field": "TargetFilename", "operator": "endswith", "value": "x.dll"}]},
+                    "title": "Smoke proposal title", "rationale": "Smoke proposal rationale text long enough.",
+                    "false_positives": "Smoke false positives text."})
+                assert unread["status"] == "refused" and "not inspected" in unread["reason"], unread
+                gate2 = await call("verify_draft_source", {"rule_id": proposed["rule_id"], "confirmation": "ok"})
+                assert gate2["status"] == "refused", gate2
+                triage = await call("triage_raw_leads", {"max_leads": 1})
+                assert triage["researched"] == 0 and "before" in triage, triage
+                assert "untriaged_remaining" in await call("triage_status", {})
                 research = await call("run_research_pass", {"max_leads": 2})
                 assert research["leads_researched"] == 0 and research["backlog_remaining"] == 0, research
                 lead = await call("research_lead", {"threat_id": registered["id"]})

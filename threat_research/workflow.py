@@ -19,7 +19,7 @@ STATUSES = ("research_needed", "article_leads", "research_completed", "evidence_
 # KEV, reports citing a KEV CVE, reports with behavior leads) still needing a
 # report read; raw_unreviewed: everything else nobody has looked at yet;
 # research_completed: sources read, insufficient detail for a detection.
-QUEUES = ("research_backlog", "raw_unreviewed", "research_completed", "evidence_recorded")
+QUEUES = ("research_backlog", "raw_unreviewed", "triaged_open", "research_completed", "evidence_recorded")
 RULE_STATES = ("none", "draft", "approved", "rejected")
 KINDS = ("advisory", "campaign", "ioc", "leak_claim", "research_update", "community_rule")
 DATE_FIELDS = ("published", "collected")
@@ -29,7 +29,8 @@ DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # from each other (the dashboard prints these; README lists the same names).
 TAB_TOOLS = {
     "research_backlog": "list_leads(queue='research_backlog') / run_research_pass()",
-    "raw_unreviewed": "list_leads(queue='raw_unreviewed')",
+    "raw_unreviewed": "list_leads(queue='raw_unreviewed') / triage_raw_leads()",
+    "triaged_open": "list_leads(queue='triaged_open') / triage_status()",
     "draft_rules": "list_rules(state='draft')",
     "pending_reviews": "pending_corroboration_reviews()",
     "approved_rules": "list_rules(state='approved')",
@@ -48,7 +49,9 @@ _QUEUE_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM evidence o WHERE o.threat_id=t.id 
               "THEN 'evidence_recorded' "
               "WHEN EXISTS(SELECT 1 FROM research_outcomes ro WHERE ro.threat_id=t.id "
               "AND ro.status='completed_insufficient_detail') THEN 'research_completed' "
-              f"WHEN {research_pass.BACKLOG_SQL} THEN 'research_backlog' ELSE 'raw_unreviewed' END")
+              f"WHEN {research_pass.BACKLOG_SQL} THEN 'research_backlog' "
+              "WHEN EXISTS(SELECT 1 FROM triage_results tr WHERE tr.threat_id=t.id) THEN 'triaged_open' "
+              "ELSE 'raw_unreviewed' END")
 _RULE_STATE_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='approved') THEN 'approved' "
                    "WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='draft') THEN 'draft' "
                    "WHEN EXISTS(SELECT 1 FROM rules r WHERE r.threat_id=t.id AND r.status='rejected') THEN 'rejected' "
@@ -205,6 +208,7 @@ def workflow_counts(path: Path | None = None):
     errors = source_errors(path)
     return {"actionable_research_backlog": queues.get("research_backlog", 0),
             "raw_unreviewed_leads": queues.get("raw_unreviewed", 0),
+            "triaged_open": queues.get("triaged_open", 0),
             "research_completed_insufficient_detail": queues.get("research_completed", 0),
             "evidence_recorded": queues.get("evidence_recorded", 0),
             "leads_total": sum(queues.values()),
@@ -219,8 +223,11 @@ def workflow_counts(path: Path | None = None):
             "definitions": {
                 "actionable_research_backlog": ("CISA KEV CVEs, reports citing a KEV CVE, and reports with behavior "
                                                 "leads that still need research; run_research_pass works this queue."),
-                "raw_unreviewed_leads": ("All other collected leads (non-KEV CVEs, leak claims, general news); "
-                                         "not triaged, and not a research to-do list."),
+                "raw_unreviewed_leads": ("Collected leads nobody has triaged yet (non-KEV CVEs, leak claims, "
+                                         "general news); triage_raw_leads works through them."),
+                "triaged_open": ("Raw leads triage looked at but could not close: skipped as not researchable, "
+                                 "no allowlisted source, publisher blocked or unreadable; triage_status() gives "
+                                 "each reason."),
                 "research_completed_insufficient_detail": ("Sources were read automatically and no specific cited "
                                                            "observable supports a rule; an exposure/patch review "
                                                            "is offered instead.")},

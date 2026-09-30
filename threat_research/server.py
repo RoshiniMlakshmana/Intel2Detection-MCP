@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import core, corroboration, custom_rules, dashboard_data, digest, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow
+from . import core, corroboration, custom_rules, dashboard_data, digest, drafting, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow, workup
 
 mcp = MCPServer("ThreatResearch")
 
@@ -97,6 +97,44 @@ def lead_progression(threat_id: str) -> dict:
 
 
 @mcp.tool()
+def lead_workup(threat_id: str) -> dict:
+    """One analyst workup for a lead: source URL and dates, inspected-paragraph patterns with why the publisher calls them malicious (a publisher claim, never activity in your environment), inventory Yes/No/Unknown with scope, the draft rule (Sigma, required fields, source verification, KQL/SPL only when mapped) or the precise drafting blocker, environment risk vs threat priority vs pattern_score, labeled and native SIEM tests, pending corroboration reviews, and the next analyst decision. Read-only."""
+    return workup.lead_workup(threat_id)
+
+
+@mcp.tool()
+def triage_raw_leads(max_leads: int = 8) -> dict:
+    """Read-only; run it without asking. Triage the next untriaged raw leads round-robin across sources (resumable; KEV-first research always runs before it with its own budget). Returns before/after queue counts, each lead's result and why it stays open, skipped leads and publisher blocks."""
+    return research_pass.triage_raw(max_leads=max(1, min(int(max_leads), 40)))
+
+
+@mcp.tool()
+def triage_status(limit: int = 50) -> dict:
+    """Why triaged raw leads remain open (skipped as not researchable, no allowlisted source, publisher blocked, unreadable), with counts per result and how many raw leads are still untriaged."""
+    return research_pass.triage_summary(limit=limit)
+
+
+@mcp.tool()
+def propose_detection_from_paragraph(threat_id: str, source_url: str, paragraph: int, spec: dict, title: str,
+                                     rationale: str, false_positives: str) -> dict:
+    """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | mcp_audit; platform windows or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, required fields); approval is refused until verify_draft_source. KQL/SPL only when a configured mapping supports every field."""
+    return _refused_as_data(drafting.propose, threat_id, source_url, paragraph, spec, title, rationale,
+                            false_positives)
+
+
+@mcp.tool()
+def verify_draft_source(rule_id: str, confirmation: str, note: str = "") -> dict:
+    """Analyst only, on the analyst's own statement: after reading the cited paragraph, confirmation 'I verified this source paragraph' records it as an analyst observation. Never approves the rule and never changes pattern_score."""
+    return _refused_as_data(drafting.verify, rule_id, confirmation, note)
+
+
+@mcp.tool()
+def record_local_event_context(threat_id: str, observed: str, detail: str, asset_id: str = "") -> dict:
+    """Analyst only: record whether this lead's artifact or behavior was seen in your logs (observed yes|no) and exactly which log source, query and time range were checked. Required, with a confirmed asset, before lead_workup shows a numeric environment score."""
+    return _refused_as_data(workup.record_local_event_context, threat_id, observed, detail, asset_id or None)
+
+
+@mcp.tool()
 def workflow_counts() -> dict:
     """Counts behind the dashboard tabs. Lead queues are disjoint: actionable_research_backlog (high-priority leads still needing research), raw_unreviewed_leads (untriaged collection; not a to-do list), research_completed_insufficient_detail, evidence_recorded; plus draft rules, pending reviews, approved rules, source errors, research publisher blocks and the MCP tool for each tab."""
     return workflow.workflow_counts()
@@ -164,7 +202,7 @@ def register_campaign_report(title: str, summary: str, source_url: str) -> dict:
 def environment_risk(threat_id: str, affected: str = "unknown", internet_exposed: bool = False,
                      criticality: str = "medium", asset_role: str = "general",
                      seen_in_logs: str = "unknown") -> dict:
-    """Explain a 0-100 environment-specific priority. affected is yes, no, or unknown; unknown never means low risk."""
+    """What-if calculator on the inputs you type (affected yes/no/unknown, exposure, criticality, seen_in_logs); unknown never means low risk. Its number is a scenario, not this lead's environment risk of record: use lead_workup, which shows a score only with confirmed assets and recorded local event context."""
     value = {"yes": True, "no": False, "unknown": "unknown"}.get(affected.lower())
     if value is None:
         raise ValueError("affected must be yes, no, or unknown")
@@ -222,8 +260,11 @@ def probe_splunk_telemetry(family: str) -> dict:
 
 @mcp.tool()
 def test_draft_in_siem(rule_id: str) -> dict:
-    """With explicitly configured read-only credentials, run the mapped draft over 24 hours in Splunk or Defender Graph; return count and errors, never event contents or deployment."""
-    return live_validation.check_live_query(rule_id)
+    """With explicitly configured read-only credentials, run the mapped draft over 24 hours in Splunk or Defender Graph; return count and errors, never event contents or deployment. The outcome is recorded so lead_workup shows the native test as run instead of pending."""
+    result = _refused_as_data(live_validation.check_live_query, rule_id)
+    if result.get("status") != "refused":
+        drafting.record_native_test(rule_id, result)
+    return result
 
 
 @mcp.tool()

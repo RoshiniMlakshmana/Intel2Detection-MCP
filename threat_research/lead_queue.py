@@ -106,6 +106,12 @@ def store_page_leads(threat_id, source_url, page, path: Path | None = None):
                 # approve -- a duplicate.
                 new_leads.append(lead)
     details = page.get("specific_details") or []
+    with store.connection(path) as db:
+        # Derived from the latest read only: a re-read that no longer finds
+        # artifacts (e.g. after a detector fix) must not leave a stale lead
+        # holding the report in the backlog. Template leads are untouched.
+        db.execute("DELETE FROM article_behavior_leads WHERE threat_id=? AND source_url=? AND behavior=?",
+                   (threat_id, source_url, SPECIFIC_ARTIFACTS))
     if details and not page["behavior_leads"]:
         # A technical report with concrete artifacts (hashes, file names,
         # paths) needs an analyst read even when no fixed template matched;
@@ -120,6 +126,7 @@ def store_page_leads(threat_id, source_url, page, path: Path | None = None):
                  details[0]["excerpt"][:420], now())).rowcount
     queued = sum(1 for lead in new_leads if corroboration.queue_from_lead(
         threat_id, source_url, lead["paragraph"], lead["behavior"], lead["excerpt"], path))
+    queued += len(corroboration.queue_custom_matches(threat_id, source_url, page, path))
     return {"leads": count, "corroboration_reviews_queued": queued}
 
 

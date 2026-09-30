@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from . import rule_repository, store
 from .core import get_threat, now
 
-FAMILIES = {"process_creation", "network_connection", "mcp_audit"}
+FAMILIES = {"process_creation", "network_connection", "file_event", "mcp_audit"}
 FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 VALUE = re.compile(r"^[A-Za-z0-9 .:/_\\-]{1,100}$")
 OPERATORS = {"equals", "contains", "endswith"}
@@ -24,6 +24,9 @@ DEFENDER_FIELDS = {
                          "CommandLine": "ProcessCommandLine", "User": "AccountName"},
     "network_connection": {"DestinationIp": "RemoteIP", "DestinationPort": "RemotePort",
                            "Image": "InitiatingProcessFileName"},
+    # Windows file events (Sysmon FileCreate / Defender DeviceFileEvents).
+    "file_event": {"TargetFilename": "FolderPath", "Image": "InitiatingProcessFolderPath",
+                   "SHA256": "SHA256", "User": "InitiatingProcessAccountName"},
     "mcp_audit": {"event_type": "event_type_s", "execution_status": "execution_status_s",
                   "authorization_decision": "authorization_decision_s", "principal_id": "principal_id_s",
                   "request_id": "request_id_s", "tool_name": "tool_name_s", "resource_scope": "resource_scope_s"},
@@ -33,7 +36,7 @@ DEFENDER_FIELDS = {
 def validate_spec(spec):
     """Permit a small auditable AND of literal comparisons; no query fragments."""
     if not isinstance(spec, dict) or spec.get("event_family") not in FAMILIES:
-        raise ValueError("spec needs process_creation, network_connection, or mcp_audit event_family")
+        raise ValueError("spec needs process_creation, network_connection, file_event, or mcp_audit event_family")
     if spec.get("platform") not in ("windows", "mcp"):
         raise ValueError("platform must be windows or mcp")
     if (spec["event_family"] == "mcp_audit") != (spec["platform"] == "mcp"):
@@ -67,15 +70,37 @@ def fingerprint(spec):
     return hashlib.sha256(("custom:" + json.dumps(normalized, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
 
 
-def _sigma(title, spec, false_positives):
+DEFAULT_DESCRIPTION = "Analyst-reviewed behavior hypothesis; validate in target telemetry."
+
+
+def sigma_extras(sigma):
+    """Description and references of a generated rule, to regenerate it for an unchanged-draft check."""
+    lines = sigma.splitlines()
+    description = next((json.loads(line[len("description: "):]) for line in lines
+                        if line.startswith("description: \"")), DEFAULT_DESCRIPTION)
+    references = []
+    if "references:" in lines:
+        for line in lines[lines.index("references:") + 1:]:
+            if not line.startswith("  - "):
+                break
+            references.append(json.loads(line[4:]))
+    return {"description": description, "references": tuple(references)}
+
+
+def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, references=()):
     # JSON strings/lists are legal YAML flow scalars.
     kind = spec["event_family"]
     category = {"process_creation": "process_creation", "network_connection": "network_connection",
-                "mcp_audit": "application"}[kind]
+                "file_event": "file_event", "mcp_audit": "application"}[kind]
     product = "mcp_audit" if kind == "mcp_audit" else "windows"
     lines = [f"title: {json.dumps(title)}", f"id: {uuid.uuid5(uuid.NAMESPACE_URL, fingerprint(spec))}",
-             "status: experimental", "description: Analyst-reviewed behavior hypothesis; validate in target telemetry.",
-             "logsource:", f"  category: {category}", f"  product: {product}", "detection:", "  selection:"]
+             "status: experimental",
+             ("description: " + json.dumps(description) if description != DEFAULT_DESCRIPTION else
+              "description: " + DEFAULT_DESCRIPTION)]
+    if references:
+        lines.append("references:")
+        lines.extend(f"  - {json.dumps(ref)}" for ref in references)
+    lines += ["logsource:", f"  category: {category}", f"  product: {product}", "detection:", "  selection:"]
     suffix = {"equals": "", "contains": "|contains", "endswith": "|endswith"}
     for item in spec["predicates"]:
         lines.append(f"    {json.dumps(item['field'] + suffix[item['operator']])}: {json.dumps(item['value'])}")
