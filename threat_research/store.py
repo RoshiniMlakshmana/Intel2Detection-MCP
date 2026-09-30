@@ -182,6 +182,12 @@ def initialize(path: Path | None = None):
                 entered_at TEXT NOT NULL,
                 UNIQUE(threat_id, url, text_sha256)
             );
+            CREATE TABLE IF NOT EXISTS browser_source_captures (
+                id INTEGER PRIMARY KEY, threat_id TEXT NOT NULL REFERENCES threats(id), url TEXT NOT NULL,
+                page_text TEXT NOT NULL, text_sha256 TEXT NOT NULL, captured_at TEXT NOT NULL,
+                provenance TEXT NOT NULL DEFAULT 'assistant_browser_capture_unverified',
+                UNIQUE(threat_id,url,text_sha256)
+            );
             CREATE TABLE IF NOT EXISTS triage_results (
                 threat_id TEXT PRIMARY KEY REFERENCES threats(id), source_name TEXT,
                 result TEXT NOT NULL, reason TEXT NOT NULL, triaged_at TEXT NOT NULL

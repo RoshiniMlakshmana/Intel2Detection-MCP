@@ -161,8 +161,20 @@ def _manual_source(threat_id, source_url, manual_review_id, path):
             "inspected_at": row["entered_at"], "provenance": "analyst_manual_entry"}
 
 
+def _browser_source(threat_id, source_url, capture_id, paragraph, path):
+    from . import browser_research, report_inspection
+    capture = browser_research.get_capture(capture_id, path)
+    if not capture or capture["threat_id"] != threat_id.upper() or capture["url"] != source_url:
+        raise ValueError("browser capture not found for this lead and cited URL")
+    paragraphs = report_inspection.browser_paragraphs(capture["page_text"])
+    if not 1 <= int(paragraph) <= len(paragraphs):
+        raise ValueError("paragraph number is not in the browser capture")
+    return {"text": paragraphs[int(paragraph) - 1], "page_sha256": "browser:" + capture["text_sha256"],
+            "inspected_at": capture["captured_at"], "provenance": "assistant_browser_capture_unverified"}
+
+
 def propose(threat_id, source_url, paragraph, spec, title, rationale, false_positives, path: Path | None = None,
-            manual_review_id=None):
+            manual_review_id=None, browser_capture_id=None):
     """Create an unverified, source-linked draft after an inventory comparison; never approves.
 
     The source is either a stored paragraph of an automatically inspected page, or (manual_review_id)
@@ -176,7 +188,10 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
     threat = get_threat(threat_id, path)
     if not threat:
         raise ValueError("unknown threat")
+    if manual_review_id and browser_capture_id:
+        raise ValueError("select one source: manual review or browser capture")
     source = (_manual_source(threat_id, source_url, manual_review_id, path) if manual_review_id else
+              _browser_source(threat_id, source_url, browser_capture_id, paragraph, path) if browser_capture_id else
               {**inspected_paragraph(threat_id, source_url, paragraph, path), "provenance": "automated_inspection"})
     quoted = source["text"]
     folded = quoted.casefold()

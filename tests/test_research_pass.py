@@ -179,6 +179,22 @@ class AutomaticSourceReviewTest(Base):
         self.assertEqual(result["leads_researched"], 2)
         self.assertLessEqual(len(fetch.calls), research_pass.MAX_FETCHES_PER_PASS)
 
+    def test_deep_batch_stays_bounded_and_publisher_hunt_is_unverified(self):
+        ident = "REPORT-FICTHUNT0001"
+        self.report(ident, FORTINET, cves=())
+        query = "DeviceFileEvents\n| where FileName == 'fictional-loader.dll'\n| project Timestamp, DeviceName, FileName"
+        html = ("<html><body><article><p>Fictional threat actors used a suspicious loader during the "
+                "investigation of compromised machines.</p><pre>" + query + "</pre></article></body></html>").encode()
+        result = research_pass.run_pass(self.path, max_leads_=20, max_fetches=120,
+                                        threat_ids=[ident], fetch=Fetcher({FORTINET: html}))
+        self.assertEqual(result["pages_fetched"], 1)
+        hunt = research_pass.status(ident, self.path)["publisher_hunting_queries"][0]
+        self.assertEqual(hunt["text"], query)
+        self.assertEqual(hunt["status"], "publisher_query_unverified")
+        self.assertEqual(workflow.workflow_counts(self.path)["draft_rules"], 0)
+        self.assertEqual(research_pass.status(ident, self.path)["status"],
+                         "observables_need_analyst_verification")
+
     def test_cisa_pages_are_fetched_over_tls12(self):
         seen = {}
 

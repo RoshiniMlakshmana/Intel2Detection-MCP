@@ -50,10 +50,17 @@ class _Text(HTMLParser):
         self.parts = []
         self.active = False
         self.current = []
+        self.pre_depth = 0
+        self.pre_text = []
+        self.code_blocks = []
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style", "nav", "footer", "header", "form"):
             self.depth += 1
+        elif tag == "pre" and not self.depth:
+            self.pre_depth += 1
+            if self.pre_depth == 1:
+                self.pre_text = []
         elif not self.depth and tag in BLOCK_TAGS:
             self.flush()
             self.active = True
@@ -61,11 +68,22 @@ class _Text(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("script", "style", "nav", "footer", "header", "form"):
             self.depth = max(0, self.depth - 1)
+        elif tag == "pre" and self.pre_depth:
+            self.pre_depth -= 1
+            if not self.pre_depth:
+                block = html.unescape("".join(self.pre_text)).strip()
+                if 40 <= len(block) <= 12000:
+                    self.code_blocks.append(block)
+                self.pre_text = []
+            self.flush()
+            self.active = False
         elif tag in BLOCK_TAGS:
             self.flush()
             self.active = False
 
     def handle_data(self, data):
+        if self.pre_depth and not self.depth:
+            self.pre_text.append(data)
         if self.active and not self.depth:
             self.current.append(data)
 
@@ -74,6 +92,23 @@ class _Text(HTMLParser):
         if 40 <= len(value) <= 5000:
             self.parts.append(value)
         self.current = []
+
+
+HUNT_SOURCE = re.compile(r"(?im)^\s*(?:Device[A-Za-z]+Events|CommonSecurityLog|SecurityEvent|"
+                         r"search in\s*\(|index\s*=)")
+HUNT_PIPE = re.compile(r"(?im)^\s*\|\s*(?:where|search|project|extend|table|stats|eval)\b")
+
+
+def _publisher_hunts(blocks, url):
+    """Preserve publisher-authored query blocks as untrusted references, never executable rules."""
+    found = []
+    for block in blocks:
+        if HUNT_SOURCE.search(block) and HUNT_PIPE.search(block):
+            found.append({"source_url": url, "language": "spl" if re.search(r"(?im)^\s*index\s*=", block)
+                          else "kql", "text": block, "sha256": hashlib.sha256(block.encode()).hexdigest(),
+                          "status": "publisher_query_unverified",
+                          "note": "Publisher-provided hunt; review scope, fields and false positives before use."})
+    return found[:8]
 
 
 class _SameHostRedirectOnly(urllib.request.HTTPRedirectHandler):
@@ -194,23 +229,45 @@ def extract_report_html(threat_id, source_url, raw):
     parser = _Text()
     parser.feed(raw.decode("utf-8", errors="replace"))
     parser.flush()
+    return _extract_paragraphs(threat_id, source_url, parser.parts, hashlib.sha256(raw).hexdigest(),
+                               _publisher_hunts(parser.code_blocks, source_url))
+
+
+def extract_report_text(threat_id, source_url, text):
+    """Analyze browser-supplied plain text without claiming the page was fetched by this server."""
+    if not isinstance(text, str) or not 80 <= len(text) <= 100_000:
+        raise ValueError("browser page text must be 80-100000 characters")
+    paragraphs = browser_paragraphs(text)
+    if not paragraphs:
+        raise ValueError("browser page has no bounded readable paragraphs; supply the article text")
+    return _extract_paragraphs(threat_id, source_url, paragraphs, hashlib.sha256(text.encode()).hexdigest(), [])
+
+
+def browser_paragraphs(text):
+    """Stable numbering for a browser capture and any later proposal from it."""
+    paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return [p for p in paragraphs if 40 <= len(p) <= 5000]
+
+
+def _extract_paragraphs(threat_id, source_url, paragraphs, digest, hunts):
     selected = []
-    for index, paragraph in enumerate(parser.parts):
+    for index, paragraph in enumerate(paragraphs):
         if TERMS.search(paragraph) or threat_id.upper() in paragraph.upper():
             clean = html.unescape(paragraph)
             selected.append({"paragraph": index + 1, "excerpt": clean[:420],
                              "truncated": len(clean) > 420})
-    leads = behavior_leads.from_paragraphs(parser.parts)
-    details = behavior_leads.specific_details(parser.parts)
+    leads = behavior_leads.from_paragraphs(paragraphs)
+    details = behavior_leads.specific_details(paragraphs)
     # Full text of every paragraph this result cites, so a later detection
     # proposal can be checked against the exact inspected wording.
     cited = sorted({e["paragraph"] for e in selected[:10]} | {d["paragraph"] for d in details}
                    | {lead["paragraph"] for lead in leads})
     return {"threat_id": threat_id.upper(), "source": source_url,
-            "sha256": hashlib.sha256(raw).hexdigest(), "paragraphs_scanned": len(parser.parts),
+            "sha256": digest, "paragraphs_scanned": len(paragraphs),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
             "behavior_leads": leads,
             "specific_details": details,
-            "paragraph_text": {n: html.unescape(parser.parts[n - 1]) for n in cited[:40]},
+            "paragraph_text": {n: html.unescape(paragraphs[n - 1]) for n in cited[:40]},
+            "publisher_hunts": hunts,
             "status": "research_leads_only",
             "next_step": "Read the linked full report, verify behavior and telemetry, then record a cited analyst observation."}

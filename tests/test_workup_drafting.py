@@ -13,7 +13,7 @@ from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 
-from threat_research import (core, corroboration, custom_rules, dashboard_data, drafting, environment, live_validation,
+from threat_research import (browser_research, core, corroboration, custom_rules, dashboard_data, drafting, environment, live_validation,
                              research_pass, rules, server, soc_replay, store, workflow, workup)
 
 HASH = "e842dd7642c8e04b5ec20b6393848a9c904e4832930950c16664fe7800ba382e"
@@ -56,6 +56,37 @@ class Base(unittest.TestCase):
     def propose(self, ident="REPORT-FICTLOADER0001", spec=SPEC, paragraph=3):
         return drafting.propose(ident, REPORT_URL, paragraph, spec, TEXT["title"], TEXT["rationale"],
                                 TEXT["false_positives"], self.path)
+
+
+class BrowserHandoffTest(Base):
+    def test_cited_browser_text_stays_unverified_and_can_support_an_unverified_draft(self):
+        ident = "REPORT-FICTBROWSER001"
+        core.ingest([{"id": ident, "title": "Fictional browser-only report", "summary": "fixture",
+                      "kind": "campaign", "source": REPORT_URL, "claim": "Feed listed this report."}], self.path)
+        research_pass.triage_raw(self.path, max_leads=1, fetch=lambda url: (_ for _ in ()).throw(
+            ValueError("HTTP 403: publisher blocked the automated article fetch")))
+        queue = browser_research.review_queue(self.path)
+        self.assertIn(ident, [item["threat_id"] for item in queue["items"]])
+        with self.assertRaisesRegex(ValueError, "cited"):
+            browser_research.capture(ident, "https://other.example/hidden", PARA, self.path)
+        body = ("Fictional incident response report on compromised devices.\n\n" + PARA +
+                " The attacker replaced the updater component with this loader DLL in the analyzed sample.")
+        capture = browser_research.capture(ident, REPORT_URL, body, self.path)
+        self.assertEqual(capture["status"], "assistant_browser_capture_unverified")
+        self.assertEqual(browser_research.capture(ident, REPORT_URL, body, self.path)["browser_capture_id"],
+                         capture["browser_capture_id"])
+        view = workup.lead_workup(ident, self.path)
+        self.assertEqual(view["browser_captures"][0]["analyst_verified"], False)
+        with store.connection(self.path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM rules").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'").fetchone()[0], 0)
+        draft = drafting.propose(ident, REPORT_URL, 2, SPEC, TEXT["title"], TEXT["rationale"],
+                                 TEXT["false_positives"], self.path,
+                                 browser_capture_id=capture["browser_capture_id"])
+        self.assertEqual(draft["status"], "draft_unverified")
+        self.assertEqual(draft["source"]["provenance"], "assistant_browser_capture_unverified")
+        with self.assertRaisesRegex(ValueError, "has not verified"):
+            rules.implement_rule(draft["rule_id"], "implement this rule", path=self.path)
 
 
 class FileEventFamilyTest(Base):

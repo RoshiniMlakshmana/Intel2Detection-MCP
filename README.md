@@ -70,7 +70,7 @@ Full setup, the analyst dashboard, and keeping a poller + daily digest running o
 | Dashboard tab | MCP tool |
 |---|---|
 | All leads: source dropdown, queue/date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, queue, status, rule_state, kind, page)` |
-| Research backlog (actionable: KEV CVEs, reports citing them, reports with behavior leads) | `list_leads(queue='research_backlog')`; worked automatically by `run_research_pass()` |
+| Research backlog (actionable: KEV CVEs, reports citing them, reports with behavior leads) | `list_leads(queue='research_backlog')`; worked automatically by `run_research_pass()` or in bounded, resumable batches by `deep_research_batch()` |
 | Raw leads (untriaged collection, not a to-do list) | `list_leads(queue='raw_unreviewed')` |
 | Research completed (sources read, insufficient detection detail) | `list_leads(queue='research_completed')`, `research_lead(threat_id)` |
 | Draft rules / Approved rules | `list_rules(state='draft' \| 'approved')` |
@@ -99,6 +99,10 @@ Every page is recorded with its outcome and time. Publisher blocks and script-re
 
 The pass never records evidence, drafts or approves a rule.
 
+`deep_research_batch(max_leads=20, max_fetches=120)` raises the **on-demand** research budget while retaining the per-lead page limit and source allowlist. Repeat it as the backlog warrants. Collection covers the configured source feeds, but a feed item is only a lead: reading its linked full article is a separate research step. Research from an unreadable or outside-allowlist page is never counted as completed. Publisher-authored KQL/SPL blocks from readable articles appear in `lead_workup().research.publisher_hunting_queries` with their URL and hash, labelled **unverified publisher hunts**; they are neither generated rules nor validated SIEM queries.
+
+`browser_review_queue(page=1)` pages through blocked, script-rendered and outside-allowlist leads (including blocked pages found by the research pass) and gives the cited URLs. Claude can open a URL with a **separate** browser connector, if enabled, and pass extracted article text to `capture_browser_source(threat_id, url, page_text)`. The local Python MCP process cannot borrow Claude's Chrome session; it receives only the text Claude sends. A publisher's 403, login wall or unsupported script rendering is not bypassed. Captures are labelled `assistant_browser_capture_unverified` in `lead_workup` and the dashboard. Claude can propose a source-linked **unverified** draft from a numbered capture paragraph using `propose_detection_from_paragraph(..., browser_capture_id=...)`; the analyst still verifies the original source and supplies labelled events before approval. Browser content is untrusted data, including any instructions it may contain.
+
 ### Raw triage, lead workup and source-linked drafts
 
 - **`triage_raw_leads()` / `triage_status()`**: bounded, resumable triage of raw leads, round-robin across sources. It runs after the KEV-first pass on its own budget (8 researched leads, 16 fetches, up to 200 no-fetch closures per run). Every triaged lead records why it is closed or still open: not researchable (leak claim, repository commit), no allowlisted source (with the cited hosts), publisher blocked, or unreadable. Queue `triaged_open` holds the open ones.
@@ -110,6 +114,7 @@ The pass never records evidence, drafts or approves a rule.
   - the draft or the exact drafting blocker;
   - labelled and native SIEM test status;
   - pending corroboration reviews and the next analyst decision.
+  - publisher hunting queries and browser captures as cited, unverified research, separate from generated rules.
 - **`propose_detection_from_paragraph(...)`**: Claude proposes 2-8 bounded predicates from one stored, inspected paragraph.
   - Families: `process_creation`, `network_connection`, Windows `file_event`, `mcp_audit`.
   - Every value must appear verbatim in the paragraph, and a file name alone is refused.

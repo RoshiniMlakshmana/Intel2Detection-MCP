@@ -405,6 +405,8 @@ def lead_workup(threat_id, path: Path | None = None):
     ident = threat["id"]
     progression = workflow.lead_progression(ident, path)
     research = research_pass.status(ident, path)
+    from . import browser_research
+    browser_captures = browser_research.capture_summaries(ident, path)
     patterns = pattern_analysis(ident, path)
     inventory = rules.inventory_status(ident, path)
     drafts = [_draft_view(r["id"], path) for r in threat["rules"]]
@@ -461,7 +463,9 @@ def lead_workup(threat_id, path: Path | None = None):
             "published": threat.get("published"), "collected": threat.get("first_seen"),
             "research": {"status": research["status"], "completed_at": research.get("completed_at"),
                          "summary": research.get("summary"), "pages": research.get("pages", []),
-                         "publisher_blocked": research.get("publisher_blocked") or []},
+                         "publisher_blocked": research.get("publisher_blocked") or [],
+                         "publisher_hunting_queries": research.get("publisher_hunting_queries") or []},
+            "browser_captures": browser_captures,
             "pattern_analysis": patterns,
             "inventory": inventory_view,
             "manual_source_reviews": manual,

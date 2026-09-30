@@ -288,7 +288,7 @@ def _exposure_offer(threat, path, pending_verification=False):
     }
 
 
-def _conclude(threat, pages, evidence, observables, details, path):
+def _conclude(threat, pages, evidence, observables, details, path, hunts=()):
     is_cve = bool(sources.CVE.fullmatch(threat["id"]))
     # For a CVE, only primary vendor/CISA pages decide; leads and claims found
     # in other reports stay on those report leads (which go to analyst
@@ -297,15 +297,17 @@ def _conclude(threat, pages, evidence, observables, details, path):
     decisive = [d for d in details if d["role"] in PRIMARY_ROLES or not is_cve]
     quoted = [d for d in details if d not in decisive]
     decisive_leads = [o for o in observables if o["role"] in PRIMARY_ROLES or not is_cve]
+    decisive_hunts = [h for h in hunts if h["role"] in PRIMARY_ROLES or not is_cve]
     inspected = [p for p in pages if p["status"] == "inspected"]
     read_primary = [p for p in inspected if p["role"] in PRIMARY_ROLES]
     blocked = [p for p in pages if p["status"] == "publisher_blocked"]
     unreadable = [p for p in pages if p["status"] in ("unreadable", "failed")]
     outside = [p for p in pages if p["status"] == "not_allowlisted"]
-    if decisive_leads or decisive:
+    if decisive_leads or decisive or decisive_hunts:
         status = "observables_need_analyst_verification"
         summary = (f"{len(decisive_leads)} behavior lead(s) and {len(decisive)} paragraph(s) with specific artifacts "
-                   f"found in {len(inspected)} inspected page(s). They are untrusted source text until an analyst "
+                   f"and {len(decisive_hunts)} publisher query/queries found in {len(inspected)} inspected page(s). "
+                   "They are untrusted source text until an analyst "
                    "verifies them in the full report and its original publication.")
     elif read_primary if is_cve else inspected:
         status = "completed_insufficient_detail"
@@ -354,6 +356,7 @@ def _conclude(threat, pages, evidence, observables, details, path):
         "evidence": evidence[:MAX_EVIDENCE],
         "observables_found": observables,
         "specific_details_to_verify": details[:10],
+        "publisher_hunting_queries": list(hunts)[:8],
         "publisher_blocked": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in blocked],
         "unreadable": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in unreadable],
         "not_fetched_host_not_allowlisted": [p["url"] for p in outside],
@@ -378,7 +381,7 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
         raise ValueError("unknown threat")
     ident = threat["id"]
     queue = _candidates(threat, path)
-    pages, evidence, observables, details, owned = [], [], [], [], {}
+    pages, evidence, observables, details, hunts, owned = [], [], [], [], [], {}
     linked_added = 0
     index = 0
     while index < len(queue) and len(pages) < max_pages:
@@ -395,6 +398,7 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
             continue
         evidence.extend(_excerpts(threat, record, page))
         details.extend(_details(record, page, fetched["raw"]))
+        hunts.extend({**h, "role": record["role"]} for h in page.get("publisher_hunts", []))
         for lead in page["behavior_leads"]:
             observables.append({"url": record["url"], "role": record["role"], **lead})
         drafting.record_paragraphs(candidate["url"], page, path)
@@ -408,7 +412,7 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
                     queue.append({"url": url, "role": "linked_guidance", "via": candidate["url"], "owner": ident})
                     linked_added += 1
             queue[index:] = sorted(queue[index:], key=lambda c: ROLE_ORDER[c["role"]])
-    conclusion = _conclude(threat, pages, evidence, observables, details, path)
+    conclusion = _conclude(threat, pages, evidence, observables, details, path, hunts)
     with store.connection(path) as db:
         # A re-read replaces this lead's page set, so it never shows stale pages.
         db.execute("DELETE FROM research_page_inspections WHERE threat_id=?", (ident,))
@@ -429,9 +433,11 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
                           for r, p in results if p for lead in p["behavior_leads"]]
             report_details = [{**d, "role": "cited_report"} for r, p in results if p
                               for d in _details(r, p, cache[r["url"]]["raw"])]
+            report_hunts = [{**h, "role": "cited_report"} for r, p in results if p
+                            for h in p.get("publisher_hunts", [])]
             with store.connection(path) as db:
                 _store_outcome(db, owner, _conclude(report, report_pages, report_evidence, report_obs,
-                                                    report_details, path))
+                                                    report_details, path, report_hunts))
     return status(ident, path)
 
 
@@ -492,12 +498,13 @@ def due_leads(path: Path | None = None, limit=MAX_LEADS):
     return [r["id"] for r in rows]
 
 
-def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=None):
-    """One bounded pass: up to max_leads backlog leads, MAX_FETCHES_PER_PASS fetches in total."""
+def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=None, max_fetches=None):
+    """One resumable pass; the explicit deep batch may raise the fetch budget, bounded at 120."""
     store.initialize(path)
     started = now()
     ids = [i.upper() for i in threat_ids] if threat_ids else due_leads(path, max_leads_ or max_leads())
-    cache, budget = {}, {"remaining": MAX_FETCHES_PER_PASS, "fetched": 0}
+    fetch_limit = MAX_FETCHES_PER_PASS if max_fetches is None else max(1, min(int(max_fetches), 120))
+    cache, budget = {}, {"remaining": fetch_limit, "fetched": 0}
     results = []
     for ident in ids:
         if budget["remaining"] <= 0:
@@ -509,7 +516,8 @@ def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=N
             continue
         results.append({key: result.get(key) for key in (
             "threat_id", "status", "summary", "completed_at", "pages_inspected", "publisher_blocked", "unreadable",
-            "evidence", "observables_found", "specific_details_to_verify", "missing_for_detection", "missing_telemetry", "exposure_patch_review",
+            "evidence", "observables_found", "specific_details_to_verify", "publisher_hunting_queries",
+            "missing_for_detection", "missing_telemetry", "exposure_patch_review",
             "rule_drafting")} | {"pages": result["pages"]})
     blocked = sorted({p["url"] for r in results for p in r.get("publisher_blocked") or []})
     return {"started": started, "completed": now(), "leads_researched": len(results),

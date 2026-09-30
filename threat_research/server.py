@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import core, corroboration, custom_rules, dashboard_data, digest, drafting, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow, workup
+from . import browser_research, core, corroboration, custom_rules, dashboard_data, digest, drafting, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow, workup
 
 mcp = MCPServer("ThreatResearch")
 
@@ -85,6 +85,25 @@ def run_research_pass(max_leads: int = 4) -> dict:
 
 
 @mcp.tool()
+def deep_research_batch(max_leads: int = 20, max_fetches: int = 120) -> dict:
+    """Resumable on-demand research of up to 20 backlog leads with at most 120 article fetches per batch. Returns publisher hunting queries as unverified source material. Does not verify claims, create rules or bypass blocked publishers; inspect remaining backlog and repeat as needed."""
+    return research_pass.run_pass(max_leads_=max(1, min(int(max_leads), 20)),
+                                  max_fetches=max(1, min(int(max_fetches), 120)))
+
+
+@mcp.tool()
+def browser_review_queue(page: int = 1, limit: int = 20) -> dict:
+    """Page through blocked, unreadable and outside-allowlist leads with cited URLs. Claude may open these in its separate browser connector if available; this MCP server itself cannot access the browser session."""
+    return browser_research.review_queue(page=page, limit=limit)
+
+
+@mcp.tool()
+def capture_browser_source(threat_id: str, url: str, page_text: str) -> dict:
+    """Store article text read using a separate browser connector, only for an exact cited HTTPS URL. This is untrusted, unverified source text, not analyst verification or local telemetry; never creates a rule or approval. Supply extracted article text, not a browser instruction or private session data."""
+    return _refused_as_data(browser_research.capture, threat_id, url, page_text)
+
+
+@mcp.tool()
 def research_lead(threat_id: str, refresh: bool = False) -> dict:
     """Read-only; run it without asking. Research one lead now (or return its stored result): pages inspected with times, publisher blocks, cited excerpts, observables found, missing detection detail and telemetry, and an exposure/patch review offer when no rule is supportable. refresh=True re-reads the sources."""
     return research_pass.research_lead(threat_id, refresh=refresh)
@@ -116,10 +135,11 @@ def triage_status(limit: int = 50) -> dict:
 
 @mcp.tool()
 def propose_detection_from_paragraph(threat_id: str, source_url: str, paragraph: int, spec: dict, title: str,
-                                     rationale: str, false_positives: str, manual_review_id: int = 0) -> dict:
+                                     rationale: str, false_positives: str, manual_review_id: int = 0,
+                                     browser_capture_id: int = 0) -> dict:
     """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | mcp_audit; platform windows or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, generic KQL/SPL templates, required fields); approval is refused until verify_draft_source. Mapped native query requires a configured telemetry field mapping."""
     return _refused_as_data(drafting.propose, threat_id, source_url, paragraph, spec, title, rationale,
-                            false_positives, None, manual_review_id or None)
+                            false_positives, None, manual_review_id or None, browser_capture_id or None)
 
 
 @mcp.tool()

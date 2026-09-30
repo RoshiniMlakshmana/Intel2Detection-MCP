@@ -654,6 +654,17 @@ def _workup_html(w):
     parts = [f'<p><b>Next analyst decision:</b> {_e(w["next_analyst_decision"])}</p>',
              f'<p><b>Source:</b> {_e(w["source"]["name"])} {_safe_href(w["source"]["url"]) if w["source"]["url"] else ""}'
              f' &middot; <b>Published:</b> {_fmt(w["published"])} &middot; <b>Collected:</b> {_fmt(w["collected"])}</p>']
+    for hunt in w["research"].get("publisher_hunting_queries", [])[:4]:
+        parts.append(f'<details><summary>Publisher {_e(hunt["language"].upper())} hunt '
+                     f'<span class="badge stale">unverified</span> {_safe_href(hunt["source_url"])}</summary>'
+                     f'<pre>{_e(hunt["text"][:6000])}</pre><p>{_e(hunt["note"])}</p></details>')
+    for capture in w.get("browser_captures", [])[:5]:
+        parts.append(f'<details><summary>Browser capture #{capture["id"]} '
+                     f'<span class="badge stale">unverified</span> {_safe_href(capture["url"])}</summary>'
+                     f'<p>Captured {_fmt(capture["captured_at"])}; {capture["paragraphs_scanned"]} paragraphs. '
+                     'This is browser-supplied text, not analyst verification.</p>'
+                     + _bullets([str(d.get("excerpt") or d.get("text") or d)[:500]
+                                 for d in capture["specific_details_to_verify"][:5]]) + '</details>')
     patterns = w["pattern_analysis"]["patterns"]
     if not patterns:
         parts.append(f'<p class="missing">No pattern: {_e(w["pattern_analysis"].get("reason") or "no specific artifact in inspected text")}</p>')
