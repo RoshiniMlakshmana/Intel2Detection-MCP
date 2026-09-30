@@ -407,9 +407,17 @@ def get_rule(rule_id, path: Path | None = None):
             FROM evidence e JOIN rule_evidence re ON re.evidence_id=e.id WHERE re.rule_id=?""", (rule_id,))]
     from . import custom_rules
     spec = custom_rules.get_spec(rule_id, path) if row["behavior"] == "custom" else None
-    return {**dict(row), "supporting_evidence": sources,
+    templates = custom_rules.generic_queries(spec) if spec else None
+    payload = dict(row)
+    # Pre-template custom drafts retain their historical placeholders in SQLite.
+    # Project templates on read without silently rewriting the versioned rule.
+    if templates:
+        for field in ("kql", "spl"):
+            if payload[field].startswith(("Not generated:", "Generated after ")):
+                payload[field] = templates[field]
+    return {**payload, "supporting_evidence": sources,
             "custom_spec": spec,
-            "generic_queries": custom_rules.generic_queries(spec) if spec else None,
+            "generic_queries": templates,
             "expired": bool(row["expires_at"] and row["expires_at"] <= now()),
             "validation": "syntax and sample telemetry require target-SIEM validation before deployment"}
 

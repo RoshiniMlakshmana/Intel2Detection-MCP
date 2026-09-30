@@ -273,6 +273,17 @@ class WorkupTest(Base):
         rule = rules.get_rule(result["rule_id"], self.path)
         self.assertEqual(rule["kql"], templates["kql"])
         self.assertEqual(rule["spl"], templates["spl"])
+        with store.connection(self.path) as db:
+            db.execute("UPDATE rules SET kql=?, spl=? WHERE id=?",
+                       ("Not generated: requires a configured SIEM field mapping (check_detection_fit).",
+                        "Not generated: requires a configured SIEM field mapping (check_detection_fit).",
+                        result["rule_id"]))
+        legacy = rules.get_rule(result["rule_id"], self.path)
+        self.assertEqual(legacy["kql"], templates["kql"])
+        self.assertEqual(legacy["spl"], templates["spl"])
+        with store.connection(self.path) as db:
+            self.assertTrue(db.execute("SELECT kql FROM rules WHERE id=?", (result["rule_id"],))
+                            .fetchone()[0].startswith("Not generated:"))
         profile = {"name": "Fixture Defender", "siem": "defender", "telemetry": {
             "file_event": {"table": "DeviceFileEvents", "fields": ["SHA256", "FolderPath"]}}}
         environment.onboard(profile, [{"asset_id": "fixture-1", "hostname": "fixture-1", "product": "Fixture",
