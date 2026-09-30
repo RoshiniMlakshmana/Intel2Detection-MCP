@@ -320,11 +320,16 @@ def sources_cve(ident):
     return bool(CVE.fullmatch(ident.upper()))
 
 
-def _next_action(ident, current, research, draftable, rule_views, checks, steps):
+def _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links=()):
     """One concrete next action, naming the tool; nothing here performs it."""
     key = current["key"] if current else "complete"
     status = research.get("status")
     if key == "research":
+        if unverified_links:
+            link = unverified_links[0]
+            return (f"Analyst: read paragraph {link['paragraph']} at {link['source_url']}; if the draft "
+                    f"matches it, verify_draft_source('{link['rule_id']}', 'I verified this source paragraph'), "
+                    "otherwise reject_draft_rule(rule_id, reason). The draft remains unverified.")
         if status == "not_researched":
             return f"research_lead('{ident}'): read-only, runs without asking the analyst."
         if status == "observables_need_analyst_verification":
@@ -382,6 +387,10 @@ def lead_progression(threat_id, path: Path | None = None):
         reviews = [dict(r) for r in db.execute(
             "SELECT id,rule_kind,rule_id,source_url,paragraph,behavior,status FROM corroboration_reviews "
             "WHERE threat_id=? ORDER BY id DESC", (ident,))]
+        source_links = [dict(r) for r in db.execute(
+            "SELECT rule_id,source_url,paragraph,status FROM rule_source_links WHERE threat_id=?",
+            (ident,))]
+    unverified_links = [link for link in source_links if link["status"] == "unverified"]
     steps = []
 
     def step(key, title, state, summary, missing=None, **extra):
@@ -405,8 +414,10 @@ def lead_progression(threat_id, path: Path | None = None):
              untrusted_article_leads=article_leads)
     elif research["status"] in ("observables_need_analyst_verification", "no_readable_source"):
         step("research", "Research needed", "current", f"{research['summary']} ({research['completed_at']})",
-             missing=" ".join(research["missing_for_detection"]) or
-             "Verify the behavior leads in the full report, then record a cited analyst observation.",
+             missing=(f"An unverified source-linked draft exists. Check paragraph {unverified_links[0]['paragraph']} "
+                      f"at {unverified_links[0]['source_url']} and use verify_draft_source or reject_draft_rule."
+                      if unverified_links else " ".join(research["missing_for_detection"]) or
+                      "Verify the behavior leads in the full report, then record a cited analyst observation."),
              research=research_view, untrusted_article_leads=article_leads)
     else:
         step("research", "Research needed", "current",
@@ -423,7 +434,9 @@ def lead_progression(threat_id, path: Path | None = None):
                         "claim": e["claim"]} for e in observations])
     else:
         step("evidence", "Cited behavior / evidence", "blocked", "No cited, analyst-verified behavior.",
-             missing=("Record the behavior with its HTTPS source (record_observed_behavior, or the dashboard form). "
+             missing=((f"Draft {unverified_links[0]['rule_id']} is cited but unverified; use verify_draft_source "
+                       "after checking its paragraph, or reject_draft_rule. " if unverified_links else
+                       "Record the behavior with its HTTPS source (record_observed_behavior, or the dashboard form). ") +
                       f"Supported template behaviors: {', '.join(rules.TEMPLATES)}; anything else needs "
                       "draft_custom_detection with 2-8 bounded field predicates."
                       + (f" {len(article_leads)} unverified article excerpt(s) are available to check."
@@ -440,7 +453,14 @@ def lead_progression(threat_id, path: Path | None = None):
                          "detail": fit.get("reason") or fit.get("validation") or fit.get("missing")})
         except (ValueError, KeyError):
             continue
-    if not telemetry:
+    if not telemetry and source_links:
+        candidate_requirements = [rules.get_rule(r["id"], path)["telemetry"] for r in threat["rules"] if r["id"] in
+                                  {link["rule_id"] for link in source_links}]
+        step("telemetry", "Required telemetry", "attention",
+             "Unverified draft requires " + ", ".join(candidate_requirements) + "; availability is unknown.",
+             required=candidate_requirements, fit=fits,
+             missing="Confirm the draft's log source and fields in your environment before relying on it.")
+    elif not telemetry:
         step("telemetry", "Required telemetry", "blocked", "Unknown until a behavior is verified.",
              missing="Verify a behavior first; required logs follow from the behavior, not from the CVE.")
     elif fits and all(f["ready"] for f in fits):
@@ -497,7 +517,9 @@ def lead_progression(threat_id, path: Path | None = None):
     rule_views = [rules.get_rule(r["id"], path) for r in threat["rules"]]
     if rule_views:
         step("candidate", "Candidate Sigma / KQL / SPL", "done",
-             "; ".join(f"{r['title']} ({r['id']}, {r['status']})" for r in rule_views),
+             "; ".join(f"{r['title']} ({r['id']}, {r['status']}" +
+                       (", source unverified" if any(link["rule_id"] == r["id"] for link in unverified_links)
+                        else "") + ")" for r in rule_views),
              rules=[{"rule_id": r["id"], "title": r["title"], "status": r["status"], "behavior": r["behavior"]}
                     for r in rule_views],
              draftable_evidence=[e["id"] for e in draftable])
@@ -541,14 +563,14 @@ def lead_progression(threat_id, path: Path | None = None):
         step("repository", "Versioned rule repository", "blocked", "No rule snapshot yet.",
              missing="Drafted rules are written to draft/ automatically; approved ones move to approved/.")
     else:
-        git = all(e["git_tracked"] for e in entries.values())
-        step("repository", "Versioned rule repository", "done" if git and all(e["exists"] for e in entries.values()) else "attention",
+        present = all(e["exists"] for e in entries.values())
+        step("repository", "Versioned rule repository", "done" if present else "attention",
              "; ".join(f"{rid} -> {e['folder']}/{rid}.json" for rid, e in entries.items()), files=entries,
-             missing=None if git else f"Snapshots are on disk but not under version control: run `git init` in {next(iter(entries.values()))['repository']}.")
+             missing=None if present else "A rule snapshot is missing; regenerate the local repository export.")
 
     # "attention" is a warning (e.g. telemetry not yet confirmed), not the next action.
     current = next((s for s in steps if s["state"] in ("current", "blocked")), None)
-    next_action = _next_action(ident, current, research, draftable, rule_views, checks, steps)
+    next_action = _next_action(ident, current, research, draftable, rule_views, checks, steps, unverified_links)
     return {"threat_id": ident, "title": threat["title"], "kind": threat["kind"],
             "published": threat.get("published"), "collected": threat.get("first_seen"),
             "research_status": research["status"],
@@ -559,6 +581,8 @@ def lead_progression(threat_id, path: Path | None = None):
             "can_draft": bool(draftable), "draftable_evidence": [e["id"] for e in draftable],
             "draft_blocked_reason": None if draftable else
             ("An existing rule already covers this behavior; review the proposed corroboration instead." if covered else
+             "An unverified source-linked draft already exists; verify or reject it before redrafting."
+             if unverified_links else
              "Every verified behavior already has a candidate rule." if rule_views else
              next((s["missing"] for s in steps if s.get("missing")), "Research needed.")),
             "note": "Progress view only; drafting, approval and corroboration each require an explicit analyst action."}

@@ -107,6 +107,18 @@ class RiskAttributionTest(Base):
 
 
 class ProvenanceAndGateOrderTest(Base):
+    def test_progression_names_unverified_draft_instead_of_verified_behavior(self):
+        rule_id = self.draft()
+        progress = workflow.lead_progression("REPORT-FICTLOADER0001", self.path)
+        steps = {step["key"]: step for step in progress["steps"]}
+        self.assertIn(rule_id, progress["next_action"])
+        self.assertIn("verify_draft_source", progress["next_action"])
+        self.assertIn("unverified source-linked draft", progress["draft_blocked_reason"])
+        self.assertIn("source unverified", steps["candidate"]["summary"])
+        self.assertIn("file_event / windows", steps["telemetry"]["summary"])
+        self.assertEqual(steps["repository"]["state"], "done")
+        self.assertNotIn("git init", str(steps["repository"]))
+
     def test_fixture_events_are_explicitly_labeled_and_steps_open_in_order(self):
         rule_id = self.draft()
         ident = "REPORT-FICTLOADER0001"
