@@ -90,6 +90,7 @@ def capture(threat_id, url, page_text, path: Path | None = None):
             "paragraphs_scanned": extracted["paragraphs_scanned"],
             "specific_details_to_verify": extracted["specific_details"],
             "behavior_leads_to_verify": extracted["behavior_leads"],
+            "behavior_patterns_to_verify": extracted["behavior_patterns"],
             "publisher_hunting_queries": extracted["publisher_hunts"],
             "status": "assistant_browser_capture_unverified", "analyst_verified": False,
             "note": "Browser text may be incomplete or altered by a page. Check the cited page yourself; "
@@ -120,6 +121,7 @@ def capture_summaries(threat_id, path: Path | None = None):
         summaries.append({**item, "paragraphs_scanned": result["paragraphs_scanned"],
                           "specific_details_to_verify": result["specific_details"][:8],
                           "behavior_leads_to_verify": result["behavior_leads"][:8],
+                          "behavior_patterns_to_verify": result["behavior_patterns"][:8],
                           "publisher_hunting_queries": result["publisher_hunts"][:8],
                           "analyst_verified": False})
     return summaries

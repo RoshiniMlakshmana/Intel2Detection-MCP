@@ -654,7 +654,10 @@ def _workup_html(w):
     parts = [f'<p><b>Next analyst decision:</b> {_e(w["next_analyst_decision"])}</p>',
              f'<p><b>Source:</b> {_e(w["source"]["name"])} {_safe_href(w["source"]["url"]) if w["source"]["url"] else ""}'
              f' &middot; <b>Published:</b> {_fmt(w["published"])} &middot; <b>Collected:</b> {_fmt(w["collected"])}</p>']
-    for hunt in w["research"].get("publisher_hunting_queries", [])[:4]:
+    if w["research"].get("needs_extraction_refresh"):
+        parts.append(f'<p class="missing">Stored research used an older extractor. Refresh it with '
+                     f'<code>{_e(w["research"]["refresh_action"])}</code> before relying on missing findings.</p>')
+    for hunt in w["research"].get("publisher_hunting_queries", [])[:8]:
         parts.append(f'<details><summary>Publisher {_e(hunt["language"].upper())} hunt '
                      f'<span class="badge stale">unverified</span> {_safe_href(hunt["source_url"])}</summary>'
                      f'<pre>{_e(hunt["text"][:6000])}</pre><p>{_e(hunt["note"])}</p></details>')
@@ -671,7 +674,7 @@ def _workup_html(w):
     patterns = w["pattern_analysis"]["patterns"]
     if not patterns:
         parts.append(f'<p class="missing">No pattern: {_e(w["pattern_analysis"].get("reason") or "no specific artifact in inspected text")}</p>')
-    for item in patterns[:6]:
+    for item in patterns[:10]:
         artifacts = (item["observable"].get("artifacts") or [])
         why = item["why_malicious_per_source"]
         parts.append(

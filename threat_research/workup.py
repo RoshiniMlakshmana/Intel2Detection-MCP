@@ -130,7 +130,9 @@ def pattern_analysis(threat_id, path: Path | None = None):
                           "or headline is never used as a pattern."}
     pages = {p["url"]: p for p in research.get("pages", [])}
     context = local_context(threat["id"], path)
-    items = list(research.get("specific_details_to_verify") or []) + [
+    items = [{**p, "artifacts_as_written": [], "lexical_behavior": p.get("behavior"),
+              "behavior_description": True} for p in research.get("behavior_patterns_to_verify") or []] + list(
+        research.get("specific_details_to_verify") or []) + [
         {**o, "artifacts_as_written": [], "lexical_behavior": o.get("behavior")}
         for o in research.get("observables_found") or []]
     patterns = []
@@ -165,7 +167,10 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                    "Nothing is created until propose_detection_from_paragraph is called."}
                           if suggestion else
                           {"suggested_spec": None,
-                           "reason": ("Only file names or paths here: a name alone is not an attack pattern."
+                           "reason": ("Behavior described, but no bounded telemetry predicates are confirmed; "
+                                      "review the publisher's query and propose a custom detection after verification."
+                                      if item.get("behavior_description") else
+                                      "Only file names or paths here: a name alone is not an attack pattern."
                                       if artifacts and all(a["kind"] in ("filename", "quoted_file", "path")
                                                            for a in artifacts) else
                                       "No file name paired with a hash in this paragraph; a spec needs a "
@@ -464,7 +469,11 @@ def lead_workup(threat_id, path: Path | None = None):
             "research": {"status": research["status"], "completed_at": research.get("completed_at"),
                          "summary": research.get("summary"), "pages": research.get("pages", []),
                          "publisher_blocked": research.get("publisher_blocked") or [],
-                         "publisher_hunting_queries": research.get("publisher_hunting_queries") or []},
+                         "publisher_hunting_queries": research.get("publisher_hunting_queries") or [],
+                         "behavior_patterns_to_verify": research.get("behavior_patterns_to_verify") or [],
+                         "needs_extraction_refresh": research.get("needs_extraction_refresh", False),
+                         "refresh_action": (f"research_lead('{ident}', refresh=True)" if
+                                            research.get("needs_extraction_refresh") else None)},
             "browser_captures": browser_captures,
             "pattern_analysis": patterns,
             "inventory": inventory_view,

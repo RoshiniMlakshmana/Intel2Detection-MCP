@@ -11,6 +11,11 @@ ENCODED = re.compile(r"(?:-encodedcommand\b|-enc\b|encoded command)", re.I)
 EXECUTE = re.compile(r"\b(?:executed|ran|launched|started)\b", re.I)
 DENY = re.compile(r"\b(?:deny|denied|missing|expired)\b", re.I)
 TOOL = re.compile(r"\b(?:tool invocation|tool execution|mcp tool)\b", re.I)
+SIDELOAD = re.compile(r"\bDLL sideload(?:ed|ing)\b", re.I)
+LOADER = re.compile(r"\b(?:malware|malicious|loader|threat actor|attacker)\b", re.I)
+C2 = re.compile(r"\b(?:C2|command[- ]and[- ]control)\b", re.I)
+BEACON = re.compile(r"\b(?:beacon|connect(?:ion|ivity|s|ed)?|communicat(?:ion|es)|request)\b", re.I)
+NETWORK = re.compile(r"\b(?:HTTPS?|WebSockets?|domain|host|URL|URI)\b", re.I)
 
 
 def from_paragraphs(paragraphs):
@@ -33,6 +38,34 @@ def from_paragraphs(paragraphs):
                                "excerpt": paragraph[:420], "status": "analyst_review_required",
                                "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."})
                 seen.add(behavior)
+    return output
+
+
+def behavior_patterns(paragraphs, limit=8):
+    """Cited behaviors beyond the three rule templates; untrusted research only.
+
+    A behavioral description alone cannot supply the bounded field predicates
+    or telemetry needed for a draft. Keep it visible for analyst review without
+    putting an unsupported behavior into the rule/corroboration pipeline.
+    """
+    output, seen = [], set()
+    for index, paragraph in enumerate(paragraphs):
+        if NEGATION.search(paragraph):
+            continue
+        kinds = []
+        if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
+            kinds.append("dll_sideloading")
+        if C2.search(paragraph) and BEACON.search(paragraph) and NETWORK.search(paragraph):
+            kinds.append("c2_communication")
+        for kind in kinds:
+            if kind not in seen:
+                output.append({"behavior": kind, "paragraph": index + 1,
+                               "excerpt": paragraph[:700], "status": "unverified_behavior_description",
+                               "note": "Publisher's description only. Confirm the full source and measurable fields "
+                                       "before proposing a custom detection; no template rule is implied."})
+                seen.add(kind)
+        if len(output) >= limit:
+            break
     return output
 
 

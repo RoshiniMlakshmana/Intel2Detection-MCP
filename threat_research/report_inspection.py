@@ -259,15 +259,17 @@ def _extract_paragraphs(threat_id, source_url, paragraphs, digest, hunts):
             selected.append({"paragraph": index + 1, "excerpt": clean[:420],
                              "truncated": len(clean) > 420})
     leads = behavior_leads.from_paragraphs(paragraphs)
+    patterns = behavior_leads.behavior_patterns(paragraphs)
     details = behavior_leads.specific_details(paragraphs)
     # Full text of every paragraph this result cites, so a later detection
     # proposal can be checked against the exact inspected wording.
     cited = sorted({e["paragraph"] for e in selected[:10]} | {d["paragraph"] for d in details}
-                   | {lead["paragraph"] for lead in leads})
+                   | {lead["paragraph"] for lead in leads} | {p["paragraph"] for p in patterns})
     return {"threat_id": threat_id.upper(), "source": source_url,
             "sha256": digest, "paragraphs_scanned": len(paragraphs),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
             "behavior_leads": leads,
+            "behavior_patterns": patterns,
             "specific_details": details,
             "paragraph_text": {n: html.unescape(paragraphs[n - 1]) for n in cited[:40]},
             "publisher_hunts": hunts,

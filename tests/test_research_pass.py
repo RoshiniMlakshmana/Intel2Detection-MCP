@@ -20,7 +20,7 @@ from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
-from threat_research import core, report_inspection, research_pass, rules, server, store, workflow
+from threat_research import core, report_inspection, research_pass, rules, server, store, workflow, workup
 
 CVE = "CVE-2099-88771"
 CVE2 = "CVE-2099-88772"
@@ -123,6 +123,39 @@ class Base(unittest.TestCase):
 
 
 class AutomaticSourceReviewTest(Base):
+    def test_vendor_behavior_and_hunts_are_visible_without_creating_a_rule(self):
+        ident = "REPORT-FICTMALWARE001"
+        url = "https://www.microsoft.com/en-us/security/blog/2099/01/01/fictional-loader"
+        self.report(ident, url, cves=())
+        html = ("<html><body><article>"
+                "<p>The malware's first-stage loader was DLL sideloaded by the legitimate application and "
+                "launched when the application ran.</p>"
+                "<p>The initial C2 beacon sent an HTTPS GET request to fictional.example.</p>"
+                "<pre>DeviceNetworkEvents\n| where RemoteUrl == 'fictional.example'\n"
+                "| project Timestamp, DeviceName, RemoteUrl</pre>"
+                "</article></body></html>").encode()
+        result = research_pass.research_lead(ident, self.path, fetch=Fetcher({url: html}))
+        self.assertEqual(result["status"], "observables_need_analyst_verification")
+        self.assertEqual([p["behavior"] for p in result["behavior_patterns_to_verify"]],
+                         ["dll_sideloading", "c2_communication"])
+        self.assertEqual(result["observables_found"], [])  # no false fixed-template match
+        self.assertEqual(result["publisher_hunting_queries"][0]["status"], "publisher_query_unverified")
+        view = workup.lead_workup(ident, self.path)
+        self.assertEqual([p["observable"]["lexical_behavior"] for p in view["pattern_analysis"]["patterns"]],
+                         ["dll_sideloading", "c2_communication"])
+        self.assertTrue(all(not p["draftable"]["suggested_spec"] for p in view["pattern_analysis"]["patterns"]))
+        self.assertEqual(len(view["research"]["publisher_hunting_queries"]), 1)
+        with store.connection(self.path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM rules").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
+                             .fetchone()[0], 0)
+
+    def test_negated_behavior_does_not_create_a_research_pattern(self):
+        html = page("No evidence of a malicious loader DLL sideloading was observed in this investigation.",
+                    "The C2 beacon did not connect to the HTTPS host in this test.")
+        found = report_inspection.extract_report_html("REPORT-FICTNEGATED01", FORTINET, html)
+        self.assertEqual(found["behavior_patterns"], [])
+
     def test_pass_reads_primary_pages_linked_guidance_and_cited_reports_without_asking(self):
         self.kev()
         self.report("REPORT-FICTCISA0001", CISA_ALERT)
@@ -208,6 +241,9 @@ class AutomaticSourceReviewTest(Base):
             old.pop("extraction_version")
             db.execute("UPDATE research_outcomes SET detail=? WHERE threat_id=?", (json.dumps(old), ident))
         self.assertTrue(research_pass.status(ident, self.path)["needs_extraction_refresh"])
+        view = workup.lead_workup(ident, self.path)
+        self.assertTrue(view["research"]["needs_extraction_refresh"])
+        self.assertIn("refresh=True", view["research"]["refresh_action"])
         refreshed = research_pass.run_pass(self.path, max_leads_=20, max_fetches=120,
                                            fetch=Fetcher({FORTINET: html}))
         self.assertEqual((refreshed["leads_researched"], refreshed["pages_fetched"]), (1, 1))
