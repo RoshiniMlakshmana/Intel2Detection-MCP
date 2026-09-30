@@ -237,12 +237,13 @@ def workflow_counts(path: Path | None = None):
 def latest_check(rule_id, path):
     rule = rules.get_rule(rule_id, path)
     with store.connection(path) as db:
-        row = db.execute("SELECT rule_hash,tested_at,sample_size,counts,sample_source FROM rule_tests "
-                         "WHERE rule_id=? ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()
+        row = db.execute("SELECT rule_hash,tested_at,sample_size,counts,sample_source,sample_provenance "
+                         "FROM rule_tests WHERE rule_id=? ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()
     if not row:
         return None
     return {"tested_at": row["tested_at"], "sample_size": row["sample_size"], "counts": json.loads(row["counts"]),
             "sample_source": row["sample_source"],
+            "sample_provenance": row["sample_provenance"] or "unrecorded (before provenance tracking)",
             "tests_current_version": bool(rule and row["rule_hash"] == soc_replay.rule_content_hash(rule))}
 
 

@@ -56,6 +56,85 @@ def inspected_paragraph(threat_id, source_url, paragraph, path: Path | None = No
     return {"text": row["text"], "page_sha256": page["sha256"], "inspected_at": page["inspected_at"]}
 
 
+MANUAL_VIA = ("browser", "pdf", "vendor_portal", "advisory_copy", "other")
+MANUAL_DECISIONS = ("undecided", "no_detection_detail", "contains_detection_detail")
+
+
+def _lead_urls(threat, path):
+    """URLs this lead cites or the research pass tried (including blocked, unreadable and
+    original-publication candidates): the only URLs a manual review may be recorded for."""
+    from . import research_pass
+    urls = set(threat["sources"]) | {e["source_url"] for e in threat["evidence"]}
+    research = research_pass.status(threat["id"], path)
+    urls |= {p["url"] for p in research.get("pages", [])}
+    urls |= {u for d in research.get("specific_details_to_verify") or []
+             for u in d.get("original_publication_candidates", [])}
+    return urls
+
+
+def record_manual_review(threat_id, url, quoted_text, retrieved_via, decision, note, path: Path | None = None):
+    """Analyst-entered text from a page automation could not read. Stored with its provenance;
+    never treated as automatically verified. The decision is the analyst's, recorded as given."""
+    import hashlib
+    from . import research_pass
+    threat = get_threat(threat_id, path)
+    if not threat:
+        raise ValueError("unknown threat")
+    if retrieved_via not in MANUAL_VIA:
+        raise ValueError(f"retrieved_via must be one of {', '.join(MANUAL_VIA)}")
+    if decision not in MANUAL_DECISIONS:
+        raise ValueError(f"decision must be one of {', '.join(MANUAL_DECISIONS)}")
+    if not isinstance(quoted_text, str) or not 20 <= len(quoted_text.strip()) <= 5000:
+        raise ValueError("quoted_text must be the exact text read at the URL (20-5000 characters)")
+    if not isinstance(note, str) or not 10 <= len(note.strip()) <= 500:
+        raise ValueError("note must say what was read and why the decision was made (10-500 characters)")
+    if url not in _lead_urls(threat, path):
+        raise ValueError("the URL is not cited by this lead or tried by its research; record the review for one of "
+                         "the lead's own sources")
+    text = quoted_text.strip()
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    with store.connection(path) as db:
+        db.execute("INSERT INTO manual_source_reviews (threat_id,url,quoted_text,text_sha256,retrieved_via,decision,"
+                   "analyst_note,entered_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(threat_id,url,text_sha256) DO UPDATE "
+                   "SET decision=excluded.decision,analyst_note=excluded.analyst_note,retrieved_via=excluded.retrieved_via",
+                   (threat["id"], url, text, digest, retrieved_via, decision, note.strip(), now()))
+        review_id = db.execute("SELECT id FROM manual_source_reviews WHERE threat_id=? AND url=? AND text_sha256=?",
+                               (threat["id"], url, digest)).fetchone()[0]
+        db.execute("INSERT INTO audit(at,action,target,detail) VALUES (?,?,?,?)",
+                   (now(), "manual_source_review_recorded", threat["id"],
+                    json.dumps({"review_id": review_id, "url": url, "decision": decision})))
+    if decision == "no_detection_detail":
+        conclusion = {"status": "completed_insufficient_detail", "provenance": "analyst_manual_review",
+                      "summary": (f"Analyst manual review of {url} ({retrieved_via}): no detection detail. This is the "
+                                  "analyst's recorded decision on manually entered text, not an automated read."),
+                      "pages_inspected": 0,
+                      "evidence": [{"url": url, "role": "analyst_manual_entry", "paragraph": None, "excerpt": text[:420]}],
+                      "observables_found": [], "specific_details_to_verify": [], "publisher_blocked": [],
+                      "unreadable": [], "not_fetched_host_not_allowlisted": [], "missing_for_detection": [],
+                      "missing_telemetry": [], "exposure_patch_review": None,
+                      "rule_drafting": "Not drafted: the analyst recorded that this source has no detection detail."}
+        with store.connection(path) as db:
+            research_pass._store_outcome(db, threat["id"], conclusion)
+            db.execute("UPDATE triage_results SET result='manual_review_no_detection_detail',reason=? WHERE threat_id=?",
+                       (conclusion["summary"][:600], threat["id"]))
+    return {"manual_review_id": review_id, "threat_id": threat["id"], "url": url, "decision": decision,
+            "provenance": "analyst_manual_entry", "verified": False,
+            "next_step": ("If the text supports a detection, propose_detection_from_paragraph(..., manual_review_id="
+                          f"{review_id}); the draft still needs verify_draft_source." if decision ==
+                          "contains_detection_detail" else
+                          "Lead closed on your recorded decision." if decision == "no_detection_detail" else
+                          "Decision pending; record it again with a decision when read."),
+            "note": "Manually entered text is kept with its provenance and is never treated as automatically verified."}
+
+
+def manual_reviews(threat_id, path: Path | None = None):
+    store.initialize(path)
+    with store.connection(path) as db:
+        return [dict(r) for r in db.execute(
+            "SELECT id,url,quoted_text,retrieved_via,decision,analyst_note,provenance,entered_at "
+            "FROM manual_source_reviews WHERE threat_id=? ORDER BY id", (threat_id.upper(),))]
+
+
 def _overlaps(normalized, fp, db):
     """Other local custom rules sharing a literal predicate (same field and value): related, not identical."""
     wanted = {(p["field"], p["value"].casefold()) for p in normalized["predicates"]}
@@ -71,8 +150,24 @@ def _overlaps(normalized, fp, db):
     return out
 
 
-def propose(threat_id, source_url, paragraph, spec, title, rationale, false_positives, path: Path | None = None):
-    """Create an unverified, source-linked draft after an inventory comparison; never approves."""
+def _manual_source(threat_id, source_url, manual_review_id, path):
+    with store.connection(path) as db:
+        row = db.execute("SELECT * FROM manual_source_reviews WHERE id=?", (int(manual_review_id),)).fetchone()
+    if not row or row["threat_id"] != threat_id.upper() or row["url"] != source_url:
+        raise ValueError("manual review not found for this lead and URL")
+    if row["decision"] != "contains_detection_detail":
+        raise ValueError("the analyst's manual review does not record this source as containing detection detail")
+    return {"text": row["quoted_text"], "page_sha256": "manual:" + row["text_sha256"],
+            "inspected_at": row["entered_at"], "provenance": "analyst_manual_entry"}
+
+
+def propose(threat_id, source_url, paragraph, spec, title, rationale, false_positives, path: Path | None = None,
+            manual_review_id=None):
+    """Create an unverified, source-linked draft after an inventory comparison; never approves.
+
+    The source is either a stored paragraph of an automatically inspected page, or (manual_review_id)
+    text the analyst entered for a page automation could not read. Either way the draft is unverified.
+    """
     normalized = custom_rules.validate_spec(spec)
     for label, text, low, high in (("title", title, 8, 150), ("rationale", rationale, 30, 1000),
                                    ("false_positives", false_positives, 15, 500)):
@@ -81,7 +176,8 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
     threat = get_threat(threat_id, path)
     if not threat:
         raise ValueError("unknown threat")
-    source = inspected_paragraph(threat_id, source_url, paragraph, path)
+    source = (_manual_source(threat_id, source_url, manual_review_id, path) if manual_review_id else
+              {**inspected_paragraph(threat_id, source_url, paragraph, path), "provenance": "automated_inspection"})
     quoted = source["text"]
     folded = quoted.casefold()
     absent = [p["value"] for p in normalized["predicates"] if p["value"].casefold() not in folded]
@@ -126,7 +222,7 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
         db.execute("INSERT INTO rule_source_links (rule_id,threat_id,source_url,paragraph,page_sha256,quoted_text,"
                    "proposed_by,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                    (rule_id, threat["id"], source_url, int(paragraph), source["page_sha256"], quoted,
-                    "claude_proposal", "unverified", now()))
+                    "claude_proposal_from_" + source["provenance"], "unverified", now()))
         db.execute("INSERT INTO audit(at,action,target,detail) VALUES (?,?,?,?)",
                    (now(), "draft_proposed_from_paragraph", rule_id,
                     json.dumps({"source": source_url, "paragraph": int(paragraph)})))
@@ -134,7 +230,8 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
     return {"status": "draft_unverified", "rule_id": rule_id, "sigma": sigma,
             "required_fields": sorted({p["field"] for p in normalized["predicates"]}),
             "telemetry_requirements": TELEMETRY[normalized["event_family"]],
-            "source": {"url": source_url, "paragraph": int(paragraph), "page_sha256": source["page_sha256"],
+            "source": {"url": source_url, "paragraph": int(paragraph), "provenance": source["provenance"],
+                       "page_sha256": source["page_sha256"],
                        "inspected_at": source["inspected_at"], "quoted_text": quoted},
             "inventory_check": check,
             "queries": query_status(rule_id, path),

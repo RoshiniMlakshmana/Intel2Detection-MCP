@@ -137,6 +137,23 @@ def rule_content_hash(rule):
     return hashlib.sha256(f"{rule.get('sigma','')}|{rule.get('kql','')}|{rule.get('spl','')}".encode()).hexdigest()
 
 
+SYNTHETIC_MARKERS = ("synthetic", "fixture", "fictional")
+
+
+def sample_provenance(events_file, events):
+    """'bundled_synthetic_fixture' for the packaged lab events or any event marked synthetic;
+    otherwise 'analyst_supplied_file'. Only the latter can satisfy an approval gate."""
+    from importlib import resources
+    try:
+        fixtures = Path(str(resources.files("threat_research") / "lab_fixtures")).resolve()
+        inside = fixtures in Path(events_file).resolve().parents
+    except (OSError, ValueError):
+        inside = False
+    marked = any(event.get("synthetic") is True or any(
+        word in str(event.get("scenario", "")).lower() for word in SYNTHETIC_MARKERS) for event in events)
+    return "bundled_synthetic_fixture" if inside or marked else "analyst_supplied_file"
+
+
 def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=True, sample_label=None):
     """Reproducible local check: replay one rule's own selection logic
     against analyst-labeled positive/benign JSONL samples (the same
@@ -165,9 +182,10 @@ def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=Tr
         raise ValueError("events file has no records")
     result = replay(events, candidates)
     rule_hash = rule_content_hash(rule)
-    rule_repository.record_test_result(rule_id, result, rule_hash, sample_label or str(events_file), path)
+    provenance = sample_provenance(events_file, events)
+    rule_repository.record_test_result(rule_id, result, rule_hash, sample_label or str(events_file), path, provenance)
     rule_repository.export_rule(rule_id, path)
-    return {**result, "rule_id": rule_id, "rule_hash": rule_hash,
+    return {**result, "rule_id": rule_id, "rule_hash": rule_hash, "sample_provenance": provenance,
             "scope": "Local reference matching against analyst-labeled samples, not production SIEM accuracy; "
                      "native Splunk/Defender validation remains pending until a customer connects its SIEM."}
 

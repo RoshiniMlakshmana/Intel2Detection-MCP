@@ -654,14 +654,82 @@ def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None,
 
 
 def triage_summary(path: Path | None = None, limit=50):
-    """Why triaged leads remain open, grouped by result."""
+    """Why triaged leads remain open, grouped by what they need, from each lead's current queue.
+
+    Only leads still in the triaged_open queue count as open (a lead triage later moved to the backlog or
+    research_completed is not). "Read, no detection detail" counts only leads whose sources were actually
+    read, automatically or by the analyst; unread sources are never counted as researched.
+    """
+    import collections
+    from . import workflow
     store.initialize(path)
     with store.connection(path) as db:
-        groups = {r["result"]: r["n"] for r in db.execute(
-            "SELECT result,COUNT(*) AS n FROM triage_results GROUP BY result")}
         rows = [dict(r) for r in db.execute(
-            "SELECT tr.threat_id,tr.source_name,tr.result,tr.reason,tr.triaged_at,t.title FROM triage_results tr "
-            "JOIN threats t ON t.id=tr.threat_id WHERE tr.result NOT IN "
-            "('researched_insufficient_detail','moved_to_research_backlog') ORDER BY tr.triaged_at DESC,tr.threat_id "
-            "LIMIT ?", (max(1, min(int(limit), 200)),))]
-    return {"results": groups, "open_leads": rows, "untriaged_remaining": len(raw_triage_candidates(path))}
+            f"SELECT tr.threat_id,tr.source_name,tr.result,tr.reason,tr.triaged_at,t.title,t.kind,"
+            f"{workflow._QUEUE_SQL} AS queue FROM triage_results tr JOIN threats t ON t.id=tr.threat_id "
+            "ORDER BY tr.triaged_at DESC,tr.threat_id")]
+        pages = collections.defaultdict(list)
+        for r in db.execute("SELECT threat_id,status,detail FROM research_page_inspections "
+                            "WHERE status IN ('publisher_blocked','unreadable','failed')"):
+            pages[r["threat_id"]].append(dict(r))
+        read = {r["prov"]: r["n"] for r in db.execute(
+            "SELECT CASE WHEN detail LIKE '%analyst_manual_review%' THEN 'analyst_manual_review' ELSE "
+            "'automated_read' END AS prov, COUNT(*) AS n FROM research_outcomes ro "
+            "WHERE status='completed_insufficient_detail' AND NOT EXISTS(SELECT 1 FROM evidence o WHERE "
+            "o.threat_id=ro.threat_id AND o.kind='analyst_observation') GROUP BY prov")}
+    open_rows = [r for r in rows if r["queue"] == "triaged_open"]
+
+    def browser_kind(row):
+        statuses = {p["status"] for p in pages.get(row["threat_id"], [])}
+        details = " ".join(p["detail"] or "" for p in pages.get(row["threat_id"], []))
+        if "publisher_blocked" in statuses or row["result"] == "publisher_blocked":
+            return "publisher_blocked"
+        if "rendered by script" in details:
+            return "script_rendered"
+        if "not recognizable HTML" in details or "did not return HTML" in details:
+            return "not_an_html_article"  # fetched, but the response is an app shell or non-HTML document
+        return "fetch_failed"
+
+    groups = {
+        "no_detection_detail_by_kind": {
+            "meaning": ("Leak-site claims and repository commits: no technical report to read. Closed by kind, "
+                        "not by reading."),
+            "next_action": "None for detection; check leak claims with leak_claim_relevance if an alias matters.",
+            "rows": [r for r in open_rows if r["result"] == "skipped_not_researchable"]},
+        "needs_browser_review": {
+            "meaning": "A cited page exists but automation could not read it. Not researched.",
+            "next_action": ("Open the URL in a browser; record what you read with record_manual_source_review "
+                            "(text, how retrieved, your decision)."),
+            "rows": [r for r in open_rows if r["result"] in ("publisher_blocked", "unreadable_source")]},
+        "needs_analyst_source_decision": {
+            "meaning": ("Cited only on hosts outside the fetch allowlist, so never read. Not researched; no claim is "
+                        "made about detection detail."),
+            "next_action": ("Decide per host: open the references manually (record_manual_source_review) or vet the "
+                            "host for automated reading."),
+            "rows": [r for r in open_rows if r["result"] == "no_allowlisted_source"]},
+    }
+    other = [r for r in open_rows if not any(r in g["rows"] for g in groups.values())]
+    out = {}
+    for name, group in groups.items():
+        entry = {"count": len(group["rows"]), "meaning": group["meaning"], "next_action": group["next_action"],
+                 "examples": [{k: r[k] for k in ("threat_id", "source_name", "kind", "reason")}
+                              for r in group["rows"][:max(1, min(int(limit), 200))]]}
+        if name == "no_detection_detail_by_kind":
+            entry["by_kind"] = dict(collections.Counter(r["kind"] for r in group["rows"]))
+        if name == "needs_browser_review":
+            entry["by_cause"] = dict(collections.Counter(browser_kind(r) for r in group["rows"]))
+        if name == "needs_analyst_source_decision":
+            hosts = collections.Counter()
+            for r in group["rows"]:
+                if "cited hosts: " in r["reason"]:
+                    hosts.update(h.strip() for h in r["reason"].split("cited hosts: ", 1)[1].split(")")[0].split(","))
+            entry["top_cited_hosts"] = dict(hosts.most_common(15))
+            entry["only_the_collected_record"] = sum("only the collected record" in r["reason"] for r in group["rows"])
+        out[name] = entry
+    return {"open_total": len(open_rows), "groups": out,
+            "other_open": [{k: r[k] for k in ("threat_id", "result", "reason")} for r in other[:20]],
+            "read_no_detection_detail": read,
+            "untriaged_remaining": len(raw_triage_candidates(path)),
+            "results_recorded": dict(collections.Counter(r["result"] for r in rows)),
+            "note": ("Counts come from each lead's current queue. Unread sources (blocked, script-rendered, outside "
+                     "the allowlist) are never counted as researched.")}

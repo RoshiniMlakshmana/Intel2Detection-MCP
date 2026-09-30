@@ -426,6 +426,16 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
         if link and link["status"] != "verified":
             raise ValueError("this draft was proposed from a cited paragraph that the analyst has not verified; "
                              "run verify_draft_source(rule_id, 'I verified this source paragraph') before approval")
+        if link:
+            from .soc_replay import rule_content_hash
+            check = db.execute("SELECT rule_hash,sample_provenance FROM rule_tests WHERE rule_id=? "
+                               "ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()
+            if not check or check["rule_hash"] != rule_content_hash(dict(row)):
+                raise ValueError("no labeled-event check covers this exact rule version; run "
+                                 "test_rule_against_samples(rule_id, <your labeled JSONL>) before approval")
+            if check["sample_provenance"] != "analyst_supplied_file":
+                raise ValueError("the latest labeled check used synthetic fixture events; approval needs a check "
+                                 "on analyst-supplied labeled events from your environment")
         external = db.execute("SELECT id,title,source_url,pattern_score FROM external_inventory WHERE fingerprint=?",
                               (row["fingerprint"],)).fetchone()
         if external:

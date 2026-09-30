@@ -28,7 +28,7 @@ async def main():
                         "list_sources", "list_leads", "lead_progression", "workflow_counts", "list_rules",
                         "source_errors", "run_research_pass", "research_lead", "lead_workup", "triage_raw_leads",
                         "triage_status", "propose_detection_from_paragraph", "verify_draft_source",
-                        "record_local_event_context"} <= names
+                        "record_local_event_context", "record_manual_source_review"} <= names
                 result = await session.call_tool("evaluate_synthetic_soc_lab", {})
                 assert not result.is_error
                 report = json.loads(result.content[0].text)
@@ -105,6 +105,13 @@ async def main():
                 assert unread["status"] == "refused" and "not inspected" in unread["reason"], unread
                 gate2 = await call("verify_draft_source", {"rule_id": proposed["rule_id"], "confirmation": "ok"})
                 assert gate2["status"] == "refused", gate2
+                manual = await call("record_manual_source_review", {
+                    "threat_id": registered["id"], "url": "https://attacker.example/not-cited",
+                    "quoted_text": "Text that was never cited by this lead.", "retrieved_via": "browser",
+                    "decision": "undecided", "note": "smoke negative check"})
+                assert manual["status"] == "refused" and "not cited" in manual["reason"], manual
+                steps = work["drafts"][0].get("review_path") if work["drafts"] else None
+                assert steps is None or [s["key"] for s in steps][:2] == ["source_verification", "labeled_events"]
                 triage = await call("triage_raw_leads", {"max_leads": 1})
                 assert triage["researched"] == 0 and "before" in triage, triage
                 assert "untriaged_remaining" in await call("triage_status", {})

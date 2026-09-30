@@ -174,6 +174,14 @@ def initialize(path: Path | None = None):
                 id INTEGER PRIMARY KEY, rule_id TEXT NOT NULL REFERENCES rules(id), rule_hash TEXT NOT NULL,
                 ran_at TEXT NOT NULL, siem TEXT, status TEXT NOT NULL, result TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS manual_source_reviews (
+                id INTEGER PRIMARY KEY, threat_id TEXT NOT NULL REFERENCES threats(id), url TEXT NOT NULL,
+                quoted_text TEXT NOT NULL, text_sha256 TEXT NOT NULL, retrieved_via TEXT NOT NULL,
+                decision TEXT NOT NULL CHECK(decision IN ('undecided','no_detection_detail','contains_detection_detail')),
+                analyst_note TEXT NOT NULL, provenance TEXT NOT NULL DEFAULT 'analyst_manual_entry',
+                entered_at TEXT NOT NULL,
+                UNIQUE(threat_id, url, text_sha256)
+            );
             CREATE TABLE IF NOT EXISTS triage_results (
                 threat_id TEXT PRIMARY KEY REFERENCES threats(id), source_name TEXT,
                 result TEXT NOT NULL, reason TEXT NOT NULL, triaged_at TEXT NOT NULL
@@ -191,6 +199,7 @@ def initialize(path: Path | None = None):
                         "indicator_type": "TEXT", "confidence": "INTEGER", "expires_at": "TEXT"},
             "rules": {"expires_at": "TEXT", "rejected_reason": "TEXT", "rejected_at": "TEXT"},
             "evidence": {"source_name": "TEXT"},
+            "rule_tests": {"sample_provenance": "TEXT"},
             "source_state": {"total_records": "INTEGER NOT NULL DEFAULT 0",
                               "last_error": "TEXT", "last_error_at": "TEXT"},
         }.items():

@@ -122,6 +122,24 @@ The pass never records evidence, drafts or approves a rule.
   - `pattern_score` counts approved independent corroborations.
   - `environment_risk()` stays a what-if calculator on typed inputs.
 - **Corroboration**: a fresh inspected paragraph that contains every literal value of an existing custom rule queues a pending review. Approval adds exactly +1.
+- **Review path** (`lead_workup` → `drafts[].review_path`, same on the dashboard). Every step shows its state and the exact input it needs from you:
+  1. source verification (`verify_draft_source`);
+  2. labelled-event check;
+  3. inventory comparison;
+  4. approval;
+  5. repository snapshot;
+  6. corroboration;
+  7. native SIEM test.
+  
+  A source-linked draft's approval is refused until step 1 is done and step 2 has run on **analyst-supplied** events for the current rule version. `test_rule_against_samples` records sample provenance: the bundled lab events, or events marked synthetic, never satisfy the gate.
+- **Environment risk attribution**: a score uses only the asset named in the local event context. For a CVE, that asset must itself be confirmed affected. An event on one asset is never combined with another asset's confirmation, exposure or criticality.
+- **Manual source review** (`record_manual_source_review`) for blocked, script-rendered or non-allowlisted pages. It stores the URL (which must be one the lead cites or already tried), your quoted text, how you retrieved it and your decision, with provenance `analyst_manual_entry`. It is never treated as verified; a draft from it (`manual_review_id`) still needs `verify_draft_source`.
+- **`triage_status()`** groups open leads by need, based on each lead's current queue:
+  - no detection detail by kind (leak claims, repository commits);
+  - needs browser review (publisher-blocked, script-rendered, not an HTML article, fetch failed);
+  - needs your source decision: cited only on hosts outside the allowlist, with the most-cited hosts listed.
+  
+  Unread sources are never counted as researched.
 
 ### Updating an existing Windows install
 

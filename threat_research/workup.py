@@ -203,37 +203,46 @@ def risk_view(threat_id, path: Path | None = None):
     context = local_context(threat["id"], path)
     with store.connection(path) as db:
         assets = [dict(r) for r in db.execute("SELECT * FROM environment_assets")]
-    confirmed = [a for a in assets if set(json.loads(a["confirmed_cves"])) & set(cves)]
-    if not confirmed and context and context["asset_id"]:
-        confirmed = [a for a in assets if a["asset_id"] == context["asset_id"]]
+    # Every component must describe ONE asset: the asset the local event
+    # context names. An event on asset A is never combined with asset B's CVE
+    # confirmation, exposure or criticality.
+    cve_confirmed = [a for a in assets if set(json.loads(a["confirmed_cves"])) & set(cves)]
+    asset = next((a for a in assets if context and context["asset_id"] and a["asset_id"] == context["asset_id"]),
+                 None)
     missing = []
     if not env.get("configured") or not assets:
         missing.append("An onboarded asset inventory: environment_setup_status reports none.")
-    if not confirmed:
-        missing.append(f"An asset confirmed to run an affected version of {', '.join(cves[:3])}." if cves else
-                       "An asset confirmed relevant to this report: record local event context with the asset_id "
-                       "that was checked.")
+    if cves and not cve_confirmed:
+        missing.append(f"An asset confirmed to run an affected version of {', '.join(cves[:3])}.")
     if not context:
         missing.append(f"Local event context: record_local_event_context('{threat['id']}', observed='yes' or 'no', "
-                       "detail='<log source, query and time range checked>', asset_id=...).")
+                       "detail='<log source, query and time range checked>', asset_id='<the onboarded asset checked>')"
+                       ".")
+    elif not context["asset_id"]:
+        missing.append("The recorded local event context names no asset; record it again with the asset_id that was "
+                       "checked, so exposure and criticality come from that same asset.")
+    elif not asset:
+        missing.append(f"The local event context names asset {context['asset_id']}, which is not an onboarded asset.")
+    elif cves and asset not in cve_confirmed:
+        missing.append(f"The local event was recorded for asset {asset['asset_id']}, which is not confirmed to run an "
+                       f"affected version of {', '.join(cves[:3])}. An event on one asset is never combined with "
+                       "another asset's confirmation; record context for a confirmed asset ("
+                       + (", ".join(a["asset_id"] for a in cve_confirmed[:5]) or "none onboarded")
+                       + ") or confirm this asset.")
     if missing:
         env_risk = {"score": None, "status": "score unavailable", "missing_inputs": missing, "components": None}
     else:
-        best = None
-        for asset in confirmed:
-            if cves:
-                components = {"affected_version_confirmed": 30,
-                              "internet_exposed": 20 if asset["internet_exposed"] else 0,
-                              "asset_criticality": {"low": 0, "medium": 10, "high": 20}[asset["criticality"]],
-                              "local_event_observed": 30 if context["observed"] else 0}
-            else:
-                components = {"local_event_observed": 50 if context["observed"] else 0,
-                              "internet_exposed": 20 if asset["internet_exposed"] else 0,
-                              "asset_criticality": {"low": 0, "medium": 15, "high": 30}[asset["criticality"]]}
-            score = sum(components.values())
-            if best is None or score > best["score"]:
-                best = {"score": score, "asset_id": asset["asset_id"], "components": components}
-        env_risk = {**best, "status": "scored", "max": 100, "local_event_context": context,
+        if cves:
+            components = {"affected_version_confirmed": 30,
+                          "internet_exposed": 20 if asset["internet_exposed"] else 0,
+                          "asset_criticality": {"low": 0, "medium": 10, "high": 20}[asset["criticality"]],
+                          "local_event_observed": 30 if context["observed"] else 0}
+        else:
+            components = {"local_event_observed": 50 if context["observed"] else 0,
+                          "internet_exposed": 20 if asset["internet_exposed"] else 0,
+                          "asset_criticality": {"low": 0, "medium": 15, "high": 30}[asset["criticality"]]}
+        env_risk = {"score": sum(components.values()), "asset_id": asset["asset_id"], "components": components,
+                    "status": "scored", "max": 100, "local_event_context": context,
                     "formula": "Sum of the listed components; each is shown with its value."}
     rule_rows = []
     with store.connection(path) as db:
@@ -244,6 +253,83 @@ def risk_view(threat_id, path: Path | None = None):
             "note": ("Three different measures. environment_risk() is a what-if calculator on inputs you type; its "
                      "number is not this lead's environment risk. No score is shown without confirmed asset and "
                      "local event context.")}
+
+
+def _review_path(draft, inventory, reviews, path):
+    """The analyst gates for one draft, in order, each with its state and the exact input it needs.
+
+    Only the analyst can complete steps 1, 2 (with real labeled events), 3 (declaring the inventory
+    complete) and 4; nothing here performs them.
+    """
+    rid, link = draft["rule_id"], draft["source"]
+    steps = []
+
+    def step(key, title, state, detail, needs=None, gate=True):
+        steps.append({"key": key, "title": title, "state": state, "detail": detail, "needs_from_analyst": needs,
+                      "blocks_approval": gate})
+
+    verified = draft["source_verification"] in ("verified", "analyst_supplied_claim")
+    if draft["source_verification"] == "analyst_supplied_claim":
+        step("source_verification", "1. Source verification", "done", "Drafted from an analyst-supplied claim.")
+    elif verified:
+        step("source_verification", "1. Source verification", "done", "You verified the cited paragraph.")
+    else:
+        step("source_verification", "1. Source verification", "current",
+             f"Paragraph {link['paragraph']} of {link['url']} (proposed by {draft.get('proposed_by')}) "
+             "is cited but not verified.",
+             needs=(f"Read that paragraph yourself. If it says what the draft encodes: verify_draft_source('{rid}', "
+                    f"'I verified this source paragraph'). If not: reject_draft_rule('{rid}', '<reason>')."))
+    check = draft["labeled_checks"]
+    real = (check.get("tests_current_version") and check.get("sample_provenance") == "analyst_supplied_file")
+    fields = ", ".join(draft["required_fields"] or [])
+    if real:
+        step("labeled_events", "2. Labeled-event check", "done",
+             f"{check['sample_size']} analyst-supplied events: {check['counts']} at {check['tested_at']}.")
+    else:
+        prior = ("A check exists but used synthetic fixture events, which never count. "
+                 if check.get("sample_provenance") == "bundled_synthetic_fixture" else
+                 "A check exists for an older rule version. " if check.get("tests_current_version") is False else "")
+        step("labeled_events", "2. Labeled-event check", "current" if verified else "waiting",
+             prior + "No labeled check on real events from your environment covers this rule version.",
+             needs=("A JSONL file of real labeled events from your environment, one per line: event_id, timestamp, "
+                    f"event_type, {fields}, expected_malicious (true/false), scenario; include benign look-alikes. "
+                    f"Then test_rule_against_samples('{rid}', '<path to that file>')."))
+    answer = inventory["answer"]
+    scope = inventory.get("scope") or {}
+    step("inventory", "3. Inventory comparison", "done" if answer in ("Yes", "No") else "attention",
+         f"{answer}. " + ("Existing coverage matches; approval would link to it instead of duplicating."
+                          if answer == "Yes" else scope.get("reason") or "Compared by exact fingerprint."),
+         needs=(None if answer in ("Yes", "No") else
+                "Only you can say your rule inventory is complete: declare_inventory_scope('<what you checked>', "
+                "complete=True), or import your existing rules. Until then the answer stays Unknown."),
+         gate=False)
+    if draft["status"] == "approved":
+        step("approval", "4. Approval", "done", "Approved in the local repository; nothing deployed.")
+    elif draft["status"] == "rejected":
+        step("approval", "4. Approval", "rejected", "You rejected this draft; reopen_rejected_rule to revisit.")
+    else:
+        ready = verified and real
+        step("approval", "4. Approval", "current" if ready else "waiting",
+             "Steps 1 and 2 are complete." if ready else "Needs steps 1 and 2 first; approval is refused until then.",
+             needs=(f"Your explicit request: implement_rule('{rid}', 'implement this rule'). Local repository only; "
+                    "nothing is deployed."))
+    repo = draft["repository"]
+    step("repository", "5. Repository snapshot", "done" if repo["exists"] else "attention",
+         f"{repo['folder']}/{rid}.json" + ("" if repo["exists"] else " (not written yet)")
+         + ("" if repo["git_tracked"] else "; the folder is not under git"), gate=False)
+    pending = [r for r in reviews if r["rule_id"] == rid]
+    step("corroboration", "6. Corroboration", "current" if pending else "waiting",
+         (f"{len(pending)} pending review(s); pattern_score {draft['pattern_score']} changes only when you approve one."
+          if pending else f"pattern_score {draft['pattern_score']}. A new source whose inspected paragraph contains "
+                          "every value of this rule is queued as a pending review automatically."),
+         needs=(f"approve_corroboration_review({pending[0]['id']}, 'implement this rule') adds exactly +1, or "
+                f"reject_corroboration_review({pending[0]['id']}, '<reason>')." if pending else None), gate=False)
+    native = draft["queries"]["native_test"]
+    step("native_siem_test", "7. Native SIEM test", "done" if native["status"] == "query_executed" else "pending",
+         native.get("detail") or native["status"],
+         needs=("A configured SIEM field mapping and read-only credentials, then test_draft_in_siem('" + rid + "'). "
+                "Not required for local approval; never claimed until run."), gate=False)
+    return steps
 
 
 def _draft_view(rule_id, path):
@@ -260,7 +346,11 @@ def _draft_view(rule_id, path):
             "telemetry_requirements": drafting.TELEMETRY.get(spec["event_family"]) if spec else rule.get("telemetry"),
             "queries": drafting.query_status(rule_id, path),
             "labeled_checks": workflow.latest_check(rule_id, path) or {"status": "not run",
-                                                                       "detail": "No labeled sample test yet."}}
+                                                                       "detail": "No labeled sample test yet."},
+            "repository": workflow._repository_entry(rule_id, rule["status"], path),
+            "proposed_by": link["proposed_by"] if link else None,
+            "drafting_guard": ("Every predicate value must appear verbatim in the cited paragraph, and a file name "
+                               "alone is refused; this draft pairs its values as the source prints them.")}
 
 
 def lead_workup(threat_id, path: Path | None = None):
@@ -292,21 +382,19 @@ def lead_workup(threat_id, path: Path | None = None):
                                      if p.get("draftable")})))
     else:
         blocker = progression.get("draft_blocked_reason") or "No specific observable in the inspected sources."
-    unverified = [d for d in drafts if d["source_verification"] == "unverified"]
-    untested = [d for d in drafts if d["status"] == "draft" and d["labeled_checks"].get("status") == "not run"]
-    if reviews:
-        decision = (f"Decide corroboration review #{reviews[0]['id']}: approve_corroboration_review(id, 'implement "
-                    "this rule') adds exactly +1, or reject_corroboration_review(id, reason).")
-    elif unverified:
-        decision = (f"Read paragraph {unverified[0]['source']['paragraph']} at {unverified[0]['source']['url']}; if it "
-                    f"says what draft {unverified[0]['rule_id']} encodes, verify_draft_source(rule_id, 'I verified "
-                    "this source paragraph'); otherwise reject_draft_rule(rule_id, reason).")
-    elif untested:
-        decision = (f"Test draft {untested[0]['rule_id']} against real analyst-labeled positive and benign events "
-                    "(test_rule_against_samples); native SIEM test is pending until test_draft_in_siem runs.")
-    elif any(d["status"] == "draft" for d in drafts):
-        decision = ("Approve only on your explicit 'implement this rule' request after reviewing source, tests and "
-                    "telemetry fit, or reject_draft_rule. Nothing is deployed either way.")
+    inventory_view = {"answer": inventory["status"].capitalize(), "scope": inventory.get("inventory_scope"),
+                      "reason": inventory.get("reason") or inventory.get("scope"),
+                      "behaviors": inventory.get("behaviors", [])}
+    for draft in drafts:
+        draft["review_path"] = _review_path(draft, inventory_view, reviews, path)
+    open_steps = [(d["rule_id"], s) for d in drafts for s in d["review_path"] if s["state"] == "current"]
+    manual = drafting.manual_reviews(ident, path)
+    if open_steps:
+        rule_id, first = open_steps[0]
+        decision = f"{first['title']} for {rule_id}: {first['needs_from_analyst']}"
+    elif any(s["state"] == "attention" and s["needs_from_analyst"] for d in drafts for s in d["review_path"]):
+        first = next(s for d in drafts for s in d["review_path"] if s["state"] == "attention" and s["needs_from_analyst"])
+        decision = f"{first['title']}: {first['needs_from_analyst']}"
     elif blocker and suggestions:
         decision = blocker
     else:
@@ -319,9 +407,8 @@ def lead_workup(threat_id, path: Path | None = None):
                          "summary": research.get("summary"), "pages": research.get("pages", []),
                          "publisher_blocked": research.get("publisher_blocked") or []},
             "pattern_analysis": patterns,
-            "inventory": {"answer": inventory["status"].capitalize(), "scope": inventory.get("inventory_scope"),
-                          "reason": inventory.get("reason") or inventory.get("scope"),
-                          "behaviors": inventory.get("behaviors", [])},
+            "inventory": inventory_view,
+            "manual_source_reviews": manual,
             "drafts": drafts, "drafting_blocker": blocker,
             "corroboration_reviews": reviews,
             "risk": risk_view(ident, path),

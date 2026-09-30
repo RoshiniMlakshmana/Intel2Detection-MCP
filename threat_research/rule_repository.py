@@ -181,13 +181,14 @@ def list_repository(path=None, repo_dir_override=None):
     return result
 
 
-def record_test_result(rule_id, replay_result, rule_hash, sample_source, path=None):
+def record_test_result(rule_id, replay_result, rule_hash, sample_source, path=None, provenance=None):
     """Persist one reproducible-check run; called by rules.test_rule_against_samples."""
     with store.connection(path) as db:
         row = db.execute("SELECT 1 FROM rules WHERE id=?", (rule_id,)).fetchone()
         if not row:
             raise ValueError("unknown rule")
-        db.execute("INSERT INTO rule_tests (rule_id,rule_hash,tested_at,sample_size,counts,cases,sample_source) "
-                   "VALUES (?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO rule_tests (rule_id,rule_hash,tested_at,sample_size,counts,cases,sample_source,"
+                   "sample_provenance) VALUES (?,?,?,?,?,?,?,?)",
                    (rule_id, rule_hash, now(), replay_result["sample_size"],
-                    json.dumps(replay_result["counts"]), json.dumps(replay_result["cases"]), sample_source))
+                    json.dumps(replay_result["counts"]), json.dumps(replay_result["cases"]), sample_source,
+                    provenance))

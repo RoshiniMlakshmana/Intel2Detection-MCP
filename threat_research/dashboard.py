@@ -264,8 +264,16 @@ QUEUE_LEDES = {
 }
 
 
-def _queue_lede(queue):
-    return f'<p class="lede"><b>{_e(QUEUE_HEADINGS[queue])}:</b> {QUEUE_LEDES[queue]}</p>' if queue in QUEUE_LEDES else ""
+def _queue_lede(queue, path=None):
+    if queue not in QUEUE_LEDES:
+        return ""
+    lede = f'<p class="lede"><b>{_e(QUEUE_HEADINGS[queue])}:</b> {QUEUE_LEDES[queue]}</p>'
+    if queue == "triaged_open":
+        from . import research_pass
+        summary = research_pass.triage_summary(path, limit=1)
+        lede += _bullets([f'{name.replace("_", " ")}: {group["count"]}. {group["meaning"]} Next: {group["next_action"]}'
+                          for name, group in summary["groups"].items()])
+    return lede
 
 
 def render_leads(path=None, qs=None):
@@ -299,7 +307,7 @@ def render_leads(path=None, qs=None):
     body = f"""<p><a href="/">&larr; Sources</a></p><h1>{_e(heading)}</h1>
 <p class="lede">50 leads per page, newest publication first. The page size is a local display limit; upstream
 API paging (NVD, GitHub, feeds) is handled by the collectors. Each row keeps its publication date, collection
-date, original URL and that source's latest fetch status.</p>{_queue_lede(params["queue"])}{error_html}{form}
+date, original URL and that source's latest fetch status.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
 {_pager("/leads", params, result)}
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Source / URL</th><th>Published</th><th>Collected</th>
 <th>Latest fetch</th><th>Status</th><th>Rule</th></tr></thead><tbody>{rows}</tbody></table></div>
@@ -678,7 +686,18 @@ def _workup_html(w):
             f'<pre>{_e(draft["sigma"])}</pre>'
             f'<p><b>KQL/SPL:</b> {_e(queries.get("query") or "not generated: " + str(queries.get("reason")))}</p>'
             f'<p><b>Labeled checks:</b> {_e(checks.get("detail") if checks.get("status") == "not run" else checks.get("counts"))}'
-            f' &middot; <b>Native SIEM test:</b> {_e(queries["native_test"]["status"])}</p>')
+            f' &middot; <b>Native SIEM test:</b> {_e(queries["native_test"]["status"])}</p>'
+            + '<h3>Review path</h3><ol class="steps">' + "".join(
+                f'<li class="{_e(step["state"])}"><b>{_e(step["title"])}</b> '
+                f'<span class="badge {STEP_BADGE.get(step["state"], "unknown")}">{_e(step["state"])}</span>'
+                f'<br><small class="muted">{_e(step["detail"])}</small>'
+                + (f'<p class="missing">Needs from you: {_e(step["needs_from_analyst"])}</p>'
+                   if step["needs_from_analyst"] and step["state"] != "done" else "") + "</li>"
+                for step in draft.get("review_path", [])) + "</ol>")
+    for review in w.get("manual_source_reviews", []):
+        parts.append(f'<p><b>Manual source review #{review["id"]}</b> ({_e(review["provenance"])}, '
+                     f'{_e(review["retrieved_via"])}, decision {_e(review["decision"])}) {_safe_href(review["url"])}'
+                     f'<br><small class="muted">{_e(review["quoted_text"][:600])}</small></p>')
     if w["drafting_blocker"]:
         parts.append(f'<p class="missing">Drafting: {_e(w["drafting_blocker"])}</p>')
     risk = w["risk"]

@@ -117,6 +117,14 @@ class ProposalTest(Base):
         self.assertEqual(rules.inventory_status(ident, self.path)["behaviors"][0]["rule_id"], rule_id)
         # Unchanged generated draft is still accepted by the native-test guard.
         live_validation._generated_rule_only(rule, self.path)
+        with self.assertRaisesRegex(ValueError, "no labeled-event check"):
+            rules.implement_rule(rule_id, "implement this rule", path=self.path)
+        events = Path(self.tmp.name) / "analyst_labeled.jsonl"
+        events.write_text(json.dumps({"event_id": "A1", "timestamp": "2099-01-01T00:00:00Z", "event_type": "file_event",
+                                      "SHA256": HASH, "TargetFilename": "C:\\Temp\\FictLoader.dll",
+                                      "expected_malicious": True, "scenario": "loader written"}) + "\n",
+                          encoding="utf-8")
+        soc_replay.test_rule_against_samples(rule_id, str(events), self.path)
         self.assertEqual(rules.implement_rule(rule_id, "implement this rule", path=self.path)["status"],
                          "approved_in_local_inventory")
 
@@ -163,7 +171,7 @@ class RiskSeparationTest(Base):
         risk = workup.risk_view(ident, self.path)
         env = risk["environment_risk"]
         self.assertEqual((env["score"], env["status"]), (None, "score unavailable"))
-        self.assertEqual(len(env["missing_inputs"]), 3)
+        self.assertEqual(len(env["missing_inputs"]), 2)  # inventory, then context naming the asset checked
         self.assertIsNone(risk["threat_priority"]["numeric"])
         # The dashboard no longer derives a number from default inputs for a report.
         self.assertIsNone(dashboard_data.threat_detail_view(ident, self.path)["environment_risk"]["score"])
@@ -217,7 +225,7 @@ class TriageTest(Base):
         self.assertFalse({p["threat_id"] for p in second["processed"]} & set(results))  # resumes, no repeats
         self.assertEqual(research_pass.due_leads(self.path)[0], "CVE-2099-00001")
         summary = research_pass.triage_summary(self.path)
-        self.assertTrue(all(row["reason"] for row in summary["open_leads"]))
+        self.assertTrue(all(ex["reason"] for g in summary["groups"].values() for ex in g["examples"]))
         self.assertEqual(workflow.list_leads(self.path, queue="triaged_open")["total"],
                          workflow.workflow_counts(self.path)["triaged_open"])
 

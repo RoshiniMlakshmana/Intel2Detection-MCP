@@ -110,16 +110,24 @@ def triage_raw_leads(max_leads: int = 8) -> dict:
 
 @mcp.tool()
 def triage_status(limit: int = 50) -> dict:
-    """Why triaged raw leads remain open (skipped as not researchable, no allowlisted source, publisher blocked, unreadable), with counts per result and how many raw leads are still untriaged."""
+    """Why triaged leads remain open, grouped by what they need: no detection detail by kind (leak claims, repository commits), needs browser review (publisher blocked, script-rendered, fetch failed), needs your source decision (cited only on hosts outside the allowlist, with the most-cited hosts). Counts come from each lead's current queue; unread sources are never counted as researched."""
     return research_pass.triage_summary(limit=limit)
 
 
 @mcp.tool()
 def propose_detection_from_paragraph(threat_id: str, source_url: str, paragraph: int, spec: dict, title: str,
-                                     rationale: str, false_positives: str) -> dict:
+                                     rationale: str, false_positives: str, manual_review_id: int = 0) -> dict:
     """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | mcp_audit; platform windows or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, required fields); approval is refused until verify_draft_source. KQL/SPL only when a configured mapping supports every field."""
     return _refused_as_data(drafting.propose, threat_id, source_url, paragraph, spec, title, rationale,
-                            false_positives)
+                            false_positives, None, manual_review_id or None)
+
+
+@mcp.tool()
+def record_manual_source_review(threat_id: str, url: str, quoted_text: str, retrieved_via: str, decision: str,
+                                note: str) -> dict:
+    """Analyst only, with text the analyst read and supplies: for a page automation could not read (publisher block, script-rendered, host outside the allowlist). url must be one this lead cites or its research tried; retrieved_via browser|pdf|vendor_portal|advisory_copy|other; decision undecided|no_detection_detail|contains_detection_detail is the analyst's own. Stored with provenance analyst_manual_entry and never treated as automatically verified; a draft from it (propose_detection_from_paragraph with manual_review_id) still needs verify_draft_source."""
+    return _refused_as_data(drafting.record_manual_review, threat_id, url, quoted_text, retrieved_via, decision,
+                            note)
 
 
 @mcp.tool()
@@ -433,7 +441,7 @@ def rule_repository_status() -> dict:
 
 @mcp.tool()
 def test_rule_against_samples(rule_id: str, events_file: str) -> dict:
-    """Replay one draft or approved rule's own selection logic against a local JSONL file of analyst-labeled positive/benign events (same shape as the synthetic SOC lab); records a hash of the exact tested rule text and every match/miss, and refreshes its on-disk repository snapshot. Local reference matching only -- never SIEM validation; use test_draft_in_siem for that once a SIEM is configured."""
+    """Replay one draft or approved rule's own selection logic against a local JSONL file of analyst-labeled positive/benign events (same shape as the synthetic SOC lab); records a hash of the exact tested rule text and every match/miss, and refreshes its on-disk repository snapshot. Records sample provenance: the bundled lab fixtures or events marked synthetic are 'bundled_synthetic_fixture' and never satisfy the approval gate of a source-linked draft; only analyst-supplied labeled events from the real environment do. Local reference matching only -- never SIEM validation; use test_draft_in_siem for that once a SIEM is configured."""
     return _refused_as_data(soc_replay.test_rule_against_samples, rule_id, events_file)
 
 
