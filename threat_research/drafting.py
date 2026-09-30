@@ -206,7 +206,7 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
                 "note": "No duplicate was created. Compare the existing rule's logic before relying on it."}
     rule_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "threat-research:" + fp))
     sigma = custom_rules._sigma(title, normalized, false_positives, UNVERIFIED_DESCRIPTION, (source_url,))
-    placeholder = "Not generated: requires a configured SIEM field mapping (check_detection_fit)."
+    templates = custom_rules.generic_queries(normalized)
     claim = f"Unverified cited paragraph {paragraph} (proposal {fp[:12]}): {quoted[:800]}"
     with store.connection(path) as db:
         db.execute("INSERT OR IGNORE INTO evidence (threat_id,source_url,claim,kind,behavior,observed_at) "
@@ -215,7 +215,7 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
                                  "AND kind='cited_paragraph'", (threat["id"], source_url, claim)).fetchone()[0]
         db.execute("INSERT INTO rules (id,threat_id,behavior,fingerprint,title,sigma,kql,spl,telemetry,rationale,"
                    "status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (rule_id, threat["id"], "custom", fp, title, sigma, placeholder, placeholder,
+                   (rule_id, threat["id"], "custom", fp, title, sigma, templates["kql"], templates["spl"],
                     normalized["event_family"] + " / " + normalized["platform"], rationale, "draft", now()))
         db.execute("INSERT INTO custom_rule_specs VALUES (?,?)", (rule_id, json.dumps(normalized, sort_keys=True)))
         db.execute("INSERT INTO rule_evidence VALUES (?,?)", (rule_id, evidence_id))
@@ -278,17 +278,22 @@ def source_link(rule_id, path: Path | None = None):
 
 
 def query_status(rule_id, path: Path | None = None):
-    """KQL/SPL only when the configured mapping supports every field; otherwise say exactly why not."""
+    """Show generic KQL/SPL now and the mapped native query when configured."""
     from . import environment
+    spec = custom_rules.get_spec(rule_id, path)
+    templates = custom_rules.generic_queries(spec) if spec else None
     fit = environment.check_rule_fit(rule_id, path)
     if fit.get("ready") and fit.get("mapped_query"):
         return {"siem": fit.get("siem"), "query": fit["mapped_query"], "status": "generated_from_mapping",
-                "native_test": native_test_status(rule_id, path)}
+                "mapped_query": fit["mapped_query"], "templates": templates,
+                "native_test": native_test_status(rule_id, path),
+                "validation": fit.get("validation")}
     reason = fit.get("reason") or (f"unmapped fields: {fit.get('missing_fields') or fit.get('missing_canonical_fields')}"
                                    if fit.get("missing_fields") or fit.get("missing_canonical_fields") else
                                    fit.get("validation") or "no native query available")
-    return {"siem": fit.get("siem"), "query": None, "status": "not_generated", "reason": reason,
-            "native_test": native_test_status(rule_id, path)}
+    return {"siem": fit.get("siem"), "query": None, "mapped_query": None,
+            "status": "generic_templates" if templates else "not_generated", "reason": reason,
+            "templates": templates, "native_test": native_test_status(rule_id, path)}
 
 
 def native_test_status(rule_id, path: Path | None = None):

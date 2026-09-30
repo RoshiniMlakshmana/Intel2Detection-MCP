@@ -98,7 +98,7 @@ def lead_progression(threat_id: str) -> dict:
 
 @mcp.tool()
 def lead_workup(threat_id: str) -> dict:
-    """One analyst workup for a lead: source URL and dates, inspected-paragraph patterns with why the publisher calls them malicious (a publisher claim, never activity in your environment), inventory Yes/No/Unknown with scope, the draft rule (Sigma, required fields, source verification, KQL/SPL only when mapped) or the precise drafting blocker, environment risk vs threat priority vs pattern_score, labeled and native SIEM tests, pending corroboration reviews, and the next analyst decision. Read-only."""
+    """One analyst workup: source URL/dates, cited paragraph and predicate support, the publisher's malicious-behavior claim, inventory connection and coverage separately, Sigma and generic KQL/SPL templates (mapped native query when connected), environment risk connection and missing inputs, tests and next decision. Read-only; no verification or approval is inferred."""
     return workup.lead_workup(threat_id)
 
 
@@ -117,7 +117,7 @@ def triage_status(limit: int = 50) -> dict:
 @mcp.tool()
 def propose_detection_from_paragraph(threat_id: str, source_url: str, paragraph: int, spec: dict, title: str,
                                      rationale: str, false_positives: str, manual_review_id: int = 0) -> dict:
-    """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | mcp_audit; platform windows or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, required fields); approval is refused until verify_draft_source. KQL/SPL only when a configured mapping supports every field."""
+    """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | mcp_audit; platform windows or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, generic KQL/SPL templates, required fields); approval is refused until verify_draft_source. Mapped native query requires a configured telemetry field mapping."""
     return _refused_as_data(drafting.propose, threat_id, source_url, paragraph, spec, title, rationale,
                             false_positives, None, manual_review_id or None)
 

@@ -106,7 +106,7 @@ The pass never records evidence, drafts or approves a rule.
   - source URL and dates;
   - patterns quoted from inspected paragraphs, each artifact labelled as a hash, a name (not sufficient alone) or a path;
   - why the publisher calls it malicious, which is the publisher's claim, never activity in your environment;
-  - inventory Yes/No/Unknown;
+  - inventory connection state and coverage Yes/No/Unknown separately;
   - the draft or the exact drafting blocker;
   - labelled and native SIEM test status;
   - pending corroboration reviews and the next analyst decision.
@@ -115,7 +115,7 @@ The pass never records evidence, drafts or approves a rule.
   - Every value must appear verbatim in the paragraph, and a file name alone is refused.
   - Local and imported inventory is compared first.
   - The draft is stored **unverified**. Approval is refused until you run `verify_draft_source(rule_id, 'I verified this source paragraph')`.
-  - KQL/SPL are generated only from a configured field mapping. Native SIEM tests show `pending` until `test_draft_in_siem` runs.
+  - Generic KQL/SPL templates use canonical fields and explicit table/index placeholders before SIEM onboarding. Once configured, the mapped native query is shown alongside both templates. None is validated until `test_draft_in_siem` runs.
 - **Risk**: `lead_workup` keeps three measures apart.
   - Environment risk is numeric only with a confirmed asset and `record_local_event_context`; otherwise it shows *score unavailable* and the missing inputs.
   - Threat priority is qualitative factors only.

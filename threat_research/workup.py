@@ -67,13 +67,39 @@ def _why_malicious(text, title, host):
     sentences = [s.strip() for s in SENTENCE.split(text) if behavior_leads.ACTOR.search(s)]
     cues = sorted({m.group(0).lower() for m in behavior_leads.ACTOR.finditer(text)})
     if sentences:
-        explanation = (f"{host} presents this in a report titled “{title}”, and the quoted text ties it to "
-                       f"{', '.join(repr(c) for c in cues[:5])}. That is the publisher's assessment of its own "
-                       "analysis, not an observation in your environment.")
+        if re.search(r"\b(spoof|replac|sideload|side.load)\w*\b", text, re.I):
+            behavior = ("The publisher describes a substituted component or DLL loading path. In that reported "
+                        "context, a loader could execute the attacker's next stage under a trusted application's "
+                        "process. The file name and hash identify the publisher's sample; they do not by themselves "
+                        "prove malicious intent or activity on your systems.")
+        elif re.search(r"\bloader\b", text, re.I):
+            behavior = ("The publisher identifies the file as a loader in an analyzed sample. A loader's role is "
+                        "to execute another stage; the hash identifies that sample, while a matching file name "
+                        "alone does not establish malicious intent.")
+        else:
+            behavior = ("The cited paragraph ties the artifact to the publisher's reported activity, but its "
+                        "identity alone does not establish intent.")
+        explanation = (f"{behavior} This is {host}'s claim in “{title}”, not an observation in your environment.")
     else:
         explanation = (f"The paragraph lists the artifact without saying why; its only malicious context is the "
                        f"report title “{title}” from {host}. Treat it as weak until the full report is read.")
     return {"publisher_statements": sentences[:3], "cue_words": cues[:8], "explanation": explanation}
+
+
+def _predicate_support(spec, quote):
+    """Show exactly which cited characters support each predicate and what the rule adds."""
+    if not spec or not quote:
+        return []
+    result = []
+    for item in spec["predicates"]:
+        match = re.search(re.escape(item["value"]), quote, re.I)
+        result.append({"predicate": item, "source_value": quote[match.start():match.end()] if match else None,
+                       "value_in_paragraph": bool(match),
+                       "interpretation": ("Exact sample identity stated by the publisher; does not cover variants."
+                                          if item["field"].lower() in ("sha256", "sha1", "md5") else
+                                          "The value is cited; the field and matching operator are draft rule choices "
+                                          "that still need telemetry validation.")})
+    return result
 
 
 def _page_dates(url, threat, path):
@@ -244,6 +270,12 @@ def risk_view(threat_id, path: Path | None = None):
         env_risk = {"score": sum(components.values()), "asset_id": asset["asset_id"], "components": components,
                     "status": "scored", "max": 100, "local_event_context": context,
                     "formula": "Sum of the listed components; each is shown with its value."}
+    env_risk["connection"] = {"status": "connected" if env.get("configured") and assets else "not_connected",
+                              "profile_configured": bool(env.get("configured")), "asset_count": len(assets),
+                              "local_context_recorded": bool(context),
+                              "comparison": ("Uses the asset named in the recorded local event context."
+                                             if env.get("configured") and assets else
+                                             "No asset inventory connected; no environment score is inferred.")}
     rule_rows = []
     with store.connection(path) as db:
         for row in db.execute("SELECT id,title,status,pattern_score FROM rules WHERE threat_id=?", (threat["id"],)):
@@ -339,11 +371,20 @@ def _draft_view(rule_id, path):
     rule = rules.get_rule(rule_id, path)
     spec = custom_rules.get_spec(rule_id, path)
     link = drafting.source_link(rule_id, path)
+    threat = get_threat(rule["threat_id"], path) if link else None
     return {"rule_id": rule_id, "title": rule["title"], "status": rule["status"],
             "pattern_score": rule["pattern_score"],
             "source_verification": (link["status"] if link else "analyst_supplied_claim"),
             "source": ({"url": link["source_url"], "paragraph": link["paragraph"],
                         "quoted_text": link["quoted_text"], "page_sha256": link["page_sha256"]} if link else None),
+            "supporting_text": ({"paragraph": link["paragraph"], "url": link["source_url"],
+                                 "quoted_text": link["quoted_text"],
+                                 "predicates": _predicate_support(spec, link["quoted_text"]),
+                                 "why_malicious_per_source": _why_malicious(
+                                     link["quoted_text"], threat["title"] if threat else rule["title"],
+                                     urlsplit(link["source_url"]).hostname or link["source_url"]),
+                                 "scope": "Cited publisher text; analyst verification still required."}
+                                if link else None),
             "sigma": rule["sigma"],
             "required_fields": sorted({p["field"] for p in spec["predicates"]}) if spec else None,
             "telemetry_requirements": drafting.TELEMETRY.get(spec["event_family"]) if spec else rule.get("telemetry"),
@@ -385,7 +426,19 @@ def lead_workup(threat_id, path: Path | None = None):
                                      if p.get("draftable")})))
     else:
         blocker = progression.get("draft_blocked_reason") or "No specific observable in the inspected sources."
-    inventory_view = {"answer": inventory["status"].capitalize(), "scope": inventory.get("inventory_scope"),
+    with store.connection(path) as db:
+        imported_count = db.execute("SELECT COUNT(*) FROM external_inventory").fetchone()[0]
+        approved_count = db.execute("SELECT COUNT(*) FROM rules WHERE status='approved'").fetchone()[0]
+        draft_count = db.execute("SELECT COUNT(*) FROM rules WHERE status='draft'").fetchone()[0]
+    declared = inventory.get("inventory_scope") or {}
+    inventory_connection = {"status": ("connected_complete" if declared.get("complete") and declared.get("recent")
+                                       else "connected_partial" if imported_count or approved_count or declared.get("declared")
+                                       else "not_connected"),
+                            "imported_rules": imported_count, "local_approved_rules": approved_count,
+                            "local_drafts": draft_count,
+                            "comparison": "Coverage is evaluated from verified behavior fingerprints; drafts do not count."}
+    inventory_view = {"answer": inventory["status"].capitalize(), "connection": inventory_connection,
+                      "scope": inventory.get("inventory_scope"),
                       "reason": inventory.get("reason") or inventory.get("scope"),
                       "behaviors": inventory.get("behaviors", [])}
     for draft in drafts:

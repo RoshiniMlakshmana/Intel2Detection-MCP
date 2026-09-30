@@ -13,8 +13,8 @@ existing `implement_rule` MCP tool.
 - The lead page's **Workup** panel renders `lead_workup(threat_id)` exactly. It shows:
   - the next analyst decision, source and dates;
   - quoted patterns with artifact sufficiency and the publisher's own reasoning;
-  - inventory, and each draft's Sigma, required fields, source-verification status, KQL/SPL status and tests;
-  - the three separate risk measures.
+  - inventory connection and Yes/No/Unknown coverage separately; each draft's cited paragraph, predicate support, Sigma, generic KQL/SPL templates, mapped query when available, tests and source-verification status;
+  - the three separate risk measures and the asset/context connection state.
 - The page's environment risk no longer derives a number from default inputs. With no confirmed asset and local event context it shows *Score unavailable* and the missing inputs.
 - **Triaged open** tab: raw leads triage could not close. `triage_status()` gives each reason.
 

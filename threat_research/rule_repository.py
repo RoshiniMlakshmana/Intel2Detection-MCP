@@ -130,6 +130,7 @@ def snapshot(rule_id, path=None):
         "rejected_reason": rule.get("rejected_reason"), "rejected_at": rule.get("rejected_at"),
         "telemetry_required": rule["telemetry"], "rationale": rule["rationale"],
         "detections": {"sigma": rule["sigma"], "kql": rule["kql"], "spl": rule["spl"]},
+        "generic_queries": rule.get("generic_queries"),
         "false_positives": _false_positives(rule["sigma"]),
         "source_evidence": [{"evidence_id": e["id"], "source_url": e["source_url"], "claim": e["claim"],
                              "behavior": e.get("behavior")} for e in rule["supporting_evidence"]],

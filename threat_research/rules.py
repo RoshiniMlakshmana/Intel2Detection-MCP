@@ -406,8 +406,10 @@ def get_rule(rule_id, path: Path | None = None):
         sources = [dict(x) for x in db.execute("""SELECT e.id,e.source_url,e.claim,e.behavior
             FROM evidence e JOIN rule_evidence re ON re.evidence_id=e.id WHERE re.rule_id=?""", (rule_id,))]
     from . import custom_rules
+    spec = custom_rules.get_spec(rule_id, path) if row["behavior"] == "custom" else None
     return {**dict(row), "supporting_evidence": sources,
-            "custom_spec": custom_rules.get_spec(rule_id, path) if row["behavior"] == "custom" else None,
+            "custom_spec": spec,
+            "generic_queries": custom_rules.generic_queries(spec) if spec else None,
             "expired": bool(row["expires_at"] and row["expires_at"] <= now()),
             "validation": "syntax and sample telemetry require target-SIEM validation before deployment"}
 

@@ -131,6 +131,7 @@ def draft(threat_id, source_url, claim, title, rationale, false_positives, spec,
     fp = fingerprint(normalized)
     rule_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "threat-research:" + fp))
     sigma = _sigma(title, normalized, false_positives)
+    templates = generic_queries(normalized)
     store.initialize(path)
     with store.connection(path) as db:
         db.execute("INSERT OR IGNORE INTO evidence (threat_id,source_url,claim,kind,behavior,observed_at) VALUES (?,?,?,?,?,?)",
@@ -154,8 +155,7 @@ def draft(threat_id, source_url, claim, title, rationale, false_positives, spec,
         db.execute("INSERT INTO rules (id,threat_id,behavior,fingerprint,title,sigma,kql,spl,telemetry,rationale,status,created_at) "
                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (rule_id, threat_id.upper(), "custom", fp, title, sigma,
-                    "Generated after Defender field mapping; see check_detection_fit.",
-                    "Generated after Splunk field mapping; see check_detection_fit.",
+                    templates["kql"], templates["spl"],
                     normalized["event_family"] + " / " + normalized["platform"], rationale, "draft", now()))
         db.execute("INSERT INTO custom_rule_specs VALUES (?,?)", (rule_id, json.dumps(normalized, sort_keys=True)))
         db.execute("INSERT INTO rule_evidence VALUES (?,?)", (rule_id, evidence["id"]))
@@ -164,6 +164,7 @@ def draft(threat_id, source_url, claim, title, rationale, false_positives, spec,
     rule_repository.export_rule(rule_id, path)
     return {"status": "draft", "rule_id": rule_id, "evidence_id": evidence["id"], "sigma": sigma,
             "required_fields": sorted({item["field"] for item in normalized["predicates"]}),
+            "generic_queries": templates,
             "next_step": "Check client field mapping, inventory and benign/positive events before approval or deployment."}
 
 
@@ -206,6 +207,25 @@ def _query(spec, config, siem):
             conditions.append(f"tolower(tostring({field})) {operator} '{escaped}'")
         query = config["table"] + "\n| where " + " and ".join(conditions)
     return query, []
+
+
+def generic_queries(spec):
+    """Portable query templates over canonical fields, never native SIEM validation.
+
+    The table/index and field names must be mapped to actual telemetry before
+    running. Reuse the bounded predicate compiler so both dialects express the
+    same rule, including escaping and case normalization.
+    """
+    normalized = validate_spec(spec)
+    fields = [item["field"] for item in normalized["predicates"]]
+    kql, _ = _query(normalized, {"table": "YOUR_EVENT_TABLE", "fields": fields, "field_map": {}}, "template")
+    spl, _ = _query(normalized, {"index": "YOUR_INDEX", "sourcetype": "YOUR_SOURCETYPE",
+                                  "fields": fields, "field_map": {}}, "splunk")
+    return {"kql": kql, "spl": spl, "field_names": fields,
+            "requires_mapping": ["Replace the event table or index/sourcetype with the actual source.",
+                                 "Map each canonical field to a field present in that source.",
+                                 "Check syntax and sample events in the target SIEM before use."],
+            "validation": "Generic templates only; no SIEM has executed these queries."}
 
 
 def fit(rule_id, path=None):

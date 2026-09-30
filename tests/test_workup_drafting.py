@@ -249,6 +249,52 @@ class HashShapeTest(Base):
 
 
 class WorkupTest(Base):
+    def test_generic_queries_source_support_and_connection_states(self):
+        ident = self.report()
+        before = workup.lead_workup(ident, self.path)
+        self.assertEqual(before["inventory"]["connection"]["status"], "not_connected")
+        self.assertEqual(before["inventory"]["answer"], "Unknown")
+        self.assertEqual(before["risk"]["environment_risk"]["connection"]["status"], "not_connected")
+        result = self.propose(ident)
+        view = workup.lead_workup(ident, self.path)
+        draft = view["drafts"][0]
+        self.assertEqual(draft["supporting_text"]["quoted_text"], PARA)
+        self.assertEqual({item["source_value"] for item in draft["supporting_text"]["predicates"]},
+                         {HASH, "FictLoader.dll"})
+        self.assertEqual(draft["queries"]["status"], "generic_templates")
+        templates = draft["queries"]["templates"]
+        self.assertIn("YOUR_EVENT_TABLE", templates["kql"])
+        self.assertIn("YOUR_INDEX", templates["spl"])
+        self.assertIn(HASH, templates["kql"])
+        self.assertIn("fictloader.dll", templates["spl"])
+        self.assertIn("publisher identifies", next(p for p in view["pattern_analysis"]["patterns"]
+                                                 if p["paragraph"] == 3)
+                      ["why_malicious_per_source"]["explanation"].lower())
+        rule = rules.get_rule(result["rule_id"], self.path)
+        self.assertEqual(rule["kql"], templates["kql"])
+        self.assertEqual(rule["spl"], templates["spl"])
+        profile = {"name": "Fixture Defender", "siem": "defender", "telemetry": {
+            "file_event": {"table": "DeviceFileEvents", "fields": ["SHA256", "FolderPath"]}}}
+        environment.onboard(profile, [{"asset_id": "fixture-1", "hostname": "fixture-1", "product": "Fixture",
+                                      "version": "1", "confirmed_cves": [], "internet_exposed": False,
+                                      "criticality": "low", "asset_role": "general"}], self.path)
+        mapped = workup.lead_workup(ident, self.path)
+        self.assertEqual(mapped["drafts"][0]["queries"]["status"], "generated_from_mapping")
+        self.assertIn("DeviceFileEvents", mapped["drafts"][0]["queries"]["mapped_query"])
+        self.assertIn("FolderPath", mapped["drafts"][0]["queries"]["mapped_query"])
+        self.assertEqual(mapped["risk"]["environment_risk"]["connection"]["status"], "connected")
+        self.assertIsNone(mapped["risk"]["environment_risk"]["score"])
+        rules.import_inventory([{"id": "EXT-FICT", "title": "Existing reviewed fixture rule",
+                                "source_url": "https://example.org/fixture-rule", "behavior": "custom",
+                                "spec": SPEC}], self.path)
+        still_unverified = workup.lead_workup(ident, self.path)
+        self.assertEqual(still_unverified["inventory"]["connection"]["status"], "connected_partial")
+        self.assertEqual(still_unverified["inventory"]["answer"], "Unknown")
+        drafting.verify(result["rule_id"], "I verified this source paragraph", path=self.path)
+        compared = workup.lead_workup(ident, self.path)
+        self.assertEqual(compared["inventory"]["answer"], "Yes")
+        self.assertEqual(compared["inventory"]["behaviors"][0]["rule_id"], "EXT-FICT")
+
     def test_workup_sections_and_pattern_reasoning(self):
         ident = self.report()
         before = workup.lead_workup(ident, self.path)

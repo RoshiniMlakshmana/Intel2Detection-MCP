@@ -672,11 +672,14 @@ def _workup_html(w):
             + _bullets([f'“{sentence}”' for sentence in why["publisher_statements"]])
             + f'<p><small class="muted">{_e(item["claim_scope"])}</small></p></details>')
     inv = w["inventory"]
-    parts.append(f'<p><b>Inventory:</b> {_e(inv["answer"])} &middot; <small class="muted">'
+    parts.append(f'<p><b>Inventory:</b> {_e(inv["answer"])} &middot; {_e(inv["connection"]["status"])} '
+                 f'({_e(inv["connection"]["imported_rules"])} imported, '
+                 f'{_e(inv["connection"]["local_approved_rules"])} approved local) &middot; <small class="muted">'
                  f'{_e((inv.get("scope") or {}).get("reason") or (inv.get("scope") or {}).get("scope") or "")}</small></p>')
     for draft in w["drafts"]:
         queries = draft["queries"]
         checks = draft["labeled_checks"]
+        support = draft.get("supporting_text")
         parts.append(
             f'<h3>Draft {_e(draft["title"])} <code>{_e(draft["rule_id"])}</code></h3>'
             f'<p>Status <b>{_e(draft["status"])}</b> &middot; source verification <b>{_e(draft["source_verification"])}</b>'
@@ -684,7 +687,21 @@ def _workup_html(w):
             f'<p><b>Required fields:</b> {_e(", ".join(draft["required_fields"] or []))}<br>'
             f'<small class="muted">{_e(draft["telemetry_requirements"])}</small></p>'
             f'<pre>{_e(draft["sigma"])}</pre>'
-            f'<p><b>KQL/SPL:</b> {_e(queries.get("query") or "not generated: " + str(queries.get("reason")))}</p>'
+            + (f'<p><b>Supporting paragraph {support["paragraph"]}:</b> {_safe_href(support["url"])}</p>'
+               f'<blockquote>{_e(support["quoted_text"][:1500])}</blockquote>'
+               + _bullets([f'{p["predicate"]["field"]} {p["predicate"]["operator"]} '
+                           f'{p["predicate"]["value"]}: source says {p["source_value"]}; {p["interpretation"]}'
+                           for p in support["predicates"]])
+               + f'<p><b>Why suspicious:</b> {_e(support["why_malicious_per_source"]["explanation"])}</p>'
+               if support else '')
+            + (f'<p><b>Mapped {_e(queries["siem"])} query:</b></p><pre>{_e(queries["query"])}</pre>'
+               if queries.get("query") else
+               '<p><b>SIEM field mapping:</b> not connected or incomplete; templates need mapping and testing.</p>')
+            + (f'<p><b>Generic KQL template:</b></p><pre>{_e(queries["templates"]["kql"])}</pre>'
+               f'<p><b>Generic SPL template:</b></p><pre>{_e(queries["templates"]["spl"])}</pre>'
+               if queries.get("templates") else '')
+            + f'<p><small class="muted">{_e((queries.get("templates") or {}).get("validation") or "")}</small></p>'
+            +
             f'<p><b>Labeled checks:</b> {_e(checks.get("detail") if checks.get("status") == "not run" else checks.get("counts"))}'
             f' &middot; <b>Native SIEM test:</b> {_e(queries["native_test"]["status"])}</p>'
             + '<h3>Review path</h3><ol class="steps">' + "".join(
@@ -703,6 +720,9 @@ def _workup_html(w):
     risk = w["risk"]
     env = risk["environment_risk"]
     parts.append('<h3>Risk (three separate measures)</h3>'
+                 + f'<p><b>Asset inventory:</b> {_e(env["connection"]["status"])} '
+                   f'({_e(env["connection"]["asset_count"])} assets); '
+                   f'local context recorded: {_e(env["connection"]["local_context_recorded"])}</p>'
                  + (f'<p><b>Environment risk:</b> {env["score"]}/100</p>'
                     + _bullets([f"{k}: {v}" for k, v in env["components"].items()])
                     if env["score"] is not None else
