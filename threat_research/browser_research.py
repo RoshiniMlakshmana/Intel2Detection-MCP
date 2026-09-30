@@ -12,37 +12,57 @@ from . import report_inspection, store
 from .core import get_threat, now
 
 
-def review_queue(path: Path | None = None, page=1, limit=20):
-    """Paged blocked/unreadable/outside-host leads with URLs for a browser handoff."""
+def review_queue(path: Path | None = None, page=1, limit=20, category="all"):
+    """Blocked pages first, then unreadable and outside-host pages; filterable."""
     store.initialize(path)
     page, limit = max(1, int(page)), max(1, min(int(limit), 20))
+    if category not in ("all", "publisher_blocked", "unreadable", "outside_allowlist"):
+        raise ValueError("category must be all, publisher_blocked, unreadable or outside_allowlist")
+    base = """WITH review AS (
+        SELECT t.id threat_id,tr.result,tr.reason,t.title,t.sources,t.first_seen,tr.triaged_at,
+               (SELECT COUNT(*) FROM browser_source_captures c WHERE c.threat_id=t.id) capture_count,
+               CASE
+                 WHEN tr.result='publisher_blocked' OR EXISTS
+                   (SELECT 1 FROM research_page_inspections p WHERE p.threat_id=t.id
+                    AND p.status='publisher_blocked') OR EXISTS
+                   (SELECT 1 FROM article_inspection_queue a WHERE a.threat_id=t.id
+                    AND a.status='publisher_blocked') THEN 'publisher_blocked'
+                 WHEN tr.result='unreadable_source' OR EXISTS
+                   (SELECT 1 FROM research_page_inspections p WHERE p.threat_id=t.id
+                    AND p.status IN ('unreadable','failed')) THEN 'unreadable'
+                 WHEN tr.result='no_allowlisted_source' OR EXISTS
+                   (SELECT 1 FROM research_page_inspections p WHERE p.threat_id=t.id
+                    AND p.status='not_allowlisted') THEN 'outside_allowlist'
+                 ELSE '' END category
+        FROM threats t LEFT JOIN triage_results tr ON tr.threat_id=t.id)
+    """
+    selected = "WHERE category!=''" + (" AND category=?" if category != "all" else "")
+    args = (category,) if category != "all" else ()
     with store.connection(path) as db:
-        condition = "tr.result IN ('publisher_blocked','unreadable_source','no_allowlisted_source')"
-        total = db.execute("SELECT COUNT(*) FROM threats t WHERE EXISTS(SELECT 1 FROM triage_results tr "
-                           f"WHERE tr.threat_id=t.id AND {condition}) OR EXISTS(SELECT 1 FROM "
-                           "research_page_inspections p WHERE p.threat_id=t.id AND "
-                           "p.status IN ('publisher_blocked','unreadable','failed','not_allowlisted'))").fetchone()[0]
-        rows = db.execute("SELECT t.id threat_id,tr.result,tr.reason,t.title,t.sources FROM threats t "
-                          "LEFT JOIN triage_results tr ON tr.threat_id=t.id WHERE "
-                          f"{condition} OR EXISTS(SELECT 1 FROM research_page_inspections p "
-                          "WHERE p.threat_id=t.id AND p.status IN "
-                          "('publisher_blocked','unreadable','failed','not_allowlisted')) "
-                          "ORDER BY COALESCE(tr.triaged_at,t.first_seen) DESC,t.id LIMIT ? OFFSET ?",
-                          (limit, (page - 1) * limit)).fetchall()
+        total = db.execute(base + "SELECT COUNT(*) FROM review " + selected, args).fetchone()[0]
+        rows = db.execute(base + "SELECT * FROM review " + selected +
+                          " ORDER BY CASE category WHEN 'publisher_blocked' THEN 0 "
+                          "WHEN 'unreadable' THEN 1 ELSE 2 END, capture_count>0, "
+                          "COALESCE(triaged_at,first_seen) DESC,threat_id LIMIT ? OFFSET ?",
+                          args + (limit, (page - 1) * limit)).fetchall()
         items = []
         for row in rows:
             blocked = db.execute("SELECT url,status FROM research_page_inspections WHERE threat_id=? "
                                  "AND status IN ('publisher_blocked','unreadable','failed','not_allowlisted') "
                                  "ORDER BY inspected_at DESC",
                                  (row["threat_id"],)).fetchall()
-            refs = [r["url"] for r in blocked] or [u for u in json.loads(row["sources"])
+            article_blocks = db.execute("SELECT source_url FROM article_inspection_queue WHERE threat_id=? "
+                                        "AND status='publisher_blocked' ORDER BY source_url",
+                                        (row["threat_id"],)).fetchall()
+            refs = list(dict.fromkeys([r["url"] for r in blocked if r["status"] == "publisher_blocked"] +
+                                      [r["source_url"] for r in article_blocks] +
+                                      [r["url"] for r in blocked if r["status"] != "publisher_blocked"])) or [u for u in json.loads(row["sources"])
                   if urlsplit(u).hostname not in ("nvd.nist.gov", "www.cve.org", "cveawg.mitre.org")]
-            captures = db.execute("SELECT COUNT(*) FROM browser_source_captures WHERE threat_id=?",
-                                  (row["threat_id"],)).fetchone()[0]
-            items.append({"threat_id": row["threat_id"], "title": row["title"], "reason": row["result"] or
-                          (blocked[0]["status"] if blocked else "browser_review_needed"),
-                          "detail": row["reason"], "cited_urls": refs[:5], "browser_captures": captures})
-    return {"total": total, "page": page, "page_size": limit, "items": items,
+            items.append({"threat_id": row["threat_id"], "title": row["title"], "category": row["category"],
+                          "reason": row["result"] or (blocked[0]["status"] if blocked else "browser_review_needed"),
+                          "detail": row["reason"], "cited_urls": refs[:5],
+                          "browser_captures": row["capture_count"]})
+    return {"total": total, "page": page, "page_size": limit, "category": category, "items": items,
             "handoff": "Open a cited URL with a browser tool, then pass extracted article text to "
                        "capture_browser_source. A browser capture remains unverified publisher text."}
 
@@ -70,6 +90,7 @@ def capture(threat_id, url, page_text, path: Path | None = None):
             "paragraphs_scanned": extracted["paragraphs_scanned"],
             "specific_details_to_verify": extracted["specific_details"],
             "behavior_leads_to_verify": extracted["behavior_leads"],
+            "publisher_hunting_queries": extracted["publisher_hunts"],
             "status": "assistant_browser_capture_unverified", "analyst_verified": False,
             "note": "Browser text may be incomplete or altered by a page. Check the cited page yourself; "
                     "this capture creates no analyst evidence, rule, score or approval."}
@@ -99,5 +120,6 @@ def capture_summaries(threat_id, path: Path | None = None):
         summaries.append({**item, "paragraphs_scanned": result["paragraphs_scanned"],
                           "specific_details_to_verify": result["specific_details"][:8],
                           "behavior_leads_to_verify": result["behavior_leads"][:8],
+                          "publisher_hunting_queries": result["publisher_hunts"][:8],
                           "analyst_verified": False})
     return summaries

@@ -43,6 +43,10 @@ MAX_FETCHES_PER_PASS = 40
 MAX_LINKED_GUIDANCE = 3
 MAX_EVIDENCE = 15
 NO_SOURCE_RETRY = timedelta(hours=12)
+# Bump when previously stored source text needs re-analysis by a newer extractor.
+# A deep batch revisits eligible backlog leads once, without continually fetching
+# a source that is already awaiting the analyst's verification.
+EXTRACTION_VERSION = 2
 KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
@@ -351,6 +355,7 @@ def _conclude(threat, pages, evidence, observables, details, path, hunts=()):
                   "an observable is cited.") if env.get("configured") else
                  "No telemetry profile is configured for this installation, so the collected log sources are also unknown."]
     return {
+        "extraction_version": EXTRACTION_VERSION,
         "status": status, "summary": summary,
         "pages_inspected": len(inspected),
         "evidence": evidence[:MAX_EVIDENCE],
@@ -454,6 +459,7 @@ def status(threat_id, path: Path | None = None):
         return {"threat_id": ident, "status": "not_researched", "pages": pages}
     detail = json.loads(outcome["detail"])
     return {"threat_id": ident, **detail, "status": outcome["status"], "completed_at": outcome["completed_at"],
+            "needs_extraction_refresh": detail.get("extraction_version", 0) < EXTRACTION_VERSION,
             "pages": pages,
             "note": "Automatic read-only research. Page text is untrusted; nothing was recorded as analyst evidence."}
 
@@ -488,20 +494,55 @@ def due_leads(path: Path | None = None, limit=MAX_LEADS):
             SELECT t.id FROM threats t LEFT JOIN research_outcomes ro ON ro.threat_id=t.id
             WHERE {NO_OBSERVATION_SQL} AND {BACKLOG_SQL}
               AND (ro.threat_id IS NULL
+                   OR (ro.status!='completed_insufficient_detail' AND
+                       COALESCE(json_extract(ro.detail,'$.extraction_version'),0)<:version)
                    OR (ro.status='no_readable_source' AND ro.completed_at<=:retry)
                    OR EXISTS(SELECT 1 FROM report_cves rc JOIN threats r ON r.id=rc.report_id
                              WHERE rc.cve_id=t.id AND r.first_seen>ro.completed_at))
             ORDER BY (t.kind='advisory' AND t.kev=1) DESC,
                      EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) DESC,
                      COALESCE(t.published,t.first_seen) DESC, t.id
-            LIMIT :limit""", {"retry": retry, "limit": max(1, min(int(limit), 20))}).fetchall()
+            LIMIT :limit""", {"retry": retry, "version": EXTRACTION_VERSION,
+                               "limit": max(1, min(int(limit), 20))}).fetchall()
     return [r["id"] for r in rows]
+
+
+def backlog_diagnostics(path: Path | None = None):
+    """Distinguish a backlog requiring analyst work from pages due for another read."""
+    store.initialize(path)
+    due = set(due_leads(path, 20))
+    cutoff = datetime.now(timezone.utc) - NO_SOURCE_RETRY
+    with store.connection(path) as db:
+        rows = db.execute(f"SELECT t.id,ro.status,ro.completed_at,ro.detail FROM threats t "
+                          f"LEFT JOIN research_outcomes ro ON ro.threat_id=t.id WHERE {NO_OBSERVATION_SQL} "
+                          f"AND {BACKLOG_SQL} AND (ro.status IS NULL OR "
+                          "ro.status!='completed_insufficient_detail') ORDER BY t.id").fetchall()
+    reasons = []
+    for row in rows:
+        if row["id"] in due:
+            continue
+        detail = json.loads(row["detail"]) if row["detail"] else {}
+        if row["status"] == "observables_need_analyst_verification":
+            reason, next_at = "awaiting_analyst_verification", None
+        elif row["status"] == "no_readable_source" and row["completed_at"]:
+            next_at = (datetime.fromisoformat(row["completed_at"].replace("Z", "+00:00")) +
+                       NO_SOURCE_RETRY).isoformat(timespec="seconds").replace("+00:00", "Z")
+            reason = "publisher_retry_cooldown" if row["completed_at"] > cutoff.isoformat(timespec="seconds").replace("+00:00", "Z") else "not_selected_this_batch"
+        else:
+            reason, next_at = "not_selected_this_batch", None
+        reasons.append({"threat_id": row["id"], "reason": reason, "next_retry_at": next_at,
+                        "research_status": row["status"], "extraction_version": detail.get("extraction_version", 0)})
+    return {"total_backlog": len(rows), "eligible_now_up_to_20": len(due),
+            "not_due": reasons[:20], "not_due_total": len(reasons),
+            "note": "A poll can run concurrently; it does not gate this research selection. "
+                    "Already researched leads can remain in the backlog while they await analyst verification."}
 
 
 def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=None, max_fetches=None):
     """One resumable pass; the explicit deep batch may raise the fetch budget, bounded at 120."""
     store.initialize(path)
     started = now()
+    before = backlog_diagnostics(path) if not threat_ids else None
     ids = [i.upper() for i in threat_ids] if threat_ids else due_leads(path, max_leads_ or max_leads())
     fetch_limit = MAX_FETCHES_PER_PASS if max_fetches is None else max(1, min(int(max_fetches), 120))
     cache, budget = {}, {"remaining": fetch_limit, "fetched": 0}
@@ -524,6 +565,10 @@ def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=N
             "pages_fetched": budget["fetched"], "results": results,
             "publisher_blocked_pages": blocked,
             "backlog_remaining": backlog_count(path),
+            "selection": before,
+            "no_work_reason": ("No lead is due for another article read. See selection.not_due for "
+                               "analyst-verification and retry-cooldown reasons."
+                               if not ids and not threat_ids else None),
             "note": ("Read-only research ran automatically; no analyst permission is needed to read cited public "
                      "pages. Nothing was recorded as evidence, drafted, approved or risk-scored.")}
 

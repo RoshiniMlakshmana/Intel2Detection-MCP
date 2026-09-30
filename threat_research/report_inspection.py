@@ -240,7 +240,9 @@ def extract_report_text(threat_id, source_url, text):
     paragraphs = browser_paragraphs(text)
     if not paragraphs:
         raise ValueError("browser page has no bounded readable paragraphs; supply the article text")
-    return _extract_paragraphs(threat_id, source_url, paragraphs, hashlib.sha256(text.encode()).hexdigest(), [])
+    blocks = [part.strip().strip('`') for part in re.split(r"\n\s*\n", text) if part.strip()]
+    return _extract_paragraphs(threat_id, source_url, paragraphs, hashlib.sha256(text.encode()).hexdigest(),
+                               _publisher_hunts(blocks, source_url))
 
 
 def browser_paragraphs(text):

@@ -195,6 +195,24 @@ class AutomaticSourceReviewTest(Base):
         self.assertEqual(research_pass.status(ident, self.path)["status"],
                          "observables_need_analyst_verification")
 
+        # An already researched lead remains actionable for verification, but
+        # is not repeatedly fetched. An older extractor result is reread once.
+        again = research_pass.run_pass(self.path, max_leads_=20, max_fetches=120,
+                                       fetch=Fetcher({FORTINET: html}))
+        self.assertEqual((again["leads_researched"], again["pages_fetched"]), (0, 0))
+        self.assertEqual(again["selection"]["not_due"][0]["reason"], "awaiting_analyst_verification")
+        self.assertIn("No lead is due", again["no_work_reason"])
+        with store.connection(self.path) as db:
+            old = json.loads(db.execute("SELECT detail FROM research_outcomes WHERE threat_id=?",
+                                        (ident,)).fetchone()[0])
+            old.pop("extraction_version")
+            db.execute("UPDATE research_outcomes SET detail=? WHERE threat_id=?", (json.dumps(old), ident))
+        self.assertTrue(research_pass.status(ident, self.path)["needs_extraction_refresh"])
+        refreshed = research_pass.run_pass(self.path, max_leads_=20, max_fetches=120,
+                                           fetch=Fetcher({FORTINET: html}))
+        self.assertEqual((refreshed["leads_researched"], refreshed["pages_fetched"]), (1, 1))
+        self.assertFalse(research_pass.status(ident, self.path)["needs_extraction_refresh"])
+
     def test_cisa_pages_are_fetched_over_tls12(self):
         seen = {}
 

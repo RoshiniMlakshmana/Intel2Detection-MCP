@@ -70,13 +70,16 @@ class BrowserHandoffTest(Base):
         with self.assertRaisesRegex(ValueError, "cited"):
             browser_research.capture(ident, "https://other.example/hidden", PARA, self.path)
         body = ("Fictional incident response report on compromised devices.\n\n" + PARA +
-                " The attacker replaced the updater component with this loader DLL in the analyzed sample.")
+                " The attacker replaced the updater component with this loader DLL in the analyzed sample."
+                "\n\nDeviceFileEvents\n| where FileName == 'FictLoader.dll'\n| project Timestamp, FileName")
         capture = browser_research.capture(ident, REPORT_URL, body, self.path)
         self.assertEqual(capture["status"], "assistant_browser_capture_unverified")
+        self.assertEqual(capture["publisher_hunting_queries"][0]["status"], "publisher_query_unverified")
         self.assertEqual(browser_research.capture(ident, REPORT_URL, body, self.path)["browser_capture_id"],
                          capture["browser_capture_id"])
         view = workup.lead_workup(ident, self.path)
         self.assertEqual(view["browser_captures"][0]["analyst_verified"], False)
+        self.assertEqual(view["browser_captures"][0]["publisher_hunting_queries"][0]["language"], "kql")
         with store.connection(self.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM rules").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'").fetchone()[0], 0)
@@ -87,6 +90,36 @@ class BrowserHandoffTest(Base):
         self.assertEqual(draft["source"]["provenance"], "assistant_browser_capture_unverified")
         with self.assertRaisesRegex(ValueError, "has not verified"):
             rules.implement_rule(draft["rule_id"], "implement this rule", path=self.path)
+
+    def test_blocked_pages_come_before_outside_allowlist_and_can_be_filtered(self):
+        outside = "REPORT-FICTOUTSIDE001"
+        blocked = "REPORT-FICTBLOCKED001"
+        core.ingest([{"id": outside, "title": "Outside host", "summary": "fixture", "kind": "campaign",
+                      "source": "https://vuldb.com/fictional", "claim": "Feed listed it."}], self.path)
+        core.ingest([{"id": blocked, "title": "Blocked report", "summary": "fixture", "kind": "campaign",
+                      "source": REPORT_URL, "claim": "Feed listed it."}], self.path)
+        research_pass.triage_raw(self.path, max_leads=2, fetch=lambda url: (_ for _ in ()).throw(
+            ValueError("HTTP 403: publisher blocked the automated article fetch")))
+        all_items = browser_research.review_queue(self.path)["items"]
+        self.assertEqual(all_items[0]["threat_id"], blocked)
+        self.assertEqual(all_items[0]["category"], "publisher_blocked")
+        filtered = browser_research.review_queue(self.path, category="publisher_blocked")
+        self.assertEqual([item["threat_id"] for item in filtered["items"]], [blocked])
+        with self.assertRaisesRegex(ValueError, "category must be"):
+            browser_research.review_queue(self.path, category="unknown")
+
+        article_only = "REPORT-FICTARTICLE001"
+        article_url = "https://www.darkreading.com/fictional-blocked-article"
+        core.ingest([{"id": article_only, "title": "Article fetch blocked", "summary": "fixture",
+                      "kind": "campaign", "source": article_url, "claim": "Feed listed it."}], self.path)
+        with store.connection(self.path) as db:
+            db.execute("INSERT INTO article_inspection_queue (threat_id,source_url,status,attempts,next_try) "
+                       "VALUES (?,?,?,?,?)", (article_only, article_url, "publisher_blocked", 2,
+                                              "2099-01-01T00:00:00Z"))
+        filtered = browser_research.review_queue(self.path, category="publisher_blocked")
+        self.assertIn(article_only, [item["threat_id"] for item in filtered["items"]])
+        self.assertEqual(next(item for item in filtered["items"] if item["threat_id"] == article_only)
+                         ["cited_urls"], [article_url])
 
 
 class FileEventFamilyTest(Base):

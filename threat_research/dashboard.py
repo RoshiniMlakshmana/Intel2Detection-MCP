@@ -664,7 +664,10 @@ def _workup_html(w):
                      f'<p>Captured {_fmt(capture["captured_at"])}; {capture["paragraphs_scanned"]} paragraphs. '
                      'This is browser-supplied text, not analyst verification.</p>'
                      + _bullets([str(d.get("excerpt") or d.get("text") or d)[:500]
-                                 for d in capture["specific_details_to_verify"][:5]]) + '</details>')
+                                 for d in capture["specific_details_to_verify"][:5]])
+                     + "".join(f'<p>Publisher {_e(h["language"].upper())} hunt (unverified):</p>'
+                               f'<pre>{_e(h["text"][:6000])}</pre>'
+                               for h in capture.get("publisher_hunting_queries", [])[:4]) + '</details>')
     patterns = w["pattern_analysis"]["patterns"]
     if not patterns:
         parts.append(f'<p class="missing">No pattern: {_e(w["pattern_analysis"].get("reason") or "no specific artifact in inspected text")}</p>')

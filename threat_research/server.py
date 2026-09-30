@@ -92,9 +92,9 @@ def deep_research_batch(max_leads: int = 20, max_fetches: int = 120) -> dict:
 
 
 @mcp.tool()
-def browser_review_queue(page: int = 1, limit: int = 20) -> dict:
-    """Page through blocked, unreadable and outside-allowlist leads with cited URLs. Claude may open these in its separate browser connector if available; this MCP server itself cannot access the browser session."""
-    return browser_research.review_queue(page=page, limit=limit)
+def browser_review_queue(page: int = 1, limit: int = 20, category: str = "all") -> dict:
+    """Page through browser review with publisher blocks first; category all|publisher_blocked|unreadable|outside_allowlist. Claude may open cited URLs in its separate browser connector if available; this MCP server cannot access the browser session."""
+    return browser_research.review_queue(page=page, limit=limit, category=category)
 
 
 @mcp.tool()
