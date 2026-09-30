@@ -136,6 +136,25 @@ class FileEventFamilyTest(Base):
             "file_event": {"table": "DeviceFileEvents", "fields": ["SHA256", "FolderPath"]}}})
 
 
+class NeedyMantisSyntheticReplayTest(Base):
+    def test_matches_and_misses_are_explicitly_synthetic_and_do_not_approve(self):
+        ident = self.report("REPORT-FICTNEEDYMANTIS", html=REPORT_HTML.replace(b"FictLoader.dll", b"WinSparkle.dll"))
+        spec = {**SPEC, "predicates": [SPEC["predicates"][0],
+                {"field": "TargetFilename", "operator": "endswith", "value": "WinSparkle.dll"}]}
+        draft = drafting.propose(ident, REPORT_URL, 3, spec, "WinSparkle sample selector (synthetic test)",
+                                 "The fictional cited paragraph names this DLL and hash.",
+                                 "A genuine same-name DLL has a different hash.", self.path)
+        fixture = resources.files("threat_research") / "lab_fixtures" / "needymantis_synthetic_file_events.jsonl"
+        result = soc_replay.test_rule_against_samples(draft["rule_id"], str(fixture), self.path)
+        self.assertEqual(result["sample_provenance"], "bundled_synthetic_fixture")
+        self.assertEqual(result["counts"], {"tp": 2, "fp": 0, "fn": 2, "tn": 2})
+        self.assertEqual([case["event_id"] for case in result["cases"] if case["outcome"] == "fn"],
+                         ["NM-SYN-03", "NM-SYN-04"])
+        self.assertEqual(rules.get_rule(draft["rule_id"], self.path)["status"], "draft")
+        with self.assertRaisesRegex(ValueError, "has not verified"):
+            rules.implement_rule(draft["rule_id"], "implement this rule", path=self.path)
+
+
 class ProposalTest(Base):
     def test_proposal_requires_an_inspected_paragraph_with_every_value(self):
         core.ingest([{"id": "REPORT-FICTUNREAD001", "title": "Fictional unread report", "summary": "fixture",
