@@ -199,13 +199,51 @@ def render_sources(path=None, qs=None):
     stale_html = (f'<div class="flash err">The last recorded poll is {data["last_result_age_minutes"]} minute(s) old or was '
                   f'produced by different collector code; errors below may already be fixed. Use <b>Collect now</b> '
                   f'to refresh.</div>' if data.get("last_result_stale") and data.get("last_result_age_minutes") is not None else "")
+    collecting = _qs_one(qs, "collecting") == "1" or data["poll_running"]
+    collection_html = """
+<div class="flash ok" id="collection-status" role="status" aria-live="polite">
+Collecting sources and reviewing articles. You can keep using the dashboard; this page will update when finished.
+</div>
+<script>
+(() => {
+  const label = document.getElementById('collection-status');
+  let checking = false;
+  async function check() {
+    if (checking) return;
+    checking = true;
+    try {
+      const response = await fetch('/api/collection', {cache: 'no-store'});
+      if (!response.ok) throw new Error('status unavailable');
+      const state = await response.json();
+      if (!state.running) {
+        const failed = state.status === 'failed' || state.status === 'unknown';
+        const message = state.status === 'unknown' ? 'Collection status unavailable; check the Sources page.'
+          : failed ? 'Collection failed: ' + (state.error || 'see the dashboard console')
+          : state.status === 'degraded' ? 'Collection finished with some source errors; see Source errors.'
+          : 'Collection finished. New records: ' + (state.new_records ?? 0) + '.';
+        window.location.replace('/?flash=' + encodeURIComponent(message) + '&ok=' + (failed ? '0' : '1'));
+        return;
+      }
+      label.textContent = 'Collecting sources and reviewing articles. You can keep using the dashboard; this page will update when finished.';
+    } catch (error) {
+      label.textContent = 'Collection status unavailable. Refresh this page to check again.';
+    } finally {
+      checking = false;
+    }
+  }
+  check();
+  setInterval(check, 2000);
+})();
+</script>""" if collecting else ""
+    if collecting:
+        stale_html = ""  # The old result is expected to be stale until the running poll completes.
     body = f"""<h1>Sources</h1>
 <p class="lede">Every configured collection source, its last successful refresh, latest publication date,
 a persistent record count, and any collection error from the most recent poll. Poll interval:
 {data['poll_interval_minutes']} minute(s){' (currently running)' if data['poll_running'] else ''}.
 Last poll completed: {_fmt(data['last_poll_completed'])}. Email alerts:
 {'configured' if data['email_configured'] else 'not configured'}.</p>
-{stale_html}<div class="tags">{tag_html}</div>
+{collection_html}{stale_html}<div class="tags">{tag_html}</div>
 <div class="grid">{''.join(_source_card(c) for c in cards)}</div>
 {_mcp_hint("list_sources()", "source_errors()", "polling_status()")}"""
     return _page("Sources", body, active="/", flash=_flash_from_query(qs), path=path)
@@ -941,6 +979,38 @@ class Handler(BaseHTTPRequestHandler):
     def _db_path(self):
         return getattr(self.server, "db_path", None)
 
+    def _collection_status(self, path):
+        with self.server.collection_lock:
+            local = dict(self.server.collection_state)
+        recorded = poller.poll_status(path)
+        if local["running"] or recorded["running"]:
+            return {"running": True, "status": "running"}
+        result = local["result"] if local["result"] and local["result"].get("status") != "already_running" else None
+        latest = recorded["last_result"] or {}
+        if not result or (result.get("completed") and latest.get("completed") and
+                          latest["completed"] > result["completed"]):
+            result = latest
+        return {"running": False, "status": result.get("status", "unknown"),
+                "new_records": result.get("new_records", 0), "error": result.get("error")}
+
+    def _start_collection(self, path):
+        with self.server.collection_lock:
+            if self.server.collection_state["running"] or poller.poll_status(path)["running"]:
+                return False
+            self.server.collection_state = {"running": True, "result": None}
+
+            def collect():
+                try:
+                    result = poller.run_poll(path)
+                except Exception as exc:  # noqa: BLE001 - retain an actionable status for the page
+                    result = {"status": "failed", "error": str(exc)[:300]}
+                    print(json.dumps({"dashboard_collection": result}), flush=True)
+                with self.server.collection_lock:
+                    self.server.collection_state = {"running": False, "result": result}
+
+            threading.Thread(target=collect, daemon=True, name="dashboard-collection").start()
+            return True
+
     def _send(self, status, body, content_type="text/html; charset=utf-8"):
         payload = body.encode("utf-8")
         self.send_response(status)
@@ -988,6 +1058,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, out) if out else self._not_found()
             elif parsed.path == "/api/sources":
                 self._send(200, json.dumps(dashboard_data.sources_overview(path)), "application/json")
+            elif parsed.path == "/api/collection":
+                self._send(200, json.dumps(self._collection_status(path)), "application/json")
             elif parsed.path == "/api/threat":
                 ident = (qs.get("id") or [""])[0]
                 view = dashboard_data.threat_detail_view(ident, path)
@@ -1043,8 +1115,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_post(self, route, form, path):
         if route == "/collect-now":
-            result = poller.run_poll(path)
-            self._redirect("/", flash=f"Collection run: {result.get('status', 'unknown')}", ok=result.get("status") != "failed")
+            started = self._start_collection(path)
+            self._redirect("/?collecting=1", flash="Collection started." if started else "Collection already running.")
         elif route == "/threat/observation":
             ident = form["id"]
             core.add_behavior_evidence(ident, form["source_url"], form["claim"], form["behavior"], path)
@@ -1129,6 +1201,8 @@ def serve(host=None, port=None, path: Path | None = None, auto_refresh=None, blo
         auto_refresh = os.environ.get("DASHBOARD_AUTO_REFRESH", "true").lower() != "false"
     server = ThreadingHTTPServer((host, port), Handler)
     server.db_path = path
+    server.collection_lock = threading.Lock()
+    server.collection_state = {"running": False, "result": None}
     stop_event = threading.Event()
     thread = None
     if auto_refresh:
