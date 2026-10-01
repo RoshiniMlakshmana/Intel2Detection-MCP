@@ -58,6 +58,46 @@ class Base(unittest.TestCase):
                                 TEXT["false_positives"], self.path)
 
 
+class AutomaticProposalTest(Base):
+    def test_explicit_web_parent_shell_child_proposes_behavioral_draft(self):
+        ident = "REPORT-FICTSHELLSPAWN"
+        core.ingest([{"id": ident, "title": "Fictional intrusion report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = (b"<html><body><article><p>During the intrusion the attacker observed w3wp.exe "
+                b"spawned cmd.exe on the server, which executed reconnaissance.</p></article></body></html>")
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 1)
+        proposal = result["results"][0]["rule_proposals"]["proposals"][0]
+        rule = rules.get_rule(proposal["rule_id"], self.path)
+        self.assertIn('"ParentImage|endswith": "w3wp.exe"', rule["sigma"])
+        self.assertIn('"Image|endswith": "cmd.exe"', rule["sigma"])
+        self.assertEqual(rule["status"], "draft")
+
+    def test_primary_report_proposes_unverified_draft_and_repeat_deduplicates(self):
+        ident = "REPORT-FICTAUTODRAFT"
+        core.ingest([{"id": ident, "title": "Fictional technical report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        first = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: FRESH_HTML)
+        self.assertEqual(first["drafts_created"], 1)
+        proposal = first["results"][0]["rule_proposals"]["proposals"][0]
+        self.assertEqual(proposal["status"], "draft_unverified")
+        self.assertEqual(rules.get_rule(proposal["rule_id"], self.path)["status"], "draft")
+        with self.assertRaisesRegex(ValueError, "has not verified"):
+            rules.implement_rule(proposal["rule_id"], "implement this rule", path=self.path)
+        second = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: FRESH_HTML)
+        self.assertEqual(second["drafts_created"], 0)
+        self.assertEqual(second["results"][0]["rule_proposals"]["proposals"][0]["status"], "existing_coverage")
+
+    def test_filename_only_description_does_not_become_rule(self):
+        ident = "REPORT-FICTNAMESONLY"
+        core.ingest([{"id": ident, "title": "Fictional technical report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = b"<html><body><article><p>The malicious loader FictLoader.dll was found by our team.</p></article></body></html>"
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 0)
+        self.assertEqual(workflow.list_rules(self.path)["total"], 0)
+
+
 class BrowserHandoffTest(Base):
     def test_cited_browser_text_stays_unverified_and_can_support_an_unverified_draft(self):
         ident = "REPORT-FICTBROWSER001"

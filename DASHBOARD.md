@@ -1,5 +1,20 @@
 # Analyst dashboard (no SIEM required)
 
+## Current workflow
+
+The four main tabs are **Sources → Threat intel → Rules → Needs attention**.
+
+1. **Sources:** choose one of the configured feeds or repositories; **Collect now** starts a background refresh. The last collection time, new-lead count, and fetch errors remain visible while you browse.
+2. **Threat intel:** filter collected leads by source and open one to read the publisher's quoted pattern, why it may be malicious, and any rule proposal. The extra date and internal queue filters are under **More filters**.
+3. **Rules:** draft, approved, and rejected local rules with Sigma, generic KQL/SPL, testing state, and links back to source evidence. Approval saves locally and does not deploy to a SIEM. Asset, telemetry, and existing-rule inventory connections are shown as unavailable until actually configured.
+4. **Needs attention:** fetch errors, publisher blocks, leads needing research, and pending corroboration reviews. The older detailed queue and error URLs still work from links here.
+
+Research automatically follows a bounded number of directly linked original technical publications on configured hosts. The batch can propose an **unverified** draft when one full inspected paragraph identifies either a malicious file by SHA-256 and filename or an explicit Windows web-server process spawning a named shell process. The lead's **Check cited patterns for a draft** button repeats this review against stored paragraphs without fetching anything. It never treats a headline, CVE description, filename alone, or a publisher hunting query as a tested rule. When the source lacks bounded fields, the gap stays under Needs attention. A blocked publisher page needs an explicit browser capture and source citation.
+
+NVD retrieval uses smaller pages and halves a page on an oversized response. It retries the same index, preserves completed records and checkpoints, and shows a partial fetch if the run budget is exhausted.
+
+To test one lead with Claude: `Use threat-research research_and_propose_detection("REPORT-ID"). Show the pages read, quoted behavior, draft Sigma/KQL/SPL or the exact blocker. Then show lead_workup("REPORT-ID"). Do not verify, approve, score local risk, or deploy.`
+
 A local, read-and-annotate web dashboard over the same SQLite store the MCP
 tools and CLI already use. It is a **pure Python standard-library** HTTP
 server (`http.server`) — no Node, no npm, no new third-party dependency, and
@@ -8,41 +23,38 @@ polls. It never claims a rule was deployed to a SIEM; approval only adds a
 rule to the local detection repository (`rules` table), exactly like the
 existing `implement_rule` MCP tool.
 
-## Workup panel and triage tab
+## Lead details and internal work stages
 
-- The lead page's **Workup** panel renders `lead_workup(threat_id)` exactly. It shows:
+- The lead page's **Pattern and proposed detection** panel renders `lead_workup(threat_id)` exactly. It shows:
   - the next analyst decision, source and dates;
   - quoted patterns with artifact sufficiency and the publisher's own reasoning;
   - inventory connection and Yes/No/Unknown coverage separately; each draft's cited paragraph, predicate support, Sigma, generic KQL/SPL templates, mapped query when available, tests and source-verification status;
   - the three separate risk measures and the asset/context connection state.
 - The page's environment risk no longer derives a number from default inputs. With no confirmed asset and local event context it shows *Score unavailable* and the missing inputs.
-- **Triaged open** tab: raw leads triage could not close. `triage_status()` gives each reason.
+- **Source needs attention** is an internal work-stage filter under Threat intel; `triage_status()` gives each reason.
 
 ## Research backlog vs raw leads
 
-The single "Research needed" tab (every collected lead without verified
-behavior, 1,584 on the 2026-09-29 database) is split into disjoint queues,
-each with its own tab and `list_leads(queue=...)` filter:
+Internal queues are available under Threat intel → More filters and through
+`list_leads(queue=...)`; they are no longer separate main tabs:
 
 - **Research backlog**: CISA KEV CVEs, reports citing a KEV CVE, and reports
   with behavior leads that still need research. The automatic research pass
   works this queue each poll (`run_research_pass()`).
 - **Raw leads**: everything else collected (non-KEV CVEs, leak claims,
   general news). Untriaged collection, not a research to-do list.
-- **Research completed**: cited sources were read and none names a specific
+- **Read: no rule detail**: cited sources were read and none names a specific
   observable; the lead page shows the pages inspected (with times), cited
   excerpts, missing telemetry and an exposure/patch review offer.
 - **Evidence recorded**: an analyst-verified observation exists.
 
-The lead page's research step lists every page the pass tried. The Source
-errors tab lists research-pass publisher blocks and unreadable pages
-separately from source feed errors.
+The lead page's research steps list every page the pass tried. Needs attention
+links to detailed publisher blocks, unreadable pages, and feed errors.
 
-## 0.11.0: leads, per-lead progression, tabs
+## Detailed lead and rule views
 
-- **Tabs with live counts**: Research needed, Draft rules, Pending reviews,
-  Approved rules, Source errors, plus **MCP tools** (`/tools`), which lists
-  the MCP tool behind every view. Each page footer also names its MCP call.
+- **Four main tabs with live counts**: Sources, Threat intel, Rules, Needs attention.
+  The `/tools`, `/reviews`, and `/errors` URLs remain reachable from context links.
 - **All leads** (`/leads`): source dropdown, publication/collection date
   range, status (`research_needed`, `article_leads`, `evidence_recorded`),
   rule state (`none`, `draft`, `approved`, `rejected`) and kind filters. Shows
@@ -54,7 +66,7 @@ separately from source feed errors.
   required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL →
   labeled checks → analyst decision → versioned rule repository. **Research /
   Draft detection** appears only when a cited analyst observation supports a
-  behavior; otherwise the page states the exact missing input. On an
+  behavior; the separate unverified proposal action can also use a full cited paragraph with bounded predicates. Otherwise the page states the exact missing input. On an
   inventory match it shows the existing rule, any pending corroboration
   review, and a proposed corroboration (+1, never a status change) instead of a
   duplicate draft. Labeled JSONL events can be pasted to replay against a rule;

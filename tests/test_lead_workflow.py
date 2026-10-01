@@ -198,7 +198,7 @@ class DashboardWorkflowHttpTest(Base):
     def test_tabs_leads_pagination_and_source_dropdown(self):
         status, body, _ = self.request("GET", "/leads")
         self.assertEqual(status, 200)
-        for tab in ("Research backlog", "Raw leads", "Research completed", "Draft rules", "Pending reviews", "Approved rules", "Source errors", "MCP tools"):
+        for tab in ("Sources", "Threat intel", "Rules", "Needs attention"):
             self.assertIn(tab, body)
         self.assertIn("Showing 1&ndash;50 of <b>61</b>", body)
         self.assertIn('href="/leads?date_field=published&sort=collected&page=2"', body)

@@ -21,7 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import core, corroboration, custom_rules, dashboard_data, environment, poller, rules, soc_replay, store, workflow, workup
+from . import (core, corroboration, custom_rules, dashboard_data, environment, poller, proposal_pass,
+               rules, soc_replay, store, workflow, workup)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -81,6 +82,7 @@ details{margin:6px 0} summary{cursor:pointer;color:var(--accent)}
 nav a .count{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:var(--panel2);color:var(--text);font-size:12px;text-align:center}
 form.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px}
 form.filters div{min-width:140px;flex:1} form.filters label{margin-top:0}
+form.filters details.advanced{flex:0 0 100%;margin:0} .filter-inner{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
 .pager{display:flex;gap:12px;align-items:center;margin:12px 0;color:var(--muted);font-size:14px}
 .table-wrap{overflow-x:auto}
 ol.steps{list-style:none;margin:0;padding:0;counter-reset:step}
@@ -124,17 +126,10 @@ def _page(title, body, active=None, flash=None, path=None):
 
     def counted(label, key):
         return f'{label}<span class="count">{counts[key]}</span>'
-    nav_items = [("/", "Sources"), ("/leads", "All leads"),
-                 ("/leads?queue=research_backlog", counted("Research backlog", "actionable_research_backlog")),
-                 ("/leads?queue=raw_unreviewed", counted("Raw leads", "raw_unreviewed_leads")),
-                 ("/leads?queue=triaged_open", counted("Triaged open", "triaged_open")),
-                 ("/leads?queue=research_completed",
-                  counted("Research completed", "research_completed_insufficient_detail")),
-                 ("/rules?state=draft", counted("Draft rules", "draft_rules")),
-                 ("/reviews", counted("Pending reviews", "pending_reviews")),
-                 ("/rules?state=approved", counted("Approved rules", "approved_rules")),
-                 ("/errors", counted("Source errors", "source_errors")),
-                 ("/tools", "MCP tools")]
+    needs_count = counts["source_errors"] + counts["pending_reviews"] + counts["actionable_research_backlog"]
+    nav_items = [("/", "Sources"), ("/leads", counted("Threat intel", "leads_total")),
+                 ("/rules?state=draft", counted("Rules", "draft_rules")),
+                 ("/attention", f'Needs attention<span class="count">{needs_count}</span>')]
     # Built without a backslash inside any f-string expression part: that
     # syntax is a SyntaxError on Python < 3.12 (PEP 701 lifted the
     # restriction only in 3.12), and this project supports 3.11+.
@@ -213,7 +208,7 @@ def render_sources(path=None, qs=None):
     draft_rules = workflow.list_rules(path, state="draft", per_page=1)
     draft_item = draft_rules["items"][0] if draft_rules["items"] else None
     draft_link = (f'<p><a href="/rules?state=draft">Draft rules ({draft_rules["total"]})</a>'
-                  + (f' &middot; <a href="/threat?id={_url_escape(draft_item["threat_id"])}#rule-{_e(draft_item["id"])}">'
+                  + (f' &middot; <a href="/threat?id={_url_escape(draft_item["threat_id"])}&from=rules#rule-{_e(draft_item["id"])}">'
                      f'{_e(draft_item["title"])}</a>' if draft_item else ' &middot; None drafted yet') + '</p>')
     last_poll = (f'<p><b>Last collection:</b> {_fmt(data["last_poll_completed"])} &middot; '
                  f'{_e(data["last_poll_status"] or "unknown")} &middot; '
@@ -246,7 +241,7 @@ Collecting sources and reviewing articles. You can keep using the dashboard; thi
         const message = state.status === 'unknown' ? 'Collection status unavailable; check the Sources page.'
           : failed ? 'Collection failed: ' + (state.error || 'see the dashboard console')
           : state.status === 'degraded' ? 'Collection finished with some source errors. New leads: '
-              + (state.new_records ?? 0) + '. See Source errors.'
+              + (state.new_records ?? 0) + '. See Needs attention.'
           : 'Collection finished. New records: ' + (state.new_records ?? 0) + '.';
         window.location.replace('/?flash=' + encodeURIComponent(message) + '&ok=' + (failed ? '0' : '1'));
         return;
@@ -265,12 +260,11 @@ Collecting sources and reviewing articles. You can keep using the dashboard; thi
     if collecting:
         stale_html = ""  # The old result is expected to be stale until the running poll completes.
     body = f"""<h1>Sources</h1>
-<p class="lede">Feeds and repositories are collected independently. A successful fetch can add zero new leads
-when its items are already stored. A GitHub detection entry is a commit pointer, not an imported rule. Poll interval:
-{data['poll_interval_minutes']} minute(s){' (currently running)' if data['poll_running'] else ''}.
-Email alerts: {'configured' if data['email_configured'] else 'not configured'}.</p>
+<p class="lede">Choose a source to see what it collected. A successful refresh can add zero new leads if nothing is new.
+GitHub detection entries are links to community work, not local rules. Refresh every {data['poll_interval_minutes']} minute(s).
+{'Collecting now.' if data['poll_running'] else ''}</p>
 <p><small class="muted">Database: <code>{_e(data['database'])}</code> &middot; collector: {_e(data['collector_version'])}</small></p>
-<div class="panel">{last_poll}{draft_link}</div>
+<div class="panel">{last_poll}{draft_link}<p><a href="/attention">Collection and research problems</a></p></div>
 {collection_html}{stale_html}{filters}
 <p class="lede">Showing {len(cards)} of {len(data["sources"])} source and status cards. A stored count is the total
 distinct leads from that source; items fetched on the last attempt can include leads already stored.</p>
@@ -331,24 +325,26 @@ def _pager(base, params, result):
             f'&middot; page {result["page"]} of {result["pages"]}</span>{next_html}</div>')
 
 
-def _lead_row(item):
+def _lead_row(item, origin="intel"):
     kev = ' <span class="badge error">KEV</span>' if item.get("kev") else ""
     fetch = item["latest_fetch"]
     fetch_badge = {"ok": "ok", "partial": "stale", "error": "error"}.get(fetch["status"], "unknown")
     fetch_html = (f'<span class="badge {fetch_badge}" title="{_e(fetch.get("detail") or "")}">{_e(fetch["status"])}</span>'
                   f'<br><small class="muted">{_fmt(fetch.get("at"))}</small>')
     url_html = _safe_href(item["source_url"], "source") if item.get("source_url") else '<small class="muted">none</small>'
-    return (f'<tr><td><a href="/threat?id={_url_escape(item["id"])}">{_e(item["id"])}</a></td>'
+    display_status = {"research_completed": "Read: no rule detail", "research_backlog": "Research needed",
+                      "triaged_open": "Source needs attention", "raw_unreviewed": "Not reviewed yet",
+                      "evidence_recorded": "Evidence recorded"}.get(item["queue"], item["queue"].replace("_", " "))
+    return (f'<tr><td><a href="/threat?id={_url_escape(item["id"])}&from={_e(origin)}">{_e(item["id"])}</a></td>'
             f'<td>{_e(item["title"][:110])}{kev}<br><small class="muted">{_e(item["kind"])}</small></td>'
             f'<td>{_e(item.get("source_name") or "unlabeled")}<br>{url_html}</td>'
             f'<td>{_fmt(item.get("published"))}</td><td>{_fmt(item.get("collected"))}</td>'
-            f'<td>{fetch_html}</td><td>{_e(item["queue"].replace("_", " "))}<br>'
-            f'<small class="muted">{_e(item["status"].replace("_", " "))}</small></td><td>{_e(item["rule_state"])}</td></tr>')
+            f'<td>{fetch_html}</td><td>{_e(display_status)}</td><td>{_e(item["rule_state"])}</td></tr>')
 
 
-QUEUE_HEADINGS = {"research_backlog": "Research backlog", "raw_unreviewed": "Raw unreviewed leads",
-                  "triaged_open": "Triaged, still open",
-                  "research_completed": "Research completed", "evidence_recorded": "Evidence recorded"}
+QUEUE_HEADINGS = {"research_backlog": "Research needed", "raw_unreviewed": "Not reviewed yet",
+                  "triaged_open": "Source needs attention",
+                  "research_completed": "Read: no rule detail", "evidence_recorded": "Evidence recorded"}
 QUEUE_LEDES = {
     "research_backlog": ("Actionable: CISA KEV CVEs, reports citing a KEV CVE and reports with behavior leads that "
                          "still need research. Polling and <code>run_research_pass()</code> read their cited pages "
@@ -391,13 +387,15 @@ def render_leads(path=None, qs=None):
     form = f"""<form class="filters" method="get" action="/leads">
 <div><label>Threat intel source</label><select name="source">{_source_options(params["source"])}</select></div>
 <div><label>Newest by</label><select name="sort">{_options([("collected", "collection date"), ("published", "publication date")], params["sort"], None)}</select></div>
+<div><label>Kind</label><select name="kind">{_options([(v, v) for v in workflow.KINDS], params["kind"])}</select></div>
+<details class="advanced"><summary>More filters</summary><div class="filter-inner">
 <div><label>Date field</label><select name="date_field">{_options(date_fields, params["date_field"], None)}</select></div>
 <div><label>From</label><input type="date" name="date_from" value="{_e(params["date_from"])}"></div>
 <div><label>To</label><input type="date" name="date_to" value="{_e(params["date_to"])}"></div>
-<div><label>Queue</label><select name="queue">{_options([(v, v.replace("_", " ")) for v in workflow.QUEUES], params["queue"])}</select></div>
+<div><label>Work stage</label><select name="queue">{_options([(v, QUEUE_HEADINGS.get(v, v)) for v in workflow.QUEUES], params["queue"])}</select></div>
 <div><label>Status</label><select name="status">{_options([(v, v.replace("_", " ")) for v in workflow.STATUSES], params["status"])}</select></div>
 <div><label>Rule state</label><select name="rule_state">{_options([(v, v) for v in workflow.RULE_STATES], params["rule_state"])}</select></div>
-<div><label>Kind</label><select name="kind">{_options([(v, v) for v in workflow.KINDS], params["kind"])}</select></div>
+</div></details>
 <div style="flex:0"><button type="submit">Apply</button></div></form>"""
     rows = "".join(_lead_row(item) for item in result["items"]) or \
         '<tr><td colspan="8"><small class="muted">No leads match these filters.</small></td></tr>'
@@ -406,18 +404,15 @@ def render_leads(path=None, qs=None):
     call_args = ", ".join(f"{k}='{v}'" for k, v in params.items() if v and
                           not (k == "date_field" and v == "published") and
                           not (k == "sort" and v == "collected"))
-    body = f"""<p><a href="/">&larr; Sources</a></p><h1>{_e(heading)}</h1>
-<p class="lede">Newest collected leads first. Choose a source and click Apply to see its leads. Rules are under
-<a href="/rules?state=draft">Draft rules</a>.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
+    body = f"""<h1>{_e(heading)}</h1>
+<p class="lede">Collected reports and CVEs. Filter by source; a collected item is not yet a detection rule.
+See <a href="/rules?state=draft">Rules</a> for reviewable drafts.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
 {_pager("/leads", params, result)}
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Source / URL</th><th>Published</th><th>Collected</th>
 <th>Latest fetch</th><th>Status</th><th>Rule</th></tr></thead><tbody>{rows}</tbody></table></div>
 {_pager("/leads", params, result)}
 {_mcp_hint(f"list_leads({call_args})" if call_args else "list_leads()")}"""
-    only_queue = params["queue"] and not any(v for k, v in params.items()
-                                              if k not in ("queue", "date_field", "sort"))
-    active = f"/leads?queue={params['queue']}" if only_queue else "/leads"
-    return _page(heading, body, active=active, flash=_flash_from_query(qs), path=path)
+    return _page(heading, body, active="/leads", flash=_flash_from_query(qs), path=path)
 
 
 def render_rules(path=None, qs=None):
@@ -440,24 +435,67 @@ def render_rules(path=None, qs=None):
         formats = '<details><summary>View Sigma / KQL / SPL</summary>' + ''.join(
             f'<h3>{name}</h3><pre>{_e(rule.get(field) or "Not generated")}</pre>'
             for name, field in (("Sigma", "sigma"), ("KQL", "kql"), ("SPL", "spl"))) + '</details>'
-        rows.append(f'<tr><td><a href="/threat?id={_url_escape(item["threat_id"])}#rule-{_e(item["id"])}">{_e(item["title"])}</a>'
+        rows.append(f'<tr><td><a href="/threat?id={_url_escape(item["threat_id"])}&from=rules#rule-{_e(item["id"])}">{_e(item["title"])}</a>'
                     f'<br><small class="muted"><code>{_e(item["id"])}</code></small>{formats}</td>'
-                    f'<td><a href="/threat?id={_url_escape(item["threat_id"])}">{_e(item["threat_id"])}</a></td>'
+                    f'<td><a href="/threat?id={_url_escape(item["threat_id"])}&from=rules">{_e(item["threat_id"])}</a></td>'
                     f'<td><code>{_e(item["behavior"])}</code></td><td>{item["pattern_score"]}</td>'
                     f'<td>{check_html}</td><td>{_fmt(item["created_at"])}</td></tr>')
     tabs = "".join(f'<a class="{"active" if s == state else ""}" href="/rules?state={s}">{s}</a>'
                    for s in ("draft", "approved", "rejected"))
     title = {"draft": "Draft rules", "approved": "Approved rules", "rejected": "Rejected rules"}[state]
+    env = environment.status(path)
+    inventory_scope = rules.inventory_declaration_status(path)
+    env_text = (f'Connected: {_e(env["siem"])}; {env["assets"]} assets on file.' if env["configured"] else
+                'Not connected. Configure telemetry and assets to compare coverage, test in a SIEM, and score environment risk.')
+    inventory_note = (f'Rule inventory scope: {_e(inventory_scope.get("scope"))} (complete and current).'
+                      if inventory_scope["complete"] and inventory_scope["recent"] else
+                      'Rule inventory not connected or incomplete. Import your rules and declare the current complete scope '
+                      'before claiming a behavior is uncovered.')
     empty = '<tr><td colspan="6"><small class="muted">None.</small></td></tr>'
     body = f"""<h1>{title}</h1>
-<p class="lede">{_e(result["note"])}</p><div class="tags">{tabs}</div>
+<p class="lede">Drafts are suggestions to check. Approval saves a rule locally; it does not deploy it.</p>
+<div class="tags">{tabs}</div>
+<div class="panel"><b>Live validation and risk:</b> {env_text}<br><small class="muted">{inventory_note}</small></div>
 {_pager("/rules", {"state": state}, result)}
 <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Lead</th><th>Behavior</th><th>Pattern score</th>
 <th>Latest labeled check</th><th>Created</th></tr></thead>
 <tbody>{"".join(rows) or empty}</tbody></table></div>
 {_mcp_hint(f"list_rules(state='{state}')", "rule_repository_status()")}"""
-    return _page(title, body, active=f"/rules?state={state}" if state != "rejected" else None,
+    return _page(title, body, active="/rules?state=draft",
                  flash=_flash_from_query(qs), path=path)
+
+
+def render_attention(path=None, qs=None):
+    """A short work list, with detailed failure queues kept one click away."""
+    counts = workflow.workflow_counts(path)
+    pending = corroboration.list_pending(path, limit=5)
+    backlog = workflow.list_leads(path, queue="research_backlog", rule_state="none", per_page=10)
+    errors = workflow.source_errors(path)
+    error_rows = ''.join(f'<li>{_e(a["name"])}: {_e(a.get("detail") or a["status"])}</li>'
+                         for a in errors["sources"][:8])
+    if not error_rows:
+        error_rows = '<li>No feed fetch errors.</li>'
+    body = f"""<h1>Needs attention</h1>
+<p class="lede">These items could not yet become a tested detection. A missing source or telemetry is shown as a gap, not a rule.</p>
+<div class="panel"><h2>Source and article failures</h2><ul class="bullets">{error_rows}</ul>
+<p>{len(errors["article_fetches"])} blocked or failed article fetches; {len(errors["research_publisher_blocks"])}
+publisher blocks in research. <a href="/errors">See URLs and error details</a>.</p></div>
+<div class="panel"><h2>Research without a draft ({backlog['total']})</h2>
+<p>Read the cited technical source, confirm measurable behavior, then propose a draft.</p>
+<ul class="bullets">{''.join(f'<li><a href="/threat?id={_url_escape(i["id"])}&from=attention">{_e(i["title"][:100])}</a> '
+                           f'({_e(i.get("source_name") or "source unknown")})</li>' for i in backlog["items"])
+                           or '<li>None in the priority research queue.</li>'}</ul>
+<a href="/leads?queue=research_backlog&rule_state=none">See all research candidates</a></div>
+<div class="panel"><h2>Analyst reviews ({counts['pending_reviews']})</h2>
+<p>{'Reviews are waiting for a decision.' if pending else 'No pending corroboration reviews.'}
+<a href="/reviews">Open reviews</a>.</p></div>
+<details><summary>Other collected items still waiting</summary><p>{counts['raw_unreviewed_leads']} not reviewed;
+{counts['triaged_open']} whose cited sources need a decision; {counts['research_completed_insufficient_detail']}
+read without enough detail for a rule.</p>
+<p><a href="/leads?queue=raw_unreviewed">Not reviewed</a> ·
+<a href="/leads?queue=triaged_open">Source decisions</a> ·
+<a href="/leads?queue=research_completed">Read without rule detail</a></p></details>"""
+    return _page("Needs attention", body, active="/attention", flash=_flash_from_query(qs or {}), path=path)
 
 
 def _research_rows(rows):
@@ -500,7 +538,7 @@ not fully covered; the next poll resumes from the recorded checkpoint. Publisher
 MCP_TOOL_GROUPS = (
     ("Leads and sources", ("list_sources", "list_leads", "source_errors", "polling_status", "poll_now",
                            "threat_details", "behavior_review_leads")),
-    ("Per-lead progression", ("lead_progression", "run_research_pass", "research_lead",
+    ("Per-lead progression", ("lead_progression", "run_research_pass", "research_and_propose_detection", "research_lead",
                               "research_detection_plan", "inspect_cited_report",
                               "record_observed_behavior", "inventory_status", "declare_inventory_scope")),
     ("Drafting and checks", ("draft_detection", "draft_custom_detection", "check_detection_fit",
@@ -867,6 +905,10 @@ def render_threat(threat_id, path=None, qs=None):
     if view is None:
         return None
     t = view["threat"]
+    origin = _qs_one(qs, "from", "intel")
+    origin_href = {"intel": "/leads", "rules": "/rules?state=draft", "attention": "/attention"}.get(origin, "/leads")
+    origin_name = {"intel": "Threat intel", "rules": "Rules", "attention": "Needs attention"}.get(origin, "Threat intel")
+    active = {"intel": "/leads", "rules": "/rules?state=draft", "attention": "/attention"}.get(origin, "/leads")
     progression = workflow.lead_progression(t["id"], path)
     behaviors_available = [b for b in rules.TEMPLATES]
     evidence_options = "".join(f'<option value="{e["id"]}">#{e["id"]} ({_e(e["kind"])}{" - " + _e(e["behavior"]) if e.get("behavior") else ""})</option>'
@@ -881,15 +923,19 @@ def render_threat(threat_id, path=None, qs=None):
                                           {e["behavior"] for e in t["evidence"] if e["kind"] == "analyst_observation" and e["behavior"] in rules.TEMPLATES}}))
     fp_bullets = _bullets(["Authorized administration or application maintenance can match the same pattern; "
                             "compare against a documented change window and account context before alerting."])
-    body = f"""<p><a href="/">&larr; Sources</a></p>
+    body = f"""<p><a href="{origin_href}">&larr; {origin_name}</a></p>
 <h1>{_e(t['id'])} <span class="badge {'error' if t.get('kev') else 'stale'}">{_e(t['kind'])}</span></h1>
 <p class="lede">{_e(t['title'])}</p>
+<div class="panel"><b>At a glance:</b> {len(view['rules'])} local rule(s). Research citations describe the publisher's findings;
+they do not show activity in your environment. <a href="/rules?state=draft">See all drafts</a>.</div>
 
-<h2>Progress</h2>
-<div class="panel">{_progression_html(progression)}</div>
+<details><summary>Research and review steps</summary><div class="panel">{_progression_html(progression)}</div></details>
 
-<h2>Workup</h2>
+<h2>Pattern and proposed detection</h2>
 <div class="panel">{_workup_html(workup.lead_workup(t["id"], path))}</div>
+<form method="post" action="/threat/propose"><input type="hidden" name="id" value="{_e(t['id'])}">
+<p><button type="submit">Check cited patterns for a draft</button>
+<small class="muted">Only a source paragraph with bounded predicates can create an unverified draft.</small></p></form>
 
 <h2>1. Source and evidence</h2>
 <div class="panel">
@@ -956,7 +1002,7 @@ def render_threat(threat_id, path=None, qs=None):
 Rejected or unfinished drafts stay stored here for later review.</small></p>
 """
     body += _mcp_hint(f"lead_progression(threat_id='{t['id']}')", f"research_detection_plan(threat_id='{t['id']}')")
-    return _page(t["id"], body, active="/leads", flash=_flash_from_query(qs), path=path)
+    return _page(t["id"], body, active=active, flash=_flash_from_query(qs), path=path)
 
 
 def _workspace_notes_html(notes):
@@ -1085,6 +1131,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, render_leads(path, qs))
             elif parsed.path == "/rules":
                 self._send(200, render_rules(path, qs))
+            elif parsed.path == "/attention":
+                self._send(200, render_attention(path, qs))
             elif parsed.path == "/errors":
                 self._send(200, render_errors(path, qs))
             elif parsed.path == "/tools":
@@ -1168,6 +1216,14 @@ class Handler(BaseHTTPRequestHandler):
             ident = form["id"]
             result = rules.propose_rule(ident, int(form["evidence_id"]), path)
             self._redirect(f"/threat?id={_url_escape(ident)}", flash=f"Draft status: {result['status']}.")
+        elif route == "/threat/propose":
+            ident = form["id"]
+            result = proposal_pass.propose_from_stored(ident, path)
+            created = [p for p in result["proposals"] if p["status"] == "draft_unverified"]
+            message = (f"Created {len(created)} unverified draft(s); see Rules."
+                       if created else "No new draft: " + (result["gaps"][0]["reason"] if result["gaps"] else
+                                                    "no sufficiently specific cited pattern was found."))
+            self._redirect(f"/threat?id={_url_escape(ident)}&from=intel", flash=message)
         elif route == "/rule/approve":
             result = rules.implement_rule(form["id"], "implement this rule", path=path)
             self._redirect(f"/threat?id={_url_escape(form.get('threat_id',''))}",

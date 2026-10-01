@@ -4,16 +4,16 @@ An evidence-gated threat intelligence and detection workflow for Claude, built o
 
 ## 1. What it does
 
-Collects newly published threats, has Claude (or an analyst) research the *actual cited behavior* rather than guessing from a CVE title, checks whether matching coverage already exists (**Yes/No/Unknown**, never a guess), drafts a Sigma/KQL/SPL rule only when a behavior and its telemetry are verified, and adds that draft to a local rule repository only after explicit analyst approval — never automatically, never deployed to a SIEM. A newly collected lead that matches an *existing* rule queues a pending **corroboration review** instead of scoring anything by itself; only approval adds exactly +1.
+Collects newly published threats and researches *actual cited behavior* rather than guessing from a CVE title. A bounded paragraph may create an **unverified draft automatically**; every predicate must be backed by the source. Verification, labeled tests, approval, and any SIEM deployment remain separate. The dashboard has four main tabs: **Sources, Threat intel, Rules, Needs attention**. Rule inventory is **Unknown** until imported and declared complete; environment risk is unavailable without confirmed assets and local event context. A new source matching an existing rule queues a review; only approval adds exactly +1 corroboration.
 
 ```mermaid
 flowchart TD
-    A[Source intake<br/>CVE/advisory, RSS, leak-site claims, GitHub commits] --> B[Analyst reads the cited article]
+    A[Source intake<br/>CVE/advisory, RSS, leak-site claims, GitHub commits] --> B[Automatic cited-page research]
     B --> C{Inventory status}
     C -->|Yes: reviewed matching rule| G[Local rule repository<br/>draft / approved, versioned]
-    C -->|Unknown or No: not enough to say| D[Analyst decision]
-    D -->|Behavior + telemetry supported| E[Sigma / KQL / SPL draft]
-    D -->|Not supported| B
+    C -->|Unknown or No| D[Check bounded predicates]
+    D -->|Supported source paragraph| E[Unverified Sigma / KQL / SPL draft]
+    D -->|Insufficient detail| B
     E --> F{Analyst approves?}
     F -->|Approve| G
     F -->|Reject, kept for later review| B
@@ -35,7 +35,7 @@ flowchart TD
 
 ## 2. Impact
 
-It removes the manual work of checking dozens of feeds each morning, reading past a headline for real technical detail, and hand-drafting a first-pass Sigma rule with its telemetry list. It does not measure or claim a specific time saved — that depends on your feeds, team, and review process.
+It collects the feeds, reads allowlisted technical pages, and proposes a first draft where the cited details support one. It does not measure or claim a specific time saved — that depends on your feeds, team, and review process.
 
 ## 3. Sources
 
@@ -106,7 +106,7 @@ The pass never records evidence, drafts or approves a rule.
 ### Raw triage, lead workup and source-linked drafts
 
 - **`triage_raw_leads()` / `triage_status()`**: bounded, resumable triage of raw leads, round-robin across sources. It runs after the KEV-first pass on its own budget (8 researched leads, 16 fetches, up to 200 no-fetch closures per run). Every triaged lead records why it is closed or still open: not researchable (leak claim, repository commit), no allowlisted source (with the cited hosts), publisher blocked, or unreadable. Queue `triaged_open` holds the open ones.
-- **`lead_workup(threat_id)`**: one answer per lead, and the dashboard's Workup panel renders the same dict. It covers:
+- **`lead_workup(threat_id)`**: one answer per lead, and the dashboard's Pattern and proposed detection panel renders the same dict. It covers:
   - source URL and dates;
   - patterns quoted from inspected paragraphs, each artifact labelled as a hash, a name (not sufficient alone) or a path;
   - why the publisher calls it malicious, which is the publisher's claim, never activity in your environment;
@@ -186,4 +186,4 @@ Each organization gets an isolated database and rule repository:
 - **Approval stays local** — it adds a rule to the local Git-ready repository only; nothing is deployed or pushed.
 - **Email is optional** — without `SMTP_HOST`/`DIGEST_TO` configured, the daily digest is saved to a local file, never claimed as sent.
 
-More detail and references: **[QUICKSTART.md](QUICKSTART.md)** · **[DASHBOARD.md](DASHBOARD.md)** · **[PUBLISHING.md](PUBLISHING.md)**.
+More detail and references: **[QUICKSTART.md](QUICKSTART.md)** · **[DASHBOARD.md](DASHBOARD.md)** · **[DETECTION_PLAYBOOK.md](DETECTION_PLAYBOOK.md)** · **[PUBLISHING.md](PUBLISHING.md)**.

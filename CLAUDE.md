@@ -1,0 +1,3 @@
+# Threat research workflow
+
+Read [DETECTION_PLAYBOOK.md](DETECTION_PLAYBOOK.md) before working on threat intelligence or proposing detection rules. Lead the public research yourself: collect, inspect cited technical pages and directly linked original publications on configured hosts, then show cited behavior and an unverified draft or the exact gap. Use the MCP `research_and_propose_detection` and `lead_workup` tools when testing a live lead. A publisher's claim is not a local sighting. Never invent a numeric environment risk, inventory coverage, a labeled test, or a SIEM result. Source verification, approval, and deployment stay with the analyst.

@@ -123,6 +123,15 @@ class Base(unittest.TestCase):
 
 
 class AutomaticSourceReviewTest(Base):
+    def test_news_report_follows_only_cited_original_on_configured_host(self):
+        original = "https://support.citrix.com/external/article/CTX999991/technical-analysis.html"
+        news = "https://www.bleepingcomputer.com/news/security/fictional-investigation"
+        raw = page("Citrix published an original technical analysis of the intrusion.", links=(
+            original, "https://support.citrix.com/about", "https://outside.example/other"))
+        cited = research_pass._linked_originals(raw, {"excerpts": [
+            {"excerpt": "Citrix published an original technical analysis of the intrusion."}]}, news)
+        self.assertEqual(cited, [original])
+
     def test_vendor_behavior_and_hunts_are_visible_without_creating_a_rule(self):
         ident = "REPORT-FICTMALWARE001"
         url = "https://www.microsoft.com/en-us/security/blog/2099/01/01/fictional-loader"
