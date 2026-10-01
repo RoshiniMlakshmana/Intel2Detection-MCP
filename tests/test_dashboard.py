@@ -317,7 +317,7 @@ class DashboardHttpTest(unittest.TestCase):
         self.assertIn("1</b> new leads", body)
         self.assertIn("View newest collected leads", body)
         self.assertIn("Items fetched last attempt", body)
-        self.assertIn(str(self.path), body)
+        self.assertIn(str(self.path.resolve()), body)
         self.assertIn("Showing", body)
         filtered_status, filtered = self._get("/?source=CISA%20KEV")
         self.assertEqual(filtered_status, 200)
