@@ -165,7 +165,10 @@ $env:DASHBOARD_AUTO_REFRESH = "false"
 Optional: `--host`, `--port`, or the `DASHBOARD_HOST` / `DASHBOARD_PORT`
 environment variables to bind elsewhere; `DASHBOARD_REFRESH_SECONDS` to
 change the 24h cadence (mainly for testing). The **"Collect now"** button in
-the header runs one collection on demand instead of waiting for the timer.
+the header starts one collection on demand and returns to the Sources page
+immediately. A status message updates when the poll finishes; a second click
+while collection is running does not start another poll. You may browse other
+dashboard pages while it runs and return to Sources to see the result.
 
 ### Run the MCP server alongside it
 
