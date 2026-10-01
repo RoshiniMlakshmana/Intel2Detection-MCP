@@ -168,7 +168,14 @@ change the 24h cadence (mainly for testing). The **"Collect now"** button in
 the header starts one collection on demand and returns to the Sources page
 immediately. A status message updates when the poll finishes; a second click
 while collection is running does not start another poll. You may browse other
-dashboard pages while it runs and return to Sources to see the result.
+dashboard pages while it runs and return to Sources to see the result. The
+Sources summary shows the completed poll's status, new lead count, source
+fetch count and feed errors. Filter source cards by exact source, type or
+fetch status. **All leads** defaults to newest collection date, so a newly
+collected report with an older publication date appears near the top; switch
+"Newest by" to publication date when needed. **Draft rules** shows stored
+local drafts and expands each rule's Sigma, KQL and SPL. A GitHub detection
+repository entry is a commit pointer, not a drafted or imported rule.
 
 ### Run the MCP server alongside it
 

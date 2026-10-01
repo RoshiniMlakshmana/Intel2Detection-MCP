@@ -314,6 +314,41 @@ class DashboardHttpTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("CISA KEV", body)
         self.assertIn("Sources", body)
+        self.assertIn("1</b> new leads", body)
+        self.assertIn("View newest collected leads", body)
+        self.assertIn("Items fetched last attempt", body)
+        self.assertIn(str(self.path), body)
+        self.assertIn("Showing", body)
+        filtered_status, filtered = self._get("/?source=CISA%20KEV")
+        self.assertEqual(filtered_status, 200)
+        self.assertIn("Showing 1 of", filtered)
+        self.assertIn("CISA KEV", filtered)
+        self.assertNotIn('class="name" href="/leads?source=NVD"', filtered)
+
+    def test_navigation_tabs_and_source_filter_reach_a_page(self):
+        paths = ("/", "/leads", "/leads?queue=research_backlog", "/leads?queue=raw_unreviewed",
+                 "/leads?queue=triaged_open", "/leads?queue=research_completed",
+                 "/rules?state=draft", "/rules?state=approved", "/rules?state=rejected",
+                 "/reviews", "/errors", "/tools", "/leads?source=CISA%20KEV")
+        for target in paths:
+            with self.subTest(target=target):
+                status, body = self._get(target)
+                self.assertEqual(status, 200)
+                self.assertIn("Threat Research Dashboard", body)
+        self.assertIn("CVE-2099-70001", self._get("/leads?source=CISA%20KEV")[1])
+
+    def test_recent_collection_is_visible_even_when_publication_is_older(self):
+        core.ingest([{**fictional_record(), "id": "CVE-2098-70001", "published": "2098-01-01",
+                      "title": "Newly collected older publication", "source": "https://example.test/older"}], self.path)
+        with store.connection(self.path) as db:
+            db.execute("UPDATE threats SET first_seen='2020-01-01T00:00:00Z' WHERE id='CVE-2099-70001'")
+        _, newest = self._get("/leads")
+        self.assertLess(newest.index("CVE-2098-70001"), newest.index("CVE-2099-70001"))
+        _, published = self._get("/leads?sort=published")
+        self.assertLess(published.index("CVE-2099-70001"), published.index("CVE-2098-70001"))
+        status, body = self._get("/api/leads?sort=collected")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"][0]["id"], "CVE-2098-70001")
 
     def test_source_threats_and_threat_detail_pages(self):
         status, body = self._get("/source?name=" + urllib.parse.quote("CISA KEV"))
@@ -350,6 +385,9 @@ class DashboardHttpTest(unittest.TestCase):
 
         _, body = self._get("/threat?id=CVE-2099-70001")
         self.assertIn("Approve and add to rule repository", body)
+        _, drafts = self._get("/rules?state=draft")
+        self.assertIn("View Sigma / KQL / SPL", drafts)
+        self.assertIn("<h3>Sigma</h3>", drafts)
 
         with store.connection(self.path) as db:
             rule_row = db.execute("SELECT id FROM rules WHERE threat_id='CVE-2099-70001'").fetchone()

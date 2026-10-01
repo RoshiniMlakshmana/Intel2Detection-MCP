@@ -23,6 +23,7 @@ QUEUES = ("research_backlog", "raw_unreviewed", "triaged_open", "research_comple
 RULE_STATES = ("none", "draft", "approved", "rejected")
 KINDS = ("advisory", "campaign", "ioc", "leak_claim", "research_update", "community_rule")
 DATE_FIELDS = ("published", "collected")
+LEAD_SORTS = ("collected", "published")
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # MCP tool behind each dashboard tab, so the two surfaces stay discoverable
@@ -96,7 +97,8 @@ def source_attempts(path: Path | None = None):
 
 
 def list_leads(path: Path | None = None, source=None, date_from=None, date_to=None, date_field="published",
-               status=None, rule_state=None, kind=None, page=1, per_page=PAGE_SIZE, queue=None):
+               status=None, rule_state=None, kind=None, page=1, per_page=PAGE_SIZE, queue=None,
+               sort="collected"):
     """One bounded page of leads with a total count; filters combine with AND."""
     store.initialize(path)
     backfill_source_names(path)
@@ -105,6 +107,7 @@ def list_leads(path: Path | None = None, source=None, date_from=None, date_to=No
     rule_state = _choice(rule_state, RULE_STATES, "rule_state")
     kind = _choice(kind, KINDS, "kind")
     date_field = _choice(date_field or "published", DATE_FIELDS, "date_field")
+    sort = _choice(sort or "collected", LEAD_SORTS, "sort")
     date_from, date_to = _day(date_from, "date_from"), _day(date_to, "date_to")
     page, per_page = _page(page, per_page)
     source = source or None
@@ -132,7 +135,8 @@ def list_leads(path: Path | None = None, source=None, date_from=None, date_to=No
               "date_from": date_from, "date_to": date_to}
     with store.connection(path) as db:
         total = db.execute(f"SELECT COUNT(*) FROM ({query})", params).fetchone()[0]
-        rows = db.execute(query + " ORDER BY COALESCE(published,collected) DESC, id LIMIT :limit OFFSET :offset",
+        order = "collected DESC, id" if sort == "collected" else "COALESCE(published,collected) DESC, id"
+        rows = db.execute(query + f" ORDER BY {order} LIMIT :limit OFFSET :offset",
                           {**params, "limit": per_page, "offset": (page - 1) * per_page}).fetchall()
     attempts = source_attempts(path)
     items = []
@@ -150,7 +154,7 @@ def list_leads(path: Path | None = None, source=None, date_from=None, date_to=No
     return {"total": total, "page": page, "per_page": per_page, "pages": pages,
             "has_previous": page > 1, "has_next": page < pages,
             "filters": {"source": source, "date_from": date_from, "date_to": date_to, "date_field": date_field,
-                        "status": status, "queue": queue, "rule_state": rule_state, "kind": kind},
+            "status": status, "queue": queue, "rule_state": rule_state, "kind": kind, "sort": sort},
             "items": items,
             "note": "Display page of this local database (max 50 per page); unrelated to upstream API pagination."}
 
