@@ -221,6 +221,36 @@ def _options(values, selected, blank="any"):
     return "".join(items)
 
 
+def _source_options(selected):
+    """Keep the exact source filter, but make the long catalog navigable."""
+    groups = {label: [] for label in ("Vulnerabilities and government", "GitHub advisories",
+                                      "Open source detection rules", "GitHub threat intel",
+                                      "Research and news", "Other feeds")}
+    detections = {"GitHub: SigmaHQ community rules", "GitHub: Microsoft Sentinel detections"}
+    for name, category in dashboard_data.source_catalog():
+        if name in detections:
+            group = "Open source detection rules"
+        elif name == "GitHub advisories":
+            group = "GitHub advisories"
+        elif category == "curated GitHub repository":
+            group = "GitHub threat intel"
+        elif name in ("NVD", "CISA KEV") or category.startswith("government"):
+            group = "Vulnerabilities and government"
+        elif "RSS/Atom feed" in category:
+            group = "Research and news"
+        else:
+            group = "Other feeds"
+        groups[group].append(name)
+    options = ['<option value="">All sources</option>']
+    for label, names in groups.items():
+        if names:
+            options.append(f'<optgroup label="{_e(label)}">')
+            options.extend(f'<option value="{_e(name)}"{" selected" if name == selected else ""}>'
+                           f'{_e(name)}</option>' for name in names)
+            options.append('</optgroup>')
+    return "".join(options)
+
+
 def _pager(base, params, result):
     def link(page):
         query = "&".join(f"{k}={_url_escape(v)}" for k, v in {**params, "page": page}.items() if v not in (None, ""))
@@ -271,8 +301,9 @@ def _queue_lede(queue, path=None):
     if queue == "triaged_open":
         from . import research_pass
         summary = research_pass.triage_summary(path, limit=1)
-        lede += _bullets([f'{name.replace("_", " ")}: {group["count"]}. {group["meaning"]} Next: {group["next_action"]}'
-                          for name, group in summary["groups"].items()])
+        lede += '<details><summary>Why these leads are waiting</summary>' + _bullets(
+            [f'{name.replace("_", " ")}: {group["count"]}. {group["meaning"]} Next: {group["next_action"]}'
+             for name, group in summary["groups"].items()]) + '</details>'
     return lede
 
 
@@ -287,10 +318,9 @@ def render_leads(path=None, qs=None):
     except ValueError as exc:
         result = workflow.list_leads(path)
         error_html = f'<div class="flash err">Filter ignored: {_e(exc)}</div>'
-    sources = [(name, name) for name, _ in dashboard_data.source_catalog()]
     date_fields = [("published", "publication date"), ("collected", "collection date")]
     form = f"""<form class="filters" method="get" action="/leads">
-<div><label>Source</label><select name="source">{_options(sources, params["source"], "all sources")}</select></div>
+<div><label>Threat intel source</label><select name="source">{_source_options(params["source"])}</select></div>
 <div><label>Date field</label><select name="date_field">{_options(date_fields, params["date_field"], None)}</select></div>
 <div><label>From</label><input type="date" name="date_from" value="{_e(params["date_from"])}"></div>
 <div><label>To</label><input type="date" name="date_to" value="{_e(params["date_to"])}"></div>
@@ -305,9 +335,8 @@ def render_leads(path=None, qs=None):
         "Research needed" if params["status"] == "research_needed" else "All leads")
     call_args = ", ".join(f"{k}='{v}'" for k, v in params.items() if v and not (k == "date_field" and v == "published"))
     body = f"""<p><a href="/">&larr; Sources</a></p><h1>{_e(heading)}</h1>
-<p class="lede">50 leads per page, newest publication first. The page size is a local display limit; upstream
-API paging (NVD, GitHub, feeds) is handled by the collectors. Each row keeps its publication date, collection
-date, original URL and that source's latest fetch status.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
+<p class="lede">Choose a threat intel source and click Apply to see its collected leads. Rules are under
+<a href="/rules?state=draft">Draft rules</a>.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
 {_pager("/leads", params, result)}
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Source / URL</th><th>Published</th><th>Collected</th>
 <th>Latest fetch</th><th>Status</th><th>Rule</th></tr></thead><tbody>{rows}</tbody></table></div>
