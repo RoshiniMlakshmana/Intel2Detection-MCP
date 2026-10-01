@@ -174,7 +174,7 @@ def _browser_source(threat_id, source_url, capture_id, paragraph, path):
 
 
 def propose(threat_id, source_url, paragraph, spec, title, rationale, false_positives, path: Path | None = None,
-            manual_review_id=None, browser_capture_id=None):
+            manual_review_id=None, browser_capture_id=None, proposed_by="claude_proposal"):
     """Create an unverified, source-linked draft after an inventory comparison; never approves.
 
     The source is either a stored paragraph of an automatically inspected page, or (manual_review_id)
@@ -199,7 +199,8 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
     if absent:
         raise ValueError(f"predicate value(s) not found in the cited paragraph: {absent}; every value must be "
                          "quoted from the source, never inferred")
-    if all(BARE_FILENAME.fullmatch(p["value"]) for p in normalized["predicates"]):
+    if normalized["event_family"] == "file_event" and all(
+            BARE_FILENAME.fullmatch(p["value"]) for p in normalized["predicates"]):
         raise ValueError("a file name alone is not an attack pattern; add a value the paragraph ties to the "
                          "activity (a hash, command line, path or address)")
     if not (behavior_leads.ACTOR.search(quoted) or behavior_leads.HASH.search(quoted)):
@@ -237,7 +238,7 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
         db.execute("INSERT INTO rule_source_links (rule_id,threat_id,source_url,paragraph,page_sha256,quoted_text,"
                    "proposed_by,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                    (rule_id, threat["id"], source_url, int(paragraph), source["page_sha256"], quoted,
-                    "claude_proposal_from_" + source["provenance"], "unverified", now()))
+                    proposed_by + "_from_" + source["provenance"], "unverified", now()))
         db.execute("INSERT INTO audit(at,action,target,detail) VALUES (?,?,?,?)",
                    (now(), "draft_proposed_from_paragraph", rule_id,
                     json.dumps({"source": source_url, "paragraph": int(paragraph)})))

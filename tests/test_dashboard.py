@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import yaml
 
-from threat_research import core, dashboard, dashboard_data, frameworks, poller, research_feeds, rules, sources, store
+from threat_research import core, dashboard, dashboard_data, frameworks, poller, research_feeds, rules, sources, store, workflow
 
 
 def fictional_record(ident="CVE-2099-70001", source="https://example.test/advisory/example"):
@@ -260,7 +260,7 @@ class NvdPageCapTest(unittest.TestCase):
 
         def fetch(url, headers=None):
             parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-            self.assertEqual(parsed["resultsPerPage"], ["2000"])
+            self.assertEqual(parsed["resultsPerPage"], ["500"])
             start = int(parsed["startIndex"][0])
             return pages[start // 3]
 
@@ -270,6 +270,23 @@ class NvdPageCapTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "page cap"):
             list(sources.collect_nvd(since, until, fetch=fetch, max_pages=2, rate_limit=False))
+
+    def test_oversized_nvd_response_retries_same_index_with_smaller_page(self):
+        seen = []
+        def fetch(url, headers=None):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            start, size = int(query["startIndex"][0]), int(query["resultsPerPage"][0])
+            seen.append((start, size))
+            if size > 2:
+                raise ValueError("source response too large")
+            return {"totalResults": 3, "vulnerabilities": [
+                {"cve": {"id": f"CVE-2099-99{i:03d}", "vulnStatus": "Analyzed",
+                         "descriptions": [{"lang": "en", "value": "fixture"}], "metrics": {}}}
+                for i in range(start, min(start + size, 3))]}
+        point = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        rows = sources.collect_nvd(point, point, fetch=fetch, page_size=8, max_pages=8, rate_limit=False)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(seen, [(0, 8), (0, 4), (0, 2), (2, 2)])
 
 
 class DashboardHttpTest(unittest.TestCase):
@@ -329,13 +346,30 @@ class DashboardHttpTest(unittest.TestCase):
         paths = ("/", "/leads", "/leads?queue=research_backlog", "/leads?queue=raw_unreviewed",
                  "/leads?queue=triaged_open", "/leads?queue=research_completed",
                  "/rules?state=draft", "/rules?state=approved", "/rules?state=rejected",
-                 "/reviews", "/errors", "/tools", "/leads?source=CISA%20KEV")
+                 "/reviews", "/errors", "/tools", "/attention", "/leads?source=CISA%20KEV")
         for target in paths:
             with self.subTest(target=target):
                 status, body = self._get(target)
                 self.assertEqual(status, 200)
                 self.assertIn("Threat Research Dashboard", body)
         self.assertIn("CVE-2099-70001", self._get("/leads?source=CISA%20KEV")[1])
+
+    def test_four_main_tabs_and_active_detail_context(self):
+        _, home = self._get("/")
+        self.assertEqual(home.count('class="count"'), 3)
+        self.assertIn('href="/attention"', home)
+        _, rules_page = self._get("/rules?state=draft")
+        self.assertIn('Live validation and risk:', rules_page)
+        self.assertIn('Not connected.', rules_page)
+        _, detail = self._get("/threat?id=CVE-2099-70001&from=rules")
+        self.assertIn('href="/rules?state=draft" style="color:var(--text);font-weight:700"', detail)
+        self.assertIn('Check cited patterns for a draft', detail)
+
+    def test_propose_button_explains_missing_pattern_without_creating_rule(self):
+        status, location = self._post("/threat/propose", {"id": "CVE-2099-70001"})
+        self.assertEqual(status, 303)
+        self.assertIn("No%20new%20draft", location)
+        self.assertEqual(workflow.list_rules(self.path)["total"], 0)
 
     def test_recent_collection_is_visible_even_when_publication_is_older(self):
         core.ingest([{**fictional_record(), "id": "CVE-2098-70001", "published": "2098-01-01",

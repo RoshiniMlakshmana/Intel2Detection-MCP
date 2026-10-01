@@ -95,7 +95,7 @@ def _nvd_record(item):
     }
 
 
-def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, rate_limit=True,
+def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=500, rate_limit=True,
                 chunk=timedelta(days=1)):
     """Page through NVD's modified-CVE window in chronological day-sized chunks.
 
@@ -108,6 +108,8 @@ def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, ra
     there instead of failing the whole window forever (the observed
     "NVD page cap reached" loop). NVD asks for a short pause between
     requests (0.6s with an API key, 6s without); rate_limit=False is for tests.
+    A response that exceeds the 8 MB fetch cap retries the same startIndex
+    with half as many records, without skipping data or advancing the checkpoint.
     """
     api_key = os.environ.get("NVD_API_KEY")
     headers = {"apiKey": api_key} if api_key else {}
@@ -116,6 +118,7 @@ def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, ra
     while True:
         chunk_end = min(until, chunk_start + chunk)
         start = 0
+        current_page_size = page_size
         while True:
             if pages >= max_pages:
                 raise PartialCollection(
@@ -126,10 +129,20 @@ def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=2000, ra
                 time.sleep(0.6 if api_key else 6.0)
             params = urllib.parse.urlencode({
                 "lastModStartDate": _iso(chunk_start), "lastModEndDate": _iso(chunk_end),
-                "startIndex": start, "resultsPerPage": page_size,
+                "startIndex": start, "resultsPerPage": current_page_size,
             })
-            data = fetch(f"{NVD_URL}?{params}", headers=headers)
             pages += 1
+            try:
+                data = fetch(f"{NVD_URL}?{params}", headers=headers)
+            except ValueError as exc:
+                if "source response too large" not in str(exc):
+                    raise
+                if current_page_size <= 1:
+                    raise PartialCollection(
+                        "NVD single-record response exceeds size cap; no records skipped; "
+                        f"complete through {_iso(chunk_start)}", records, chunk_start) from exc
+                current_page_size = max(1, current_page_size // 2)
+                continue
             batch = data.get("vulnerabilities", [])
             records.extend(r for r in map(_nvd_record, batch) if r)
             start += len(batch)

@@ -48,7 +48,7 @@ def _artifact(value):
 
 
 def _suggested_spec(text, artifacts):
-    """A file name paired with the hash the source prints right after it; a suggestion, never created."""
+    """A file name paired with the hash the source prints right after it; not verified evidence."""
     hashes = [a for a in artifacts if a["kind"] == "sha256"]
     names = [a for a in artifacts if a["kind"] == "filename"]
     for name in names:
@@ -163,8 +163,8 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                f"{'yes' if context['observed'] else 'no'} ({context['detail'][:120]}).")),
             "status": "unverified_quoted_claim",
             "draftable": ({"suggested_spec": suggestion,
-                           "note": "Suggestion only; Claude or the analyst must confirm it against the paragraph. "
-                                   "Nothing is created until propose_detection_from_paragraph is called."}
+                           "note": "A bounded, unverified draft can be proposed. Compare its predicates with the "
+                                   "original paragraph and real telemetry before approval."}
                           if suggestion else
                           {"suggested_spec": None,
                            "reason": ("Behavior described, but no bounded telemetry predicates are confirmed; "

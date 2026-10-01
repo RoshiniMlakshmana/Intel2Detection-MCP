@@ -80,13 +80,13 @@ def list_leads(source: str = "", date_from: str = "", date_to: str = "", date_fi
 
 @mcp.tool()
 def run_research_pass(max_leads: int = 4) -> dict:
-    """Read-only; run it without asking the analyst for permission. Researches the highest-priority backlog leads (CISA KEV CVEs first, then reports citing them): automatically opens the accessible cited reports, primary vendor advisories, CISA pages and linked vendor guidance, records every page inspected and when, lists publisher blocks and unreadable pages separately, and concludes per lead: completed_insufficient_detail (with evidence, missing telemetry and an exposure/patch review offer), observables_need_analyst_verification, or no_readable_source. Never records evidence, drafts, approves or computes a numeric risk score."""
+    """Research priority leads without asking the analyst to read public pages. Exact cited malicious hash/name pairs or explicit web-server/shell process relations may become UNVERIFIED drafts; see rule_proposals and gaps. Never analyst-verifies, approves, deploys, or invents local risk."""
     return research_pass.run_pass(max_leads_=max(1, min(int(max_leads), 20)))
 
 
 @mcp.tool()
 def deep_research_batch(max_leads: int = 20, max_fetches: int = 120) -> dict:
-    """Resumable on-demand research of up to 20 backlog leads with at most 120 article fetches per batch. Returns publisher hunting queries as unverified source material. Does not verify claims, create rules or bypass blocked publishers; inspect remaining backlog and repeat as needed."""
+    """Resumable research of up to 20 leads and 120 cited-page fetches. Supported file identities and explicit Windows process relations may create unverified drafts; other behavior and missing predicates become gaps. No verification, approval, deployment, or bypass of blocked publishers."""
     return research_pass.run_pass(max_leads_=max(1, min(int(max_leads), 20)),
                                   max_fetches=max(1, min(int(max_fetches), 120)))
 
@@ -107,6 +107,12 @@ def capture_browser_source(threat_id: str, url: str, page_text: str) -> dict:
 def research_lead(threat_id: str, refresh: bool = False) -> dict:
     """Read-only; run it without asking. Research one lead now (or return its stored result): pages inspected with times, publisher blocks, cited excerpts, observables found, missing detection detail and telemetry, and an exposure/patch review offer when no rule is supportable. refresh=True re-reads the sources."""
     return research_pass.research_lead(threat_id, refresh=refresh)
+
+
+@mcp.tool()
+def research_and_propose_detection(threat_id: str) -> dict:
+    """Read cited pages for one lead, then propose only a bounded unverified detection grounded in a full stored paragraph. Return explicit gaps for insufficient behavior/telemetry. Nothing is analyst-verified, approved, deployed or scored for local risk."""
+    return research_pass.run_pass(threat_ids=[threat_id], max_fetches=14)
 
 
 @mcp.tool()

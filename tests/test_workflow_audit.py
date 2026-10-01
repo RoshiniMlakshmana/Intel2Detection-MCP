@@ -155,7 +155,8 @@ class MalwareArtifactTest(Base):
         with store.connection(self.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
                              .fetchone()[0], 0)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM rules").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM rules WHERE status='draft'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM rules WHERE status='approved'").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM corroboration_reviews").fetchone()[0], 0)
 
 

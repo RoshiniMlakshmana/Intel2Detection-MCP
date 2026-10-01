@@ -41,6 +41,7 @@ MAX_LEADS = 4
 MAX_PAGES_PER_LEAD = 14
 MAX_FETCHES_PER_PASS = 40
 MAX_LINKED_GUIDANCE = 3
+MAX_ORIGINAL_RESEARCH = 2
 MAX_EVIDENCE = 15
 NO_SOURCE_RETRY = timedelta(hours=12)
 # Bump when previously stored source text needs re-analysis by a newer extractor.
@@ -51,7 +52,8 @@ KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
 PRIMARY_ROLES = ("primary_advisory", "kev_entry", "cisa_guidance", "linked_guidance")
-ROLE_ORDER = {"primary_advisory": 0, "kev_entry": 1, "cisa_guidance": 2, "linked_guidance": 3, "cited_report": 4}
+ROLE_ORDER = {"primary_advisory": 0, "kev_entry": 1, "cisa_guidance": 2, "linked_guidance": 3,
+              "cited_report": 4, "original_research": 5}
 HREF = re.compile(rb"""href\s*=\s*["'](https://[^"'<>\s]{1,500})["']""", re.I)
 
 # High-priority leads that need a report read before anything else can
@@ -251,6 +253,30 @@ def _original_candidates(raw, page, from_url):
     return found[:5]
 
 
+def _linked_originals(raw, page, from_url):
+    """Follow at most two allowed vendor/research publications cited by a news report.
+
+    Require an HTTPS technical page, an allowed primary host, and a publisher
+    name mentioned in relevant article text. This never expands the network
+    allowlist or treats a quoted secondary claim as verified evidence.
+    """
+    if _host(from_url) not in NEWS_HOSTS:
+        return []
+    context = " ".join(e["excerpt"] for e in page["excerpts"]).lower()
+    found = []
+    for match in HREF.findall(raw[:report_inspection.MAX_BYTES]):
+        url = _clean_url(html.unescape(match.decode("utf-8", errors="replace")))
+        host = _host(url)
+        name = host.split(".")[-2] if "." in host else ""
+        if (host in report_inspection.PRIMARY_HOSTS and host != _host(from_url) and len(name) >= 5 and name in context
+                and report_inspection.allowed_url(url) and len(urlsplit(url).path.strip("/")) >= 12
+                and not STATIC_ASSET.search(urlsplit(url).path) and url not in found):
+            found.append(url)
+        if len(found) >= MAX_ORIGINAL_RESEARCH:
+            break
+    return found
+
+
 def _details(record, page, raw=b""):
     details = page.get("specific_details", [])
     originals = (_original_candidates(raw, page, record["url"])
@@ -416,6 +442,13 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
             observables.append({"url": record["url"], "role": record["role"], **lead})
         drafting.record_paragraphs(candidate["url"], page, path)
         lead_queue.store_page_leads(candidate["owner"], candidate["url"], page, path)
+        if candidate["role"] == "cited_report" and _host(candidate["url"]) in NEWS_HOSTS:
+            known = {_clean_url(c["url"]) for c in queue}
+            for url in _linked_originals(fetched["raw"], page, candidate["url"]):
+                if url not in known:
+                    queue.append({"url": url, "role": "original_research", "via": candidate["url"],
+                                  "owner": candidate["owner"]})
+                    known.add(url)
         if candidate["role"] in ("primary_advisory", "kev_entry", "cisa_guidance"):
             known = {_clean_url(c["url"]) for c in queue}
             for url in _linked_guidance(fetched["raw"], candidate["url"]):
@@ -549,7 +582,8 @@ def backlog_diagnostics(path: Path | None = None):
 
 
 def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=None, max_fetches=None):
-    """One resumable pass; the explicit deep batch may raise the fetch budget, bounded at 120."""
+    """One resumable pass; propose bounded, unverified rules when a cited file identity supports one."""
+    from . import proposal_pass
     store.initialize(path)
     started = now()
     before = backlog_diagnostics(path) if not threat_ids else None
@@ -565,23 +599,36 @@ def run_pass(path: Path | None = None, max_leads_=None, fetch=None, threat_ids=N
         except ValueError as exc:
             results.append({"threat_id": ident, "status": "error", "summary": str(exc)[:200]})
             continue
+        try:
+            proposals = proposal_pass.propose_from_stored(ident, path)
+        except ValueError as exc:
+            proposals = {"proposals": [], "gaps": [], "error": str(exc)[:200]}
         results.append({key: result.get(key) for key in (
             "threat_id", "status", "summary", "completed_at", "pages_inspected", "publisher_blocked", "unreadable",
             "evidence", "observables_found", "behavior_patterns_to_verify", "specific_details_to_verify",
             "publisher_hunting_queries",
             "missing_for_detection", "missing_telemetry", "exposure_patch_review",
-            "rule_drafting")} | {"pages": result["pages"]})
+            "rule_drafting")} | {"pages": result["pages"], "rule_proposals": proposals,
+                                   "rule_drafting": ("Created unverified draft proposal(s); see rule_proposals. "
+                                                      "Source verification and real tests remain open."
+                                                      if any(p["status"] == "draft_unverified" for p in proposals["proposals"])
+                                                      else result["rule_drafting"]),
+                                   "drafts_created": sum(p["status"] == "draft_unverified"
+                                                         for p in proposals["proposals"])})
     blocked = sorted({p["url"] for r in results for p in r.get("publisher_blocked") or []})
     return {"started": started, "completed": now(), "leads_researched": len(results),
             "pages_fetched": budget["fetched"], "results": results,
+            "drafts_created": sum(r.get("drafts_created", 0) for r in results),
             "publisher_blocked_pages": blocked,
             "backlog_remaining": backlog_count(path),
             "selection": before,
             "no_work_reason": ("No lead is due for another article read. See selection.not_due for "
                                "analyst-verification and retry-cooldown reasons."
                                if not ids and not threat_ids else None),
-            "note": ("Read-only research ran automatically; no analyst permission is needed to read cited public "
-                     "pages. Nothing was recorded as evidence, drafted, approved or risk-scored.")}
+            "note": ("Cited pages were read automatically; no analyst permission is needed for research. "
+                     "Exact hash-and-filename pairs with attacker context "
+                     "may produce unverified draft rules. No source was analyst-verified, no rule was approved or "
+                     "deployed, and no environment risk was scored.")}
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +702,7 @@ def _open_reason(result):
 
 def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None, max_fetches=TRIAGE_MAX_FETCHES):
     """Triage the next raw leads; returns before/after counts and why each lead is closed or still open."""
-    from . import workflow
+    from . import proposal_pass, workflow
     store.initialize(path)
     before = workflow.workflow_counts(path)
     candidates = raw_triage_candidates(path)
@@ -691,6 +738,10 @@ def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None,
             continue
         result = research_lead(ident, path, fetch=fetch, refresh=True, cache=cache, budget=budget,
                                max_pages=TRIAGE_PAGES_PER_LEAD)
+        try:
+            proposal = proposal_pass.propose_from_stored(ident, path)
+        except ValueError as exc:
+            proposal = {"proposals": [], "gaps": [], "error": str(exc)[:200]}
         researched += 1
         status = result["status"]
         if status == "completed_insufficient_detail":
@@ -703,6 +754,7 @@ def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None,
         _record_triage(ident, source_name, outcome, reason, path)
         processed.append({"threat_id": ident, "source": source_name, "kind": lead["kind"], "result": outcome,
                           "reason": reason, "open": still_open,
+                          "rule_proposals": proposal,
                           "publisher_blocked": [p["url"] for p in result.get("publisher_blocked") or []]})
     after = workflow.workflow_counts(path)
     keys = ("actionable_research_backlog", "raw_unreviewed_leads", "triaged_open",
@@ -712,9 +764,8 @@ def triage_raw(path: Path | None = None, max_leads=TRIAGE_MAX_LEADS, fetch=None,
             "pages_fetched": budget["fetched"],
             "publisher_blocks": sorted({u for p in processed for u in p.get("publisher_blocked", [])}),
             "untriaged_remaining": len(raw_triage_candidates(path)),
-            "note": ("Raw triage is read-only and resumable. The KEV-first priority pass runs before it with its own "
-                     "budget, so triage never takes KEV capacity. Nothing was recorded as evidence, drafted, approved "
-                     "or risk-scored.")}
+            "note": ("Raw triage is resumable. A cited hash and file-name pair may create an unverified draft. "
+                     "No source was analyst-verified, no rule was approved or deployed, and no local risk was scored.")}
 
 
 def triage_summary(path: Path | None = None, limit=50):
