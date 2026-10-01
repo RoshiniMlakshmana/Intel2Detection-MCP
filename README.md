@@ -69,14 +69,14 @@ Full setup, the analyst dashboard, and keeping a poller + daily digest running o
 
 | Dashboard tab | MCP tool |
 |---|---|
-| All leads: source dropdown, queue/date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, queue, status, rule_state, kind, page)` |
+| All leads: source dropdown, collection/publication sorting, queue/date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, queue, status, rule_state, kind, page, sort)` |
 | Research backlog (actionable: KEV CVEs, reports citing them, reports with behavior leads) | `list_leads(queue='research_backlog')`; worked automatically by `run_research_pass()` or in bounded, resumable batches by `deep_research_batch()` |
 | Raw leads (untriaged collection, not a to-do list) | `list_leads(queue='raw_unreviewed')` |
 | Research completed (sources read, insufficient detection detail) | `list_leads(queue='research_completed')`, `research_lead(threat_id)` |
-| Draft rules / Approved rules | `list_rules(state='draft' \| 'approved')` |
+| Draft rules / Approved rules (expand Sigma/KQL/SPL on each row) | `list_rules(state='draft' \| 'approved')` |
 | Pending reviews | `pending_corroboration_reviews()` |
 | Source errors | `source_errors()` (latest fetch status per source, partial fetches, blocked articles) |
-| Sources | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
+| Sources (exact source/type/status dropdowns and last poll summary) | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
 | Tab counts | `workflow_counts()` |
 | Lead detail progression | `lead_progression(threat_id)`: research needed → cited evidence → required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL → labeled checks → analyst decision → rule repository, naming the missing input at each blocked step |
 

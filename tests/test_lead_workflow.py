@@ -201,7 +201,7 @@ class DashboardWorkflowHttpTest(Base):
         for tab in ("Research backlog", "Raw leads", "Research completed", "Draft rules", "Pending reviews", "Approved rules", "Source errors", "MCP tools"):
             self.assertIn(tab, body)
         self.assertIn("Showing 1&ndash;50 of <b>61</b>", body)
-        self.assertIn('href="/leads?date_field=published&page=2"', body)
+        self.assertIn('href="/leads?date_field=published&sort=collected&page=2"', body)
         self.assertIn('<option value="RSS: CISA advisories">', body)
         _, page2, _ = self.request("GET", "/leads?page=2")
         self.assertIn("Showing 51&ndash;61 of <b>61</b>", page2)

@@ -71,11 +71,11 @@ def list_sources() -> dict:
 @mcp.tool()
 def list_leads(source: str = "", date_from: str = "", date_to: str = "", date_field: str = "published",
                status: str = "", rule_state: str = "", kind: str = "", page: int = 1, per_page: int = 50,
-               queue: str = "") -> dict:
-    """Page through collected leads (max 50 per page) with a total count. Filters: queue research_backlog|raw_unreviewed|research_completed|evidence_recorded (research_backlog is the actionable to-do list; raw_unreviewed is untriaged collection, not work to report), source (a list_sources name), date_from/date_to (YYYY-MM-DD) on date_field published|collected, status research_needed|article_leads|evidence_recorded, rule_state none|draft|approved|rejected, kind. Each item keeps publication date, collection date, URL and that source's latest fetch status. To work the backlog, call run_research_pass rather than asking the analyst whether to read a report."""
+               queue: str = "", sort: str = "collected") -> dict:
+    """Page through collected leads (max 50 per page), newest collection first by default. Use sort='published' for newest publication. Filters: queue research_backlog|raw_unreviewed|triaged_open|research_completed|evidence_recorded, source (a list_sources name), date_from/date_to (YYYY-MM-DD) on date_field published|collected, status research_needed|article_leads|research_completed|evidence_recorded, rule_state none|draft|approved|rejected, kind. Each item keeps publication date, collection date, URL and that source's latest fetch status. To work the backlog, call run_research_pass rather than asking the analyst whether to read a report."""
     return workflow.list_leads(source=source, date_from=date_from, date_to=date_to, date_field=date_field,
                                status=status, rule_state=rule_state, kind=kind, page=page, per_page=per_page,
-                               queue=queue)
+                               queue=queue, sort=sort)
 
 
 @mcp.tool()

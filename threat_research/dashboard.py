@@ -170,13 +170,17 @@ def _flash_from_query(qs):
 def _source_card(card):
     error_html = f'<div class="err">{_e(card["error"])}</div>' if card["error"] else ""
     name_html = (f'<a class="name" href="/leads?source={_url_escape(card["name"])}">{_e(card["name"])}</a>'
-                 if card["record_count"] not in (None,) else f'<span class="name">{_e(card["name"])}</span>')
+                 if card["record_count"] is not None and card["category"] != "internal backlog"
+                 else f'<span class="name">{_e(card["name"])}</span>')
+    fetched = (f'<div><span>Items fetched last attempt</span><span>{card["last_fetched_records"]}</span></div>'
+               if card.get("last_fetched_records") is not None else "")
     return f"""<div class="card" data-status="{card['status']}" data-category="{_e(card['category'])}">
 <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
 {name_html}<span class="badge {card['status']}">{card['status'].replace('_',' ')}</span></div>
 <small class="muted">{_e(card['category'])}</small>
 <dl>
 <div><span>Latest fetch</span><span>{_fmt(card.get('latest_fetch'))}</span></div>
+{fetched}
 <div><span>Last successful refresh</span><span>{_fmt(card['last_success'])}</span></div>
 <div><span>Latest publication</span><span>{_fmt(card['latest_publication'])}</span></div>
 <div><span>Record count</span><span>{card['record_count'] if card['record_count'] is not None else '—'}</span></div>
@@ -187,15 +191,37 @@ def render_sources(path=None, qs=None):
     qs = qs or {}
     data = dashboard_data.sources_overview(path)
     active_filter = (qs.get("filter") or [None])[0]
+    selected_source = _qs_one(qs, "source", "")
+    selected_category = _qs_one(qs, "category", "")
+    selected_status = _qs_one(qs, "status", "")
     statuses = sorted({c["status"] for c in data["sources"]})
     categories = sorted({c["category"] for c in data["sources"]})
-    tags = ["all"] + statuses + categories
     cards = data["sources"]
     if active_filter and active_filter != "all":
         cards = [c for c in cards if c["status"] == active_filter or c["category"] == active_filter]
-    tag_html = "".join(
-        f'<a class="{"active" if (t == active_filter or (t == "all" and not active_filter)) else ""}" '
-        f'href="/?filter={_e(t)}">{_e(t)}</a>' for t in tags)
+    if selected_source:
+        cards = [c for c in cards if c["name"] == selected_source]
+    if selected_category:
+        cards = [c for c in cards if c["category"] == selected_category]
+    if selected_status:
+        cards = [c for c in cards if c["status"] == selected_status]
+    filters = f"""<form class="filters" method="get" action="/">
+<div><label>Source</label><select name="source">{_options([(c["name"], c["name"]) for c in sorted(data["sources"], key=lambda c: c["name"])], selected_source, "all sources")}</select></div>
+<div><label>Type</label><select name="category">{_options([(c, c) for c in categories], selected_category, "all types")}</select></div>
+<div><label>Fetch status</label><select name="status">{_options([(s, s.replace("_", " ")) for s in statuses], selected_status, "all statuses")}</select></div>
+<div style="flex:0"><button type="submit">Apply</button></div></form>"""
+    draft_rules = workflow.list_rules(path, state="draft", per_page=1)
+    draft_item = draft_rules["items"][0] if draft_rules["items"] else None
+    draft_link = (f'<p><a href="/rules?state=draft">Draft rules ({draft_rules["total"]})</a>'
+                  + (f' &middot; <a href="/threat?id={_url_escape(draft_item["threat_id"])}#rule-{_e(draft_item["id"])}">'
+                     f'{_e(draft_item["title"])}</a>' if draft_item else ' &middot; None drafted yet') + '</p>')
+    last_poll = (f'<p><b>Last collection:</b> {_fmt(data["last_poll_completed"])} &middot; '
+                 f'{_e(data["last_poll_status"] or "unknown")} &middot; '
+                 f'<b>{_e(data["last_poll_new_records"] if data["last_poll_new_records"] is not None else "unknown")}</b> '
+                 f'new leads &middot; {len(data["last_poll_source_counts"])} sources fetched &middot; '
+                 f'{len(data["last_poll_source_errors"])} feed errors. '
+                 '<a href="/leads?sort=collected">View newest collected leads</a>.</p>'
+                 if data["last_poll_completed"] else '<p>No collection has completed yet.</p>')
     stale_html = (f'<div class="flash err">The last recorded poll is {data["last_result_age_minutes"]} minute(s) old or was '
                   f'produced by different collector code; errors below may already be fixed. Use <b>Collect now</b> '
                   f'to refresh.</div>' if data.get("last_result_stale") and data.get("last_result_age_minutes") is not None else "")
@@ -219,7 +245,8 @@ Collecting sources and reviewing articles. You can keep using the dashboard; thi
         const failed = state.status === 'failed' || state.status === 'unknown';
         const message = state.status === 'unknown' ? 'Collection status unavailable; check the Sources page.'
           : failed ? 'Collection failed: ' + (state.error || 'see the dashboard console')
-          : state.status === 'degraded' ? 'Collection finished with some source errors; see Source errors.'
+          : state.status === 'degraded' ? 'Collection finished with some source errors. New leads: '
+              + (state.new_records ?? 0) + '. See Source errors.'
           : 'Collection finished. New records: ' + (state.new_records ?? 0) + '.';
         window.location.replace('/?flash=' + encodeURIComponent(message) + '&ok=' + (failed ? '0' : '1'));
         return;
@@ -238,13 +265,16 @@ Collecting sources and reviewing articles. You can keep using the dashboard; thi
     if collecting:
         stale_html = ""  # The old result is expected to be stale until the running poll completes.
     body = f"""<h1>Sources</h1>
-<p class="lede">Every configured collection source, its last successful refresh, latest publication date,
-a persistent record count, and any collection error from the most recent poll. Poll interval:
+<p class="lede">Feeds and repositories are collected independently. A successful fetch can add zero new leads
+when its items are already stored. A GitHub detection entry is a commit pointer, not an imported rule. Poll interval:
 {data['poll_interval_minutes']} minute(s){' (currently running)' if data['poll_running'] else ''}.
-Last poll completed: {_fmt(data['last_poll_completed'])}. Email alerts:
-{'configured' if data['email_configured'] else 'not configured'}.</p>
-{collection_html}{stale_html}<div class="tags">{tag_html}</div>
-<div class="grid">{''.join(_source_card(c) for c in cards)}</div>
+Email alerts: {'configured' if data['email_configured'] else 'not configured'}.</p>
+<p><small class="muted">Database: <code>{_e(data['database'])}</code> &middot; collector: {_e(data['collector_version'])}</small></p>
+<div class="panel">{last_poll}{draft_link}</div>
+{collection_html}{stale_html}{filters}
+<p class="lede">Showing {len(cards)} of {len(data["sources"])} source and status cards. A stored count is the total
+distinct leads from that source; items fetched on the last attempt can include leads already stored.</p>
+<div class="grid">{''.join(_source_card(c) for c in cards) or '<p>No sources match these filters.</p>'}</div>
 {_mcp_hint("list_sources()", "source_errors()", "polling_status()")}"""
     return _page("Sources", body, active="/", flash=_flash_from_query(qs), path=path)
 
@@ -348,8 +378,9 @@ def _queue_lede(queue, path=None):
 def render_leads(path=None, qs=None):
     qs = qs or {}
     params = {key: _qs_one(qs, key, "") for key in ("source", "date_from", "date_to", "date_field", "queue",
-                                                    "status", "rule_state", "kind")}
+                                                    "status", "rule_state", "kind", "sort")}
     params["date_field"] = params["date_field"] or "published"
+    params["sort"] = params["sort"] or "collected"
     try:
         result = workflow.list_leads(path, page=_qs_one(qs, "page", "1"), **params)
         error_html = ""
@@ -359,6 +390,7 @@ def render_leads(path=None, qs=None):
     date_fields = [("published", "publication date"), ("collected", "collection date")]
     form = f"""<form class="filters" method="get" action="/leads">
 <div><label>Threat intel source</label><select name="source">{_source_options(params["source"])}</select></div>
+<div><label>Newest by</label><select name="sort">{_options([("collected", "collection date"), ("published", "publication date")], params["sort"], None)}</select></div>
 <div><label>Date field</label><select name="date_field">{_options(date_fields, params["date_field"], None)}</select></div>
 <div><label>From</label><input type="date" name="date_from" value="{_e(params["date_from"])}"></div>
 <div><label>To</label><input type="date" name="date_to" value="{_e(params["date_to"])}"></div>
@@ -371,16 +403,19 @@ def render_leads(path=None, qs=None):
         '<tr><td colspan="8"><small class="muted">No leads match these filters.</small></td></tr>'
     heading = params["source"] or QUEUE_HEADINGS.get(params["queue"]) or (
         "Research needed" if params["status"] == "research_needed" else "All leads")
-    call_args = ", ".join(f"{k}='{v}'" for k, v in params.items() if v and not (k == "date_field" and v == "published"))
+    call_args = ", ".join(f"{k}='{v}'" for k, v in params.items() if v and
+                          not (k == "date_field" and v == "published") and
+                          not (k == "sort" and v == "collected"))
     body = f"""<p><a href="/">&larr; Sources</a></p><h1>{_e(heading)}</h1>
-<p class="lede">Choose a threat intel source and click Apply to see its collected leads. Rules are under
+<p class="lede">Newest collected leads first. Choose a source and click Apply to see its leads. Rules are under
 <a href="/rules?state=draft">Draft rules</a>.</p>{_queue_lede(params["queue"], path)}{error_html}{form}
 {_pager("/leads", params, result)}
 <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Source / URL</th><th>Published</th><th>Collected</th>
 <th>Latest fetch</th><th>Status</th><th>Rule</th></tr></thead><tbody>{rows}</tbody></table></div>
 {_pager("/leads", params, result)}
 {_mcp_hint(f"list_leads({call_args})" if call_args else "list_leads()")}"""
-    only_queue = params["queue"] and not any(v for k, v in params.items() if k not in ("queue", "date_field"))
+    only_queue = params["queue"] and not any(v for k, v in params.items()
+                                              if k not in ("queue", "date_field", "sort"))
     active = f"/leads?queue={params['queue']}" if only_queue else "/leads"
     return _page(heading, body, active=active, flash=_flash_from_query(qs), path=path)
 
@@ -393,6 +428,7 @@ def render_rules(path=None, qs=None):
     result = workflow.list_rules(path, state=state, page=_qs_one(qs, "page", "1"))
     rows = []
     for item in result["items"]:
+        rule = rules.get_rule(item["id"], path)
         check = item["labeled_checks"]
         if check:
             check_html = (f'TP {check["counts"]["tp"]} / FP {check["counts"]["fp"]} / '
@@ -401,8 +437,11 @@ def render_rules(path=None, qs=None):
                 check_html += ' <span class="badge stale">older version</span>'
         else:
             check_html = '<small class="muted">not tested</small>'
+        formats = '<details><summary>View Sigma / KQL / SPL</summary>' + ''.join(
+            f'<h3>{name}</h3><pre>{_e(rule.get(field) or "Not generated")}</pre>'
+            for name, field in (("Sigma", "sigma"), ("KQL", "kql"), ("SPL", "spl"))) + '</details>'
         rows.append(f'<tr><td><a href="/threat?id={_url_escape(item["threat_id"])}#rule-{_e(item["id"])}">{_e(item["title"])}</a>'
-                    f'<br><small class="muted"><code>{_e(item["id"])}</code></small></td>'
+                    f'<br><small class="muted"><code>{_e(item["id"])}</code></small>{formats}</td>'
                     f'<td><a href="/threat?id={_url_escape(item["threat_id"])}">{_e(item["threat_id"])}</a></td>'
                     f'<td><code>{_e(item["behavior"])}</code></td><td>{item["pattern_score"]}</td>'
                     f'<td>{check_html}</td><td>{_fmt(item["created_at"])}</td></tr>')
@@ -1067,7 +1106,7 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json")
             elif parsed.path == "/api/leads":
                 args = {k: v[0] for k, v in qs.items() if k in ("source", "date_from", "date_to", "date_field",
-                                                                 "queue", "status", "rule_state", "kind", "page")}
+                                                                 "queue", "status", "rule_state", "kind", "page", "sort")}
                 self._send(200, json.dumps(workflow.list_leads(path, **args), default=str), "application/json")
             elif parsed.path == "/api/progression":
                 ident = (qs.get("id") or [""])[0]

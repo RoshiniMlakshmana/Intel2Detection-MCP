@@ -61,6 +61,7 @@ def sources_overview(path: Path | None = None):
             "record_count": counts.get(name, 0),
             "latest_publication": latest_pub.get(name),
             "latest_fetch": attempt["attempted_at"] if attempt else None,
+            "last_fetched_records": attempt["records"] if attempt else None,
             "error": error, "error_at": attempt["attempted_at"] if attempt and error else
             (row["last_error_at"] if row and row["last_error"] else None),
             "status": status,
@@ -75,6 +76,7 @@ def sources_overview(path: Path | None = None):
             "name": label, "category": "framework release", "last_success": info.get("fetched_at"),
             "record_count": None, "latest_publication": info.get("version"),
             "latest_fetch": attempt["attempted_at"] if attempt else None,
+            "last_fetched_records": attempt["records"] if attempt else None,
             "error": error, "error_at": attempt["attempted_at"] if attempt and error else None,
             "status": "error" if error else "stale" if info.get("status") == "stale" else
                       "ok" if info.get("status") == "current" else "never_collected",
@@ -84,11 +86,18 @@ def sources_overview(path: Path | None = None):
     cards.append({
         "name": "Article review queue", "category": "internal backlog", "last_success": None,
         "record_count": queue["review_required_behavior_leads"], "latest_publication": None, "latest_fetch": None,
+        "last_fetched_records": None,
         "error": f"{pending} articles pending review" if pending >= 25 else None, "error_at": None,
         "status": "backlogged" if pending >= 25 else "ok",
     })
-    return {"as_of": now(), "poll_interval_minutes": state["interval_minutes"],
+    return {"as_of": now(), "database": str((path or store.db_path()).resolve()),
+            "collector_version": state["installed_collector_version"],
+            "poll_interval_minutes": state["interval_minutes"],
             "poll_running": state["running"], "last_poll_completed": state["last_completed"],
+            "last_poll_status": last_result.get("status"),
+            "last_poll_new_records": last_result.get("new_records"),
+            "last_poll_source_counts": last_result.get("source_counts", {}),
+            "last_poll_source_errors": last_result.get("source_errors", {}),
             "email_configured": state["email_configured"],
             "last_result_stale": state["last_result_stale"],
             "last_result_age_minutes": state["last_result_age_minutes"],
