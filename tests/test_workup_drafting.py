@@ -69,6 +69,7 @@ class AutomaticProposalTest(Base):
                 "</article></body></html>").encode()
         result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
         self.assertEqual(result["drafts_created"], 2)
+        self.assertEqual(result["results"][0]["rule_proposals"]["gaps"], [])
         proposal_ids = [p["rule_id"] for p in result["results"][0]["rule_proposals"]["proposals"]]
         drafted = [rules.get_rule(rule_id, self.path) for rule_id in proposal_ids]
         self.assertEqual({r["custom_spec"]["event_family"] for r in drafted},

@@ -193,6 +193,12 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                           "status": result["status"], "rule_id": result["rule_id"],
                           "source_verification": ("unverified" if result["status"] == "draft_unverified" else
                                                   "see existing rule"), "reason": rationale})
+    covered = {(p["source_url"], p["paragraph"]) for p in proposals}
+    # The artifact extractor can list a filename from the same paragraph as
+    # an explicit behavior. Do not report "filename alone" as a second gap
+    # when the process/module or process/destination rule used that paragraph.
+    gaps = [gap for gap in gaps if (gap["source_url"], gap["paragraph"]) not in covered or
+            not gap["reason"].startswith(("Only file names or paths", "No file name paired with a hash"))]
     return {"threat_id": analysis["threat_id"], "research_status": analysis["status"],
             "patterns_reviewed": len(analysis["patterns"]), "proposals": proposals, "gaps": gaps,
             "note": "No source was analyst-verified, no rule was approved or deployed, and no local risk was scored."}
