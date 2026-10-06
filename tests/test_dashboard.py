@@ -83,6 +83,25 @@ class DashboardDataTest(unittest.TestCase):
         self.assertIn("Research attempted", page)
         self.assertIn("Cited pattern or artifact", page)
 
+    def test_source_counts_article_review_before_research_pass(self):
+        with patch.object(sources, "enrich_epss", return_value={}):
+            poller.run_poll(self.path, adapters={"CISA KEV": lambda: [fictional_record()]})
+        with store.connection(self.path) as db:
+            db.execute("INSERT INTO article_inspection_queue"
+                       "(threat_id,source_url,status,attempts,next_try) VALUES(?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/report", "inspected", 1, "2099-01-02"))
+            db.execute("INSERT INTO article_behavior_leads"
+                       "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen)"
+                       " VALUES(?,?,?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/report", "example", "specific_artifacts",
+                        1, "Fictional artifact", "2099-01-02"))
+        card = next(c for c in dashboard_data.sources_overview(self.path)["sources"]
+                    if c["name"] == "CISA KEV")
+        self.assertEqual(card["research_counts"]["research_attempted"], 1)
+        self.assertEqual(card["research_counts"]["readable_page_leads"], 1)
+        self.assertEqual(card["research_counts"]["pattern_or_artifact_leads"], 1)
+        self.assertEqual(card["research_counts"]["draft_leads"], 0)
+
     def test_source_card_shows_collection_error(self):
         def fail():
             raise ValueError("example source unavailable")

@@ -49,20 +49,31 @@ def _source_research_counts(db):
     page_outcomes = {}
     for row in db.execute("SELECT threat_id,status FROM research_page_inspections"):
         page_outcomes.setdefault(row["status"], set()).add(row["threat_id"])
+    article_outcomes = {}
+    article_attempted = set()
+    for row in db.execute("SELECT threat_id,status,attempts FROM article_inspection_queue"):
+        article_outcomes.setdefault(row["status"], set()).add(row["threat_id"])
+        if row["attempts"]:
+            article_attempted.add(row["threat_id"])
+    article_leads = {r["threat_id"] for r in db.execute(
+        "SELECT DISTINCT threat_id FROM article_behavior_leads")}
     drafted = {r["threat_id"] for r in db.execute(
         "SELECT DISTINCT threat_id FROM rules WHERE status='draft'")}
     counts = {}
     for name, ids in by_source.items():
-        researched = ids & outcomes.keys()
-        candidate_ids = {ident for ident in researched if any(outcomes[ident].get(key)
+        researched = ids & (outcomes.keys() | article_attempted)
+        candidate_ids = {ident for ident in (ids & outcomes.keys()) if any(outcomes[ident].get(key)
                          for key in ("behavior_patterns_to_verify", "specific_details_to_verify",
-                                     "observables_found"))}
+                                     "observables_found"))} | (ids & article_leads)
         counts[name] = {
             "research_attempted": len(researched),
-            "readable_page_leads": len(ids & page_outcomes.get("inspected", set())),
-            "blocked_page_leads": len(ids & page_outcomes.get("publisher_blocked", set())),
+            "readable_page_leads": len(ids & (page_outcomes.get("inspected", set()) |
+                                                article_outcomes.get("inspected", set()))),
+            "blocked_page_leads": len(ids & (page_outcomes.get("publisher_blocked", set()) |
+                                               article_outcomes.get("publisher_blocked", set()))),
             "unreadable_page_leads": len(ids & (page_outcomes.get("unreadable", set()) |
-                                                  page_outcomes.get("failed", set()))),
+                                                  page_outcomes.get("failed", set()) |
+                                                  article_outcomes.get("failed", set()))),
             "not_allowlisted_leads": len(ids & page_outcomes.get("not_allowlisted", set())),
             "pattern_or_artifact_leads": len(candidate_ids),
             "draft_leads": len(ids & drafted),
