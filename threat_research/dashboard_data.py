@@ -7,6 +7,7 @@ the MCP tool surface and the dashboard's view-model concerns apart.
 """
 
 from pathlib import Path
+import json
 
 from . import environment, frameworks, lead_queue, poller, repo_updates, research_feeds, rules, store
 from .core import backfill_source_names, get_threat, now, research_view
@@ -23,6 +24,50 @@ def source_catalog():
     names += [("GitHub: " + name, "curated GitHub repository") for name, _, _, _ in repo_updates.REPOSITORIES]
     names += [("RSS: " + name, f"{kind} RSS/Atom feed") for name, _, kind in research_feeds.FEEDS]
     return names
+
+
+def _source_research_counts(db):
+    """Count distinct leads at each stage for every collecting source.
+
+    A report can be attributed to several feeds; each feed gets credit for
+    that report, but multiple source facts from the same feed count once.
+    Research is attributed to the lead, not claimed as a page fetched from
+    the feed host (a CVE's cited article may live elsewhere).
+    """
+    by_source = {}
+    for row in db.execute("SELECT DISTINCT e.source_name,t.id FROM evidence e "
+                          "JOIN threats t ON t.id=e.threat_id "
+                          "WHERE e.kind='source_fact' AND e.source_name IS NOT NULL"):
+        by_source.setdefault(row["source_name"], set()).add(row["id"])
+    outcomes = {}
+    for row in db.execute("SELECT threat_id,detail FROM research_outcomes"):
+        try:
+            detail = json.loads(row["detail"])
+            outcomes[row["threat_id"]] = detail if isinstance(detail, dict) else {}
+        except (TypeError, ValueError):
+            outcomes[row["threat_id"]] = {}
+    page_outcomes = {}
+    for row in db.execute("SELECT threat_id,status FROM research_page_inspections"):
+        page_outcomes.setdefault(row["status"], set()).add(row["threat_id"])
+    drafted = {r["threat_id"] for r in db.execute(
+        "SELECT DISTINCT threat_id FROM rules WHERE status='draft'")}
+    counts = {}
+    for name, ids in by_source.items():
+        researched = ids & outcomes.keys()
+        candidate_ids = {ident for ident in researched if any(outcomes[ident].get(key)
+                         for key in ("behavior_patterns_to_verify", "specific_details_to_verify",
+                                     "observables_found"))}
+        counts[name] = {
+            "research_attempted": len(researched),
+            "readable_page_leads": len(ids & page_outcomes.get("inspected", set())),
+            "blocked_page_leads": len(ids & page_outcomes.get("publisher_blocked", set())),
+            "unreadable_page_leads": len(ids & (page_outcomes.get("unreadable", set()) |
+                                                  page_outcomes.get("failed", set()))),
+            "not_allowlisted_leads": len(ids & page_outcomes.get("not_allowlisted", set())),
+            "pattern_or_artifact_leads": len(candidate_ids),
+            "draft_leads": len(ids & drafted),
+        }
+    return counts
 
 
 def sources_overview(path: Path | None = None):
@@ -43,6 +88,7 @@ def sources_overview(path: Path | None = None):
             "SELECT e.source_name, MAX(t.published) AS latest FROM evidence e "
             "JOIN threats t ON t.id=e.threat_id WHERE e.kind='source_fact' AND e.source_name IS NOT NULL "
             "GROUP BY e.source_name")}
+        research_counts = _source_research_counts(db)
     from .workflow import source_attempts
     attempts = source_attempts(path)
     cards = []
@@ -59,6 +105,10 @@ def sources_overview(path: Path | None = None):
             "name": name, "category": category,
             "last_success": row["last_success"] if row else None,
             "record_count": counts.get(name, 0),
+            "research_counts": research_counts.get(name, {
+                "research_attempted": 0, "readable_page_leads": 0,
+                "blocked_page_leads": 0, "unreadable_page_leads": 0, "not_allowlisted_leads": 0,
+                "pattern_or_artifact_leads": 0, "draft_leads": 0}),
             "latest_publication": latest_pub.get(name),
             "latest_fetch": attempt["attempted_at"] if attempt else None,
             "last_fetched_records": attempt["records"] if attempt else None,

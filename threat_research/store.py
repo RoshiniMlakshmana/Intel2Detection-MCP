@@ -198,6 +198,10 @@ def initialize(path: Path | None = None):
                     'observables_need_analyst_verification','no_readable_source')),
                 completed_at TEXT NOT NULL, detail TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS proposal_backfill_state (
+                id INTEGER PRIMARY KEY CHECK(id=1), cursor TEXT NOT NULL DEFAULT '',
+                last_run_at TEXT
+            );
         """)
         # Existing local stores from the first release remain usable.
         for table, columns in {

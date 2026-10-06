@@ -13,7 +13,7 @@ from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 
-from threat_research import (browser_research, core, corroboration, custom_rules, dashboard_data, drafting, environment, live_validation,
+from threat_research import (browser_research, core, corroboration, custom_rules, dashboard_data, drafting, environment, live_validation, proposal_pass,
                              research_pass, rules, server, soc_replay, store, workflow, workup)
 
 HASH = "e842dd7642c8e04b5ec20b6393848a9c904e4832930950c16664fe7800ba382e"
@@ -59,6 +59,101 @@ class Base(unittest.TestCase):
 
 
 class AutomaticProposalTest(Base):
+    def test_one_refused_candidate_does_not_hide_other_patterns(self):
+        cited = {"source_url": FRESH_URL, "quoted_paragraph": f"The attacker used malicious loader FictLoader.dll SHA-256 {HASH}.",
+                 "quote_is_full_text": True, "draftable": {"suggested_spec": SPEC}}
+        analysis = {"threat_id": "REPORT-FICTISOLATE", "status": "observables_need_analyst_verification",
+                    "patterns": [{**cited, "paragraph": 1}, {**cited, "paragraph": 2}]}
+        with patch("threat_research.workup.pattern_analysis", return_value=analysis), patch(
+                "threat_research.drafting.propose", side_effect=[ValueError("invalid telemetry"),
+                                                               {"status": "draft_unverified", "rule_id": "safe-draft"}]):
+            result = proposal_pass.propose_from_stored(analysis["threat_id"], self.path)
+        self.assertEqual(len(result["proposals"]), 1)
+        self.assertEqual(result["proposals"][0]["rule_id"], "safe-draft")
+        self.assertEqual(result["patterns_reviewed"], 2)
+        self.assertIn("invalid telemetry", result["gaps"][0]["reason"])
+
+    def test_unreadable_stored_research_returns_a_gap_not_a_draft(self):
+        analysis = {"threat_id": "REPORT-FICTUNREADABLE", "status": "no_readable_source", "patterns": []}
+        with patch("threat_research.workup.pattern_analysis", return_value=analysis):
+            result = proposal_pass.propose_from_stored(analysis["threat_id"], self.path)
+        self.assertEqual(result["proposals"], [])
+        self.assertIn("No full cited page is readable", result["gaps"][0]["reason"])
+
+    def test_stored_research_backfill_is_bounded_resumable_and_deduplicated(self):
+        for ident, html in (("REPORT-FICTBACKFILLA", FRESH_HTML),
+                            ("REPORT-FICTBACKFILLB", b"<html><body><article><p>The malicious loader "
+                                                   b"FictLoader.dll was found.</p></article></body></html>")):
+            core.ingest([{"id": ident, "title": "Fictional publisher report", "kind": "campaign",
+                          "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+            research_pass.research_lead(ident, self.path, fetch=lambda url, body=html: body)
+        with patch("threat_research.report_inspection.fetch_article", side_effect=AssertionError("network fetch")):
+            first = proposal_pass.propose_stored_batch(self.path, limit=1)
+            self.assertEqual((first["leads_processed"], first["drafts_created"]), (1, 1))
+            self.assertEqual(first["remaining_researched_leads"], 1)
+            self.assertTrue(first["next_cursor"])
+            repeat = proposal_pass.propose_stored_batch(self.path, limit=1)
+            self.assertEqual((repeat["drafts_created"], repeat["existing_rule_matches"]), (0, 1))
+            second = proposal_pass.propose_stored_batch(self.path, limit=1,
+                                                       after_id=first["next_cursor"])
+        self.assertEqual(second["leads_processed"], 1)
+        self.assertEqual(second["drafts_created"], 0)
+        self.assertIsNone(second["next_cursor"])
+        self.assertGreaterEqual(second["gaps_total"], 1)
+        self.assertEqual(workflow.list_rules(self.path)["total"], 1)
+        with store.connection(self.path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
+                             .fetchone()[0], 0)
+
+    def test_automatic_backfill_persists_cursor_and_restarts_safely(self):
+        for ident in ("REPORT-FICTPOLLBACKA", "REPORT-FICTPOLLBACKB"):
+            core.ingest([{"id": ident, "title": "Fictional publisher report", "kind": "campaign",
+                          "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+            research_pass.research_lead(ident, self.path, fetch=lambda url: FRESH_HTML)
+        with patch("threat_research.report_inspection.fetch_article", side_effect=AssertionError("network fetch")):
+            first = proposal_pass.advance_stored_backfill(self.path, limit=1)
+            self.assertEqual((first["leads_processed"], first["drafts_created"]), (1, 1))
+            self.assertFalse(first["cycle_completed"])
+            with store.connection(self.path) as db:
+                self.assertEqual(db.execute("SELECT cursor FROM proposal_backfill_state WHERE id=1")
+                                 .fetchone()[0], first["cursor"])
+            second = proposal_pass.advance_stored_backfill(self.path, limit=1)
+            self.assertEqual(second["drafts_created"], 0)
+            self.assertEqual(second["existing_rule_matches"], 1)
+            self.assertTrue(second["cycle_completed"])
+            third = proposal_pass.advance_stored_backfill(self.path, limit=1)
+            self.assertEqual((third["drafts_created"], third["existing_rule_matches"]), (0, 1))
+        self.assertEqual(workflow.list_rules(self.path)["total"], 1)
+
+    def test_attacker_encoded_powershell_execution_proposes_review_only_draft(self):
+        ident = "REPORT-FICTENCODED001"
+        core.ingest([{"id": ident, "title": "Fictional intrusion report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = (b"<html><body><article><p>During the intrusion the attacker executed powershell.exe "
+                b"-EncodedCommand to run a malicious payload.</p></article></body></html>")
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 1)
+        proposal = result["results"][0]["rule_proposals"]["proposals"][0]
+        rule = rules.get_rule(proposal["rule_id"], self.path)
+        self.assertIn('"Image|endswith": "powershell.exe"', rule["sigma"])
+        self.assertIn('"CommandLine|contains": "-EncodedCommand"', rule["sigma"])
+        self.assertIn("YOUR_EVENT_TABLE", rule["kql"])
+        self.assertIn("YOUR_INDEX", rule["spl"])
+        self.assertEqual(rule["status"], "draft")
+        self.assertEqual(drafting.source_link(rule["id"], self.path)["status"], "unverified")
+        with self.assertRaisesRegex(ValueError, "has not verified"):
+            rules.implement_rule(rule["id"], "implement this rule", path=self.path)
+
+    def test_generic_powershell_or_admin_execution_does_not_propose(self):
+        ident = "REPORT-FICTENCODED002"
+        core.ingest([{"id": ident, "title": "Fictional intrusion report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = (b"<html><body><article><p>The attacker used a loader in this case. Later, an administrator "
+                b"executed powershell.exe -EncodedCommand during routine maintenance.</p></article></body></html>")
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 0)
+        self.assertEqual(workflow.list_rules(self.path)["total"], 0)
+
     def test_explicit_web_parent_shell_child_proposes_behavioral_draft(self):
         ident = "REPORT-FICTSHELLSPAWN"
         core.ingest([{"id": ident, "title": "Fictional intrusion report", "kind": "campaign",
