@@ -67,11 +67,15 @@ def _why_malicious(text, title, host):
     sentences = [s.strip() for s in SENTENCE.split(text) if behavior_leads.ACTOR.search(s)]
     cues = sorted({m.group(0).lower() for m in behavior_leads.ACTOR.finditer(text)})
     if sentences:
-        if re.search(r"\b(spoof|replac|sideload|side.load)\w*\b", text, re.I):
+        if behavior_leads.C2.search(text) and behavior_leads.BEACON.search(text):
+            behavior = ("The publisher describes communication with command-and-control infrastructure. A "
+                        "matching destination and process may support a hunt, but their presence alone does not "
+                        "prove compromise or activity in your environment.")
+        elif re.search(r"\b(spoof|replac|sideload|side.load)\w*\b", text, re.I):
             behavior = ("The publisher describes a substituted component or DLL loading path. In that reported "
                         "context, a loader could execute the attacker's next stage under a trusted application's "
-                        "process. The file name and hash identify the publisher's sample; they do not by themselves "
-                        "prove malicious intent or activity on your systems.")
+                        "process. A file name or process/module pair alone does not prove malicious intent or "
+                        "activity on your systems; a quoted hash, when present, identifies one reported sample.")
         elif re.search(r"\bloader\b", text, re.I):
             behavior = ("The publisher identifies the file as a loader in an analyzed sample. A loader's role is "
                         "to execute another stage; the hash identifies that sample, while a matching file name "
@@ -148,7 +152,7 @@ def pattern_analysis(threat_id, path: Path | None = None):
         suggestion = _suggested_spec(text, artifacts)
         host = urlsplit(url).hostname or url
         is_cve = bool(sources.CVE.fullmatch(threat["id"]))
-        patterns.append({
+        pattern = {
             "source_url": url, "paragraph": number, "page_role": item.get("role"),
             "published": published, "collected": collected, "inspected_at": page.get("inspected_at"),
             "page_sha256": page.get("sha256"), "quoted_paragraph": text, "quote_is_full_text": bool(row),
@@ -162,7 +166,14 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                if not context else f"your recorded local context says observed="
                                f"{'yes' if context['observed'] else 'no'} ({context['detail'][:120]}).")),
             "status": "unverified_quoted_claim",
-            "draftable": ({"suggested_spec": suggestion,
+        }
+        if row and not suggestion:
+            # This is the same bounded selector the automatic proposal pass
+            # uses, so the workup cannot claim the behavior is undraftable
+            # while showing its rule in the draft list.
+            from . import proposal_pass
+            suggestion = proposal_pass.behavior_spec(pattern)
+        pattern["draftable"] = ({"suggested_spec": suggestion,
                            "note": "A bounded, unverified draft can be proposed. Compare its predicates with the "
                                    "original paragraph and real telemetry before approval."}
                           if suggestion else
@@ -174,8 +185,8 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                       if artifacts and all(a["kind"] in ("filename", "quoted_file", "path")
                                                            for a in artifacts) else
                                       "No file name paired with a hash in this paragraph; a spec needs a "
-                                      "specific value the paragraph ties to the activity.")}),
-        })
+                                      "specific value the paragraph ties to the activity.")})
+        patterns.append(pattern)
     return {"threat_id": threat["id"], "status": research["status"], "patterns": patterns,
             "never_inferred_from": "CVE titles, headlines or file names alone; only inspected paragraph text."}
 

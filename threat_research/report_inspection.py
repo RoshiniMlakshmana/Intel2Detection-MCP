@@ -263,15 +263,17 @@ def _extract_paragraphs(threat_id, source_url, paragraphs, digest, hunts):
     details = behavior_leads.specific_details(paragraphs)
     # Full text of every paragraph this result cites, so a later detection
     # proposal can be checked against the exact inspected wording.
-    cited = sorted({e["paragraph"] for e in selected[:10]} | {d["paragraph"] for d in details}
-                   | {lead["paragraph"] for lead in leads} | {p["paragraph"] for p in patterns})
+    # Reserve room for technical paragraphs before general keyword excerpts.
+    cited = sorted({d["paragraph"] for d in details} | {lead["paragraph"] for lead in leads}
+                   | {p["paragraph"] for p in patterns})
+    cited = cited[:90] + [e["paragraph"] for e in selected[:10] if e["paragraph"] not in cited[:90]]
     return {"threat_id": threat_id.upper(), "source": source_url,
             "sha256": digest, "paragraphs_scanned": len(paragraphs),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
             "behavior_leads": leads,
             "behavior_patterns": patterns,
             "specific_details": details,
-            "paragraph_text": {n: html.unescape(paragraphs[n - 1]) for n in cited[:40]},
+            "paragraph_text": {n: html.unescape(paragraphs[n - 1]) for n in cited[:100]},
             "publisher_hunts": hunts,
             "status": "research_leads_only",
             "next_step": "Read the linked full report, verify behavior and telemetry, then record a cited analyst observation."}

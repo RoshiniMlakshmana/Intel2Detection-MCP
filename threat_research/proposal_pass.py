@@ -1,9 +1,10 @@
 """Conservative, repeatable draft proposals from already inspected research.
 
-This is a bounded rule writer, not an analyst: a paragraph must contain either
-a SHA-256 paired with a named malicious file, explicit Windows web-server
-parent and shell child process names and a spawning action, or an attacker
-executing a named Windows PowerShell process with a quoted encoded-command flag.
+This is a bounded rule writer, not an analyst: a paragraph must contain a
+SHA-256 paired with a named malicious file, an explicit process/child action,
+an encoded PowerShell command, a named DLL loaded by a named process, or a
+named process contacting a quoted C2 host. Both values for behavioral rules
+must be in the same inspected paragraph and tied by an explicit action.
 The draft remains unverified and cannot be approved without source verification
 and real labeled checks. Behavioral descriptions without measurable predicates
 stay visible as research gaps rather than invented detections.
@@ -19,6 +20,19 @@ from .core import now
 ENCODED_FLAG = re.compile(r"(?<!\w)-(?:EncodedCommand|enc)\b", re.I)
 EXECUTION_ACTOR = re.compile(r"\b(?:attackers?|adversar(?:y|ies)|threat actors?|intruders?|"
                              r"malware|malicious|payload|backdoor|implant)\b", re.I)
+WINDOWS_EXE = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b", re.I)
+WINDOWS_DLL = re.compile(r"\b[A-Za-z0-9_.-]+\.dll\b", re.I)
+HOSTNAME = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
+DLL_LOAD = re.compile(r"\b(?:load(?:s|ed|ing)?|side[ -]?load(?:s|ed|ing)?)\b", re.I)
+C2_ACTION = re.compile(r"\b(?:connect(?:s|ed|ing)?|contact(?:s|ed|ing)?|"
+                       r"communicat(?:es|ed|ing)|beacon(?:s|ed|ing)?)\b", re.I)
+
+
+def _actor_before(quote, process):
+    """An attacker/malware cue must modify this action, not another sentence."""
+    prefix = quote[max(0, process.start() - 140):process.start()]
+    actors = list(EXECUTION_ACTOR.finditer(prefix))
+    return bool(actors and not re.search(r"[.!?;]", prefix[actors[-1].end():]))
 
 
 def _process_spec(pattern):
@@ -58,6 +72,47 @@ def _encoded_powershell_spec(pattern):
     return None
 
 
+def _image_load_spec(pattern):
+    """Require a literal process loading a literal DLL, not a generic sideloading claim."""
+    if (pattern.get("observable") or {}).get("lexical_behavior") != "dll_sideloading":
+        return None
+    quote = pattern["quoted_paragraph"]
+    for process in WINDOWS_EXE.finditer(quote):
+        if not _actor_before(quote, process):
+            continue
+        for module in WINDOWS_DLL.finditer(quote, process.end(), min(len(quote), process.end() + 180)):
+            between = quote[process.end():module.start()]
+            if DLL_LOAD.search(between) and not re.search(r"[.!?;]", between):
+                return {"event_family": "image_load", "platform": "windows", "predicates": [
+                    {"field": "Image", "operator": "endswith", "value": process.group()},
+                    {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}]}
+    return None
+
+
+def _c2_process_spec(pattern):
+    """Require the reported process and its C2 domain in one short action clause."""
+    if (pattern.get("observable") or {}).get("lexical_behavior") != "c2_communication":
+        return None
+    quote = pattern["quoted_paragraph"]
+    for process in WINDOWS_EXE.finditer(quote):
+        if not _actor_before(quote, process):
+            continue
+        for host in HOSTNAME.finditer(quote, process.end(), min(len(quote), process.end() + 200)):
+            between = quote[process.end():host.start()]
+            if (C2_ACTION.search(between) and behavior_leads.C2.search(between)
+                    and not re.search(r"[.!?;]", between)):
+                return {"event_family": "network_connection", "platform": "windows", "predicates": [
+                    {"field": "Image", "operator": "endswith", "value": process.group()},
+                    {"field": "DestinationHostname", "operator": "equals", "value": host.group()}]}
+    return None
+
+
+def behavior_spec(pattern):
+    """A bounded behavioral selection from one paragraph; no source verification implied."""
+    return (_process_spec(pattern) or _encoded_powershell_spec(pattern)
+            or _image_load_spec(pattern) or _c2_process_spec(pattern))
+
+
 def propose_from_stored(threat_id: str, path: Path | None = None):
     analysis = workup.pattern_analysis(threat_id, path)
     proposals, gaps = [], []
@@ -67,8 +122,7 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                                 "needed before drafting." if analysis["status"] == "no_readable_source" else
                                 "Stored research contains no bounded cited pattern for a draft.")})
     for pattern in analysis["patterns"]:
-        spec = ((pattern.get("draftable") or {}).get("suggested_spec") or _process_spec(pattern)
-                or _encoded_powershell_spec(pattern))
+        spec = ((pattern.get("draftable") or {}).get("suggested_spec") or behavior_spec(pattern))
         quote = pattern["quoted_paragraph"]
         if not spec:
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
@@ -102,6 +156,24 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                          "verify the publisher's description and event fields before approval.")
             false_positives = ("Administrative scripts can use encoded PowerShell commands. Review process ancestry, "
                                "script content and account against benign events before approval.")
+        elif spec["event_family"] == "image_load":
+            process = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
+            module = next(p["value"] for p in spec["predicates"] if p["field"] == "ImageLoaded")
+            title = f"Reported {process} loading {module} ({analysis['threat_id']})"[:150]
+            rationale = (f"Paragraph {pattern['paragraph']} describes {process} loading {module} in a DLL "
+                         "sideloading report. This is a publisher claim, not proof the module was malicious on "
+                         "your systems; check the module's path and signature before approval.")
+            false_positives = (f"Normal installations of {process} may load {module}. Check path, hash, signature "
+                               "and benign events before interpreting a match as malicious.")
+        elif spec["event_family"] == "network_connection":
+            process = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
+            host = next(p["value"] for p in spec["predicates"] if p["field"] == "DestinationHostname")
+            title = f"Reported {process} C2 connection to {host} ({analysis['threat_id']})"[:150]
+            rationale = (f"Paragraph {pattern['paragraph']} connects {process} to the C2 host {host}. This "
+                         "is a reported process-and-destination hypothesis; the host may change and no "
+                         "local connection has been observed.")
+            false_positives = ("Hostname attribution and process names can be incomplete or shared. Check DNS, "
+                               "connection context and benign events before approval.")
         else:
             name = next(p["value"] for p in spec["predicates"] if p["field"] == "TargetFilename")
             title = (f"Reported {name} SHA-256 ({analysis['threat_id']})")[:150]

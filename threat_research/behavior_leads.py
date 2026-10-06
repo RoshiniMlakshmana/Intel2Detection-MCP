@@ -18,9 +18,9 @@ BEACON = re.compile(r"\b(?:beacon|connect(?:ion|ivity|s|ed)?|communicat(?:ion|es
 NETWORK = re.compile(r"\b(?:HTTPS?|WebSockets?|domain|host|URL|URI)\b", re.I)
 
 
-def from_paragraphs(paragraphs):
+def from_paragraphs(paragraphs, limit=30):
     """Return explicit leads and exact short snippets; analyst must check full context."""
-    output, seen = [], set()
+    output = []
     for index, paragraph in enumerate(paragraphs):
         if NEGATION.search(paragraph):
             continue
@@ -33,22 +33,22 @@ def from_paragraphs(paragraphs):
                 and EXECUTE.search(paragraph)):
             found.append("mcp_unauthorized_execution")
         for behavior in found:
-            if behavior not in seen:
-                output.append({"behavior": behavior, "paragraph": index + 1,
-                               "excerpt": paragraph[:420], "status": "analyst_review_required",
-                               "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."})
-                seen.add(behavior)
+            output.append({"behavior": behavior, "paragraph": index + 1,
+                           "excerpt": paragraph[:420], "status": "analyst_review_required",
+                           "note": "Lexical lead only; verify actor action, negation, telemetry, and benign context in the full report."})
+            if len(output) >= limit:
+                return output
     return output
 
 
-def behavior_patterns(paragraphs, limit=8):
+def behavior_patterns(paragraphs, limit=30):
     """Cited behaviors beyond the three rule templates; untrusted research only.
 
     A behavioral description alone cannot supply the bounded field predicates
     or telemetry needed for a draft. Keep it visible for analyst review without
     putting an unsupported behavior into the rule/corroboration pipeline.
     """
-    output, seen = [], set()
+    output = []
     for index, paragraph in enumerate(paragraphs):
         if NEGATION.search(paragraph):
             continue
@@ -58,14 +58,12 @@ def behavior_patterns(paragraphs, limit=8):
         if C2.search(paragraph) and BEACON.search(paragraph) and NETWORK.search(paragraph):
             kinds.append("c2_communication")
         for kind in kinds:
-            if kind not in seen:
-                output.append({"behavior": kind, "paragraph": index + 1,
-                               "excerpt": paragraph[:700], "status": "unverified_behavior_description",
-                               "note": "Publisher's description only. Confirm the full source and measurable fields "
-                                       "before proposing a custom detection; no template rule is implied."})
-                seen.add(kind)
-        if len(output) >= limit:
-            break
+            output.append({"behavior": kind, "paragraph": index + 1,
+                           "excerpt": paragraph[:700], "status": "unverified_behavior_description",
+                           "note": "Publisher's description only. Confirm the full source and measurable fields "
+                                   "before proposing a custom detection; no template rule is implied."})
+            if len(output) >= limit:
+                return output
     return output
 
 
@@ -90,7 +88,7 @@ ARTIFACT = re.compile(
     r"|\b[a-f0-9]{64}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{32}\b)", re.I)
 
 
-def specific_details(paragraphs, limit=5):
+def specific_details(paragraphs, limit=30):
     """Paragraphs that pair actor activity with a concrete artifact (path, file, IP, hash).
 
     These are quoted claims to verify against their original publication,
