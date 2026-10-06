@@ -8,6 +8,12 @@ When asked to find patterns and rules, use the `threat-research` MCP tools in th
 4. If no draft is supported, report the precise gap and keep it in Needs attention. Check source links and any publisher query; do not invent process relationships, hash values, fields, a numeric risk score, a local inventory match, or successful SIEM execution.
 5. After onboarding, compare the client's complete rule inventory, map fields to the actual SIEM, run labeled positive and benign checks, then test natively with read-only access. Report environment risk only with the confirmed asset and recorded local event context. Source verification and local approval require the analyst's explicit decision.
 
+## Bulk research and proposals
+
+If asked to process *all already researched leads*, call `propose_stored_drafts(limit=20, after_id="")`, then pass each non-null `next_cursor` back as `after_id` until it is null. This step does not fetch pages. Report the number of leads processed, new drafts, existing matches, and gaps, then list new draft IDs with their lead and paragraph. Do not print every long workup before finishing pagination. Use `lead_workup` for the resulting drafts the user selects. Polling also advances a smaller durable stored-research backfill automatically.
+
+Use `deep_research_batch` separately to fetch due pages that have not been read or whose extractor version is old; a publisher-blocked or non-allowlisted page stays in Needs attention. The stored-only batch cannot infer paragraphs absent from the saved research. If `propose_stored_drafts` is unavailable, the Claude process has not loaded this MCP version. Report that version mismatch instead of treating two one-lead calls as a completed bulk run.
+
 ## Worked examples
 
 **Supported sample selector:** A first-party report says “the malicious loader `FictLoader.dll` (SHA-256: `<64 hex characters>`) replaced an updater.” An unverified file-event draft can match both that full hash and that file name. Explain that it identifies one reported sample, needs file-hash telemetry, and may miss renamed or rebuilt versions. Never claim the hash was seen locally.
@@ -15,6 +21,8 @@ When asked to find patterns and rules, use the `threat-research` MCP tools in th
 **Supported behavioral proposal:** A first-party report says “during the intrusion `w3wp.exe` spawned `cmd.exe`.” An unverified Windows process-creation draft can match `ParentImage` ending in `w3wp.exe` and `Image` ending in `cmd.exe`. Explain attacker intent as possible post-exploitation command execution, and note that administrative activity may also spawn shells. Verify process lineage and benign events before approval.
 
 **Other source-grounded behaviors:** If one inspected paragraph explicitly says attacker-controlled `Poedit.exe` loaded `WinSparkle.dll` through DLL sideloading, propose an unverified `image_load` rule matching that process and module. If it explicitly says a malware process connected to a named C2 hostname, propose an unverified `network_connection` rule matching the process and destination hostname. Neither is proof of compromise: a legitimate module load or shared destination can match. Image-load logging or process-linked destination telemetry must exist, and the analyst checks benign examples.
+
+**Reported sideload and Linux hunt:** A paragraph that says `GatherOsState.exe` sideloads the reported backdoor `slc.dll` supports an unverified `image_load` process/module draft, even when the publisher names the backdoor after the action. A Linux paragraph that explicitly connects a named pipe, `/bin/sh`, and `openssl s_client` in a reverse shell supports an unverified OpenSSL process hunt. A matching `openssl s_client` event alone does not prove the reverse shell; benign TLS diagnostics will match and missing command-line telemetry will miss it. Explain these limits beside Sigma, KQL and SPL.
 
 **Insufficient claim:** “Attackers used DLL sideloading” names no parent, loaded module, hash, path, or bounded field values. Preserve it as a behavior lead and seek the original technical report or publisher hunting query. A filename alone is also insufficient for a file identity rule. A blocked page remains blocked until a browser capture or manual review records what it actually says.
 
