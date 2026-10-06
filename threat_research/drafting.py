@@ -249,7 +249,11 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
     rule_repository.export_rule(rule_id, path)
     return {"status": "draft_unverified", "rule_id": rule_id, "sigma": sigma,
             "required_fields": sorted({p["field"] for p in normalized["predicates"]}),
-            "telemetry_requirements": TELEMETRY[normalized["event_family"]],
+            "telemetry_requirements": ("Linux process creation with executable and command line fields, for "
+                                       "example Defender DeviceProcessEvents on a Linux endpoint. Verify "
+                                       "collection and actual field mapping before running a query."
+                                       if normalized["platform"] == "linux" else
+                                       TELEMETRY[normalized["event_family"]]),
             "source": {"url": source_url, "paragraph": int(paragraph), "provenance": source["provenance"],
                        "page_sha256": source["page_sha256"],
                        "inspected_at": source["inspected_at"], "quoted_text": quoted},

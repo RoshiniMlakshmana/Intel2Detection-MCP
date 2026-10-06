@@ -26,6 +26,8 @@ HOSTNAME = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
 DLL_LOAD = re.compile(r"\b(?:load(?:s|ed|ing)?|side[ -]?load(?:s|ed|ing)?)\b", re.I)
 C2_ACTION = re.compile(r"\b(?:connect(?:s|ed|ing)?|contact(?:s|ed|ing)?|"
                        r"communicat(?:es|ed|ing)|beacon(?:s|ed|ing)?)\b", re.I)
+REVERSE_SHELL = re.compile(r"\breverse shell\b", re.I)
+OPENSSL_CLIENT = re.compile(r"\bopenssl\s+s_client\b", re.I)
 
 
 def _actor_before(quote, process):
@@ -78,11 +80,14 @@ def _image_load_spec(pattern):
         return None
     quote = pattern["quoted_paragraph"]
     for process in WINDOWS_EXE.finditer(quote):
-        if not _actor_before(quote, process):
-            continue
         for module in WINDOWS_DLL.finditer(quote, process.end(), min(len(quote), process.end() + 180)):
             between = quote[process.end():module.start()]
-            if DLL_LOAD.search(between) and not re.search(r"[.!?;]", between):
+            # Talos describes a signed executable which "sideloads slc.dll,
+            # the Antino backdoor"; the actor cue follows the module. A cue
+            # in a previous sentence does not justify an unrelated DLL load.
+            suffix = re.split(r"[.!?;]", quote[module.end():module.end() + 120], maxsplit=1)[0]
+            if (DLL_LOAD.search(between) and not re.search(r"[.!?;]", between)
+                    and (_actor_before(quote, process) or EXECUTION_ACTOR.search(suffix))):
                 return {"event_family": "image_load", "platform": "windows", "predicates": [
                     {"field": "Image", "operator": "endswith", "value": process.group()},
                     {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}]}
@@ -107,10 +112,24 @@ def _c2_process_spec(pattern):
     return None
 
 
+def _linux_reverse_shell_spec(pattern):
+    """A narrow, review-only Linux hunt for an explicit OpenSSL reverse shell."""
+    quote = pattern["quoted_paragraph"]
+    if (REVERSE_SHELL.search(quote) and "/bin/sh" in quote and "/tmp/" in quote
+            and OPENSSL_CLIENT.search(quote) and behavior_leads.ACTOR.search(quote)):
+        # This selector catches s_client usage, not the pipe correlation or a
+        # confirmed reverse shell. Its breadth must be visible to reviewers.
+        return {"event_family": "process_creation", "platform": "linux", "predicates": [
+            {"field": "Image", "operator": "endswith", "value": "openssl"},
+            {"field": "CommandLine", "operator": "contains", "value": "s_client"}]}
+    return None
+
+
 def behavior_spec(pattern):
     """A bounded behavioral selection from one paragraph; no source verification implied."""
     return (_process_spec(pattern) or _encoded_powershell_spec(pattern)
-            or _image_load_spec(pattern) or _c2_process_spec(pattern))
+            or _image_load_spec(pattern) or _c2_process_spec(pattern)
+            or _linux_reverse_shell_spec(pattern))
 
 
 def propose_from_stored(threat_id: str, path: Path | None = None):
@@ -147,6 +166,14 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                          "and local context before approval.")
             false_positives = ("Web administration and application maintenance can launch a shell. "
                                "Review account, command line, host and change window against benign events.")
+        elif spec["platform"] == "linux" and spec["event_family"] == "process_creation":
+            title = f"Reported OpenSSL reverse-shell client activity ({analysis['threat_id']})"[:150]
+            rationale = (f"Paragraph {pattern['paragraph']} reports a named pipe connecting /bin/sh to "
+                         "openssl s_client in a reverse shell. The selector detects OpenSSL client process "
+                         "execution only; it cannot establish the pipe, destination or intent. Review "
+                         "process lineage and command line before approval.")
+            false_positives = ("Legitimate TLS diagnostics use openssl s_client. A match alone does not prove "
+                               "a reverse shell; confirm the pipe and shell lineage with local events.")
         elif any(p["field"] == "CommandLine" for p in spec["predicates"]):
             process = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
             flag = next(p["value"] for p in spec["predicates"] if p["field"] == "CommandLine")
