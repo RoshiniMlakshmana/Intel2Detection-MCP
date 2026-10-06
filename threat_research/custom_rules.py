@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from . import rule_repository, store
 from .core import get_threat, now
 
-FAMILIES = {"process_creation", "network_connection", "file_event", "mcp_audit"}
+FAMILIES = {"process_creation", "network_connection", "file_event", "image_load", "mcp_audit"}
 FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 VALUE = re.compile(r"^[A-Za-z0-9 .:/_\\-]{1,100}$")
 OPERATORS = {"equals", "contains", "endswith"}
@@ -23,7 +23,8 @@ DEFENDER_FIELDS = {
     "process_creation": {"Image": "FileName", "ParentImage": "InitiatingProcessFileName",
                          "CommandLine": "ProcessCommandLine", "User": "AccountName"},
     "network_connection": {"DestinationIp": "RemoteIP", "DestinationPort": "RemotePort",
-                           "Image": "InitiatingProcessFileName"},
+                           "DestinationHostname": "RemoteUrl", "Image": "InitiatingProcessFileName"},
+    "image_load": {"Image": "InitiatingProcessFileName", "ImageLoaded": "FileName"},
     # Windows file events (Sysmon FileCreate / Defender DeviceFileEvents).
     "file_event": {"TargetFilename": "FolderPath", "Image": "InitiatingProcessFolderPath",
                    "SHA256": "SHA256", "User": "InitiatingProcessAccountName"},
@@ -36,7 +37,7 @@ DEFENDER_FIELDS = {
 def validate_spec(spec):
     """Permit a small auditable AND of literal comparisons; no query fragments."""
     if not isinstance(spec, dict) or spec.get("event_family") not in FAMILIES:
-        raise ValueError("spec needs process_creation, network_connection, file_event, or mcp_audit event_family")
+        raise ValueError("spec needs process_creation, network_connection, file_event, image_load, or mcp_audit event_family")
     if spec.get("platform") not in ("windows", "mcp"):
         raise ValueError("platform must be windows or mcp")
     if (spec["event_family"] == "mcp_audit") != (spec["platform"] == "mcp"):
@@ -91,7 +92,7 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
     # JSON strings/lists are legal YAML flow scalars.
     kind = spec["event_family"]
     category = {"process_creation": "process_creation", "network_connection": "network_connection",
-                "file_event": "file_event", "mcp_audit": "application"}[kind]
+                "file_event": "file_event", "image_load": "image_load", "mcp_audit": "application"}[kind]
     product = "mcp_audit" if kind == "mcp_audit" else "windows"
     lines = [f"title: {json.dumps(title)}", f"id: {uuid.uuid5(uuid.NAMESPACE_URL, fingerprint(spec))}",
              "status: experimental",

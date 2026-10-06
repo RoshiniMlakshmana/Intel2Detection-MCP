@@ -24,7 +24,11 @@ TELEMETRY = {
                    "hashes, e.g. Microsoft Defender DeviceFileEvents.SHA256; Sysmon Event ID 11 (FileCreate) "
                    "records no hash."),
     "process_creation": "Windows process-creation events (Sysmon Event ID 1 / Defender DeviceProcessEvents).",
-    "network_connection": "Network-connection events (Sysmon Event ID 3 / Defender DeviceNetworkEvents).",
+    "network_connection": ("Network events carrying the destination hostname and initiating process, for example "
+                           "Defender DeviceNetworkEvents.RemoteUrl and InitiatingProcessFileName. Sysmon Event ID 3 "
+                           "alone does not guarantee a destination hostname."),
+    "image_load": ("Windows DLL load events with both process and loaded module, for example Sysmon Event ID 7 "
+                   "or Defender DeviceImageLoadEvents. Check that image-load collection is enabled."),
     "mcp_audit": "MCP audit events with the predicate fields.",
 }
 UNVERIFIED_DESCRIPTION = ("Unverified: proposed from a cited source paragraph; analyst source verification and "

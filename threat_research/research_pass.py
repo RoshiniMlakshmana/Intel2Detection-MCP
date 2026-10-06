@@ -47,7 +47,7 @@ NO_SOURCE_RETRY = timedelta(hours=12)
 # Bump when previously stored source text needs re-analysis by a newer extractor.
 # A deep batch revisits eligible backlog leads once, without continually fetching
 # a source that is already awaiting the analyst's verification.
-EXTRACTION_VERSION = 3
+EXTRACTION_VERSION = 4
 KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
@@ -535,13 +535,18 @@ def due_leads(path: Path | None = None, limit=MAX_LEADS):
     with store.connection(path) as db:
         rows = db.execute(f"""
             SELECT t.id FROM threats t LEFT JOIN research_outcomes ro ON ro.threat_id=t.id
-            WHERE {NO_OBSERVATION_SQL} AND {BACKLOG_SQL}
-              AND (ro.threat_id IS NULL
-                   OR (ro.status!='completed_insufficient_detail' AND
-                       COALESCE(json_extract(ro.detail,'$.extraction_version'),0)<:version)
-                   OR (ro.status='no_readable_source' AND ro.completed_at<=:retry)
-                   OR EXISTS(SELECT 1 FROM report_cves rc JOIN threats r ON r.id=rc.report_id
-                             WHERE rc.cve_id=t.id AND r.first_seen>ro.completed_at))
+            WHERE {NO_OBSERVATION_SQL} AND
+              (({BACKLOG_SQL} AND
+                (ro.threat_id IS NULL
+                 OR (ro.status!='completed_insufficient_detail' AND
+                     COALESCE(json_extract(ro.detail,'$.extraction_version'),0)<:version)
+                 OR (ro.status='no_readable_source' AND ro.completed_at<=:retry)
+                 OR EXISTS(SELECT 1 FROM report_cves rc JOIN threats r ON r.id=rc.report_id
+                           WHERE rc.cve_id=t.id AND r.first_seen>ro.completed_at)))
+               OR (ro.status='completed_insufficient_detail' AND
+                   COALESCE(json_extract(ro.detail,'$.extraction_version'),0)<:version AND
+                   EXISTS(SELECT 1 FROM research_page_inspections p WHERE p.threat_id=t.id
+                          AND p.status='inspected')))
             ORDER BY (t.kind='advisory' AND t.kev=1) DESC,
                      EXISTS(SELECT 1 FROM article_behavior_leads l WHERE l.threat_id=t.id) DESC,
                      COALESCE(t.published,t.first_seen) DESC, t.id

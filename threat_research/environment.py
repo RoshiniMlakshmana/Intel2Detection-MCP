@@ -60,7 +60,7 @@ def validate_profile(profile):
     if not isinstance(telemetry, dict) or not telemetry:
         raise ValueError("provide at least one telemetry family")
     for family, config in telemetry.items():
-        if family not in ("process_creation", "network_connection", "file_event", "mcp_audit") or not isinstance(config, dict):
+        if family not in ("process_creation", "network_connection", "file_event", "image_load", "mcp_audit") or not isinstance(config, dict):
             raise ValueError("unsupported telemetry family")
         if profile["siem"] == "generic":
             mapping = config.get("field_map")
@@ -85,7 +85,8 @@ def validate_profile(profile):
                     raise ValueError(f"{family}: Splunk {key} is required")
         else:
             expected = {"process_creation": "DeviceProcessEvents", "network_connection": "DeviceNetworkEvents",
-                        "file_event": "DeviceFileEvents", "mcp_audit": "MCPAudit_CL"}[family]
+                        "file_event": "DeviceFileEvents", "image_load": "DeviceImageLoadEvents",
+                        "mcp_audit": "MCPAudit_CL"}[family]
             if config.get("table") != expected:
                 raise ValueError(f"{family}: current KQL template requires the {expected} table")
     if "splunk_url" in profile:

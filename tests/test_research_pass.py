@@ -364,6 +364,24 @@ class CompletedInsufficientDetailTest(Base):
         self.report("REPORT-FICTNEW00001", FORTINET, cves=(CVE,))
         self.assertIn(CVE, research_pass.due_leads(self.path))
 
+    def test_completed_readable_report_is_revisited_once_for_new_extractor(self):
+        ident = "REPORT-FICTOLDER001"
+        self.report(ident, FORTINET, cves=())
+        first = research_pass.research_lead(ident, self.path, fetch=Fetcher({FORTINET: page(
+            "The fictional team published an overview with no measurable behavior or file artifacts.")}))
+        self.assertEqual(first["status"], "completed_insufficient_detail")
+        with store.connection(self.path) as db:
+            old = json.loads(db.execute("SELECT detail FROM research_outcomes WHERE threat_id=?",
+                                        (ident,)).fetchone()[0])
+            old["extraction_version"] = research_pass.EXTRACTION_VERSION - 1
+            db.execute("UPDATE research_outcomes SET detail=? WHERE threat_id=?", (json.dumps(old), ident))
+        self.assertIn(ident, research_pass.due_leads(self.path))
+        second = research_pass.run_pass(self.path, max_leads_=20, max_fetches=120,
+                                        fetch=Fetcher({FORTINET: page(
+                                            "The fictional team published an overview with no measurable behavior or file artifacts.")}))
+        self.assertEqual((second["leads_researched"], second["pages_fetched"]), (1, 1))
+        self.assertNotIn(ident, research_pass.due_leads(self.path))
+
     def test_research_detection_plan_runs_research_itself(self):
         with patch.dict("os.environ", {"THREAT_RESEARCH_DB": str(self.path)}):
             with store.connection(self.path) as db:

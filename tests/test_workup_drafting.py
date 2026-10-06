@@ -59,6 +59,68 @@ class Base(unittest.TestCase):
 
 
 class AutomaticProposalTest(Base):
+    def test_distinct_cited_behaviors_create_review_only_drafts(self):
+        ident = "REPORT-FICTBEHAVIORS01"
+        core.ingest([{"id": ident, "title": "Fictional intrusion analysis", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = ("<html><body><article>"
+                "<p>The attacker used Poedit.exe to load WinSparkle.dll through DLL sideloading.</p>"
+                "<p>The malware implant.exe connected to the C2 domain c2.fictional.example over HTTPS.</p>"
+                "</article></body></html>").encode()
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 2)
+        self.assertEqual(result["results"][0]["rule_proposals"]["gaps"], [])
+        proposal_ids = [p["rule_id"] for p in result["results"][0]["rule_proposals"]["proposals"]]
+        drafted = [rules.get_rule(rule_id, self.path) for rule_id in proposal_ids]
+        self.assertEqual({r["custom_spec"]["event_family"] for r in drafted},
+                         {"image_load", "network_connection"})
+        workup_patterns = workup.lead_workup(ident, self.path)["pattern_analysis"]["patterns"]
+        self.assertEqual({p["draftable"]["suggested_spec"]["event_family"] for p in workup_patterns
+                          if p["draftable"]["suggested_spec"]},
+                         {"image_load", "network_connection"})
+        self.assertTrue(all(r["status"] == "draft" for r in drafted))
+        self.assertTrue(all("YOUR_EVENT_TABLE" in r["kql"] and "YOUR_INDEX" in r["spl"] for r in drafted))
+        self.assertTrue(all(drafting.source_link(r["id"], self.path)["status"] == "unverified" for r in drafted))
+        with store.connection(self.path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
+                             .fetchone()[0], 0)
+        again = proposal_pass.propose_from_stored(ident, self.path)
+        self.assertEqual({p["status"] for p in again["proposals"]}, {"existing_coverage"})
+        image = next(r for r in drafted if r["custom_spec"]["event_family"] == "image_load")
+        self.assertIn('"ImageLoaded|endswith": "WinSparkle.dll"', image["sigma"])
+        profile = {"name": "Fixture Defender", "siem": "defender", "telemetry": {
+            "image_load": {"table": "DeviceImageLoadEvents",
+                           "fields": ["InitiatingProcessFileName", "FileName"]}}}
+        environment.onboard(profile, [{"asset_id": "fixture-1", "hostname": "fixture-1",
+                                      "product": "Fixture", "version": "1", "confirmed_cves": [],
+                                      "internet_exposed": False, "criticality": "low",
+                                      "asset_role": "general"}], self.path)
+        self.assertIn("DeviceImageLoadEvents", drafting.query_status(image["id"], self.path)["mapped_query"])
+        sample = {"event_id": "fictional-1", "timestamp": "2099-01-01T00:00:00Z", "event_type": "image_load",
+                  "Image": "C:\\Program Files\\Poedit\\Poedit.exe", "ImageLoaded": "C:\\Temp\\WinSparkle.dll"}
+        self.assertEqual(len(soc_replay.detect(sample, soc_replay.local_rules(self.path, include_drafts=True))), 1)
+
+    def test_vague_or_unrelated_behavior_does_not_become_a_rule(self):
+        ident = "REPORT-FICTVAGUE0001"
+        core.ingest([{"id": ident, "title": "Fictional intrusion analysis", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = ("<html><body><article>"
+                "<p>The malware uses DLL sideloading. Its C2 communicates over HTTPS.</p>"
+                "<p>The attacker discussed DLL sideloading. A legitimate Poedit.exe loaded WinSparkle.dll.</p>"
+                "<p>The malware uses a C2 domain. A legitimate updater.exe connected to example.org.</p>"
+                "</article></body></html>").encode()
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: html)
+        self.assertEqual(result["drafts_created"], 0)
+        self.assertEqual(workflow.list_rules(self.path)["total"], 0)
+
+    def test_later_behavior_paragraphs_are_not_lost_after_first_of_each_kind(self):
+        from threat_research import behavior_leads
+        paragraphs = [f"The attacker used App{i}.exe to load Evil{i}.dll through DLL sideloading."
+                      for i in range(12)]
+        found = behavior_leads.behavior_patterns(paragraphs)
+        self.assertEqual(len(found), 12)
+        self.assertEqual(found[-1]["paragraph"], 12)
+
     def test_one_refused_candidate_does_not_hide_other_patterns(self):
         cited = {"source_url": FRESH_URL, "quoted_paragraph": f"The attacker used malicious loader FictLoader.dll SHA-256 {HASH}.",
                  "quote_is_full_text": True, "draftable": {"suggested_spec": SPEC}}
