@@ -59,6 +59,83 @@ class Base(unittest.TestCase):
 
 
 class AutomaticProposalTest(Base):
+    def test_reported_sideloads_and_linux_reverse_shell_create_distinct_unverified_drafts(self):
+        cases = [
+            ("REPORT-FICTTALOS0001", FRESH_URL,
+             "TestAssembly.dll is a downloader that launches signed GatherOsState.exe, "
+             "which sideloads slc.dll, the Antino backdoor placed beside the host executable.",
+             "image_load", "windows", "slc.dll"),
+            ("REPORT-FICTZIMBRA001", REPORT_URL,
+             "The attacker established a reverse shell with a named pipe at /tmp/s to connect "
+             "an interactive /bin/sh session to openssl s_client.", "process_creation", "linux", "s_client"),
+        ]
+        for ident, url, paragraph, family, platform, value in cases:
+            with self.subTest(ident=ident):
+                core.ingest([{"id": ident, "title": "Fictional incident analysis", "kind": "campaign",
+                              "summary": "fixture", "source": url, "claim": "publisher report"}], self.path)
+                html = f"<html><body><article><p>{paragraph}</p></article></body></html>".encode()
+                result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda _: html)
+                self.assertEqual(result["drafts_created"], 1)
+                proposed = result["results"][0]["rule_proposals"]["proposals"][0]
+                rule = rules.get_rule(proposed["rule_id"], self.path)
+                self.assertEqual(rule["custom_spec"]["event_family"], family)
+                self.assertEqual(rule["custom_spec"]["platform"], platform)
+                self.assertIn(f"product: {platform}", rule["sigma"])
+                self.assertIn(value, rule["sigma"])
+                self.assertIn("YOUR_EVENT_TABLE", rule["kql"])
+                self.assertIn("YOUR_INDEX", rule["spl"])
+                if platform == "linux":
+                    self.assertIn('match(lower(CommandLine),"s_client")', rule["spl"])
+                    self.assertIn('contains \'s_client\'', rule["kql"])
+                    self.assertIn("TLS diagnostics", rule["sigma"])
+                self.assertEqual(drafting.source_link(rule["id"], self.path)["status"], "unverified")
+                self.assertIn(value, workup.pattern_analysis(ident, self.path)["patterns"][0]
+                              ["quoted_paragraph"])
+                again = proposal_pass.propose_from_stored(ident, self.path)
+                self.assertEqual(again["proposals"][0]["status"], "existing_coverage")
+        with store.connection(self.path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
+                             .fetchone()[0], 0)
+
+    def test_reverse_shell_without_pipe_or_sideload_only_in_unrelated_sentence_does_not_draft(self):
+        paragraphs = [
+            "The actor discussed DLL sideloading. A legitimate Poedit.exe loaded WinSparkle.dll.",
+            "An analyst used openssl s_client to inspect a TLS endpoint; the report also mentions reverse shell techniques.",
+            "The malicious sample is called slc.dll and includes no process relationship.",
+        ]
+        ident = "REPORT-FICTNEGATIVE1"
+        core.ingest([{"id": ident, "title": "Fictional negative cases", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = "<html><body><article>" + "".join(f"<p>{p}</p>" for p in paragraphs) + "</article></body></html>"
+        result = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda _: html.encode())
+        self.assertEqual(result["drafts_created"], 0)
+        self.assertEqual(proposal_pass.propose_from_stored(ident, self.path)["proposals"], [])
+
+    def test_linux_candidate_replay_exposes_benign_tls_false_positive_and_missing_telemetry(self):
+        ident = "REPORT-FICTLINUXREPLAY"
+        core.ingest([{"id": ident, "title": "Fictional Linux intrusion", "kind": "campaign",
+                      "summary": "fixture", "source": REPORT_URL, "claim": "publisher report"}], self.path)
+        quote = ("The attacker used a reverse shell: a named pipe at /tmp/s connected the "
+                 "interactive /bin/sh to openssl s_client on the compromised server.")
+        html = f"<html><body><article><p>{quote}</p></article></body></html>".encode()
+        run = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda _: html)
+        self.assertEqual(run["drafts_created"], 1)
+        rule_id = run["results"][0]["rule_proposals"]["proposals"][0]["rule_id"]
+        rule = next(r for r in soc_replay.local_rules(self.path, include_drafts=True) if r["id"] == rule_id)
+        raw = [
+            ("malicious-client", "openssl", "openssl s_client -connect bad.example:443", True),
+            ("benign-diagnostic", "openssl", "openssl s_client -connect good.example:443", False),
+            ("missing-command", "openssl", "", True),
+            ("other-process", "curl", "curl https://good.example", False),
+        ]
+        events = [{"event_id": name, "timestamp": "2099-01-01T00:00:00Z",
+                   "event_type": "process_creation", "Image": image, "CommandLine": command,
+                   "expected_malicious": label, "scenario": "fictional test event"}
+                  for name, image, command, label in raw]
+        self.assertEqual(soc_replay.replay(events, [rule])["counts"],
+                         {"tp": 1, "fp": 1, "fn": 1, "tn": 1})
+        self.assertEqual(rules.get_rule(rule_id, self.path)["status"], "draft")
+
     def test_distinct_cited_behaviors_create_review_only_drafts(self):
         ident = "REPORT-FICTBEHAVIORS01"
         core.ingest([{"id": ident, "title": "Fictional intrusion analysis", "kind": "campaign",

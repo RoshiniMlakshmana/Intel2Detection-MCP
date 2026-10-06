@@ -38,10 +38,12 @@ def validate_spec(spec):
     """Permit a small auditable AND of literal comparisons; no query fragments."""
     if not isinstance(spec, dict) or spec.get("event_family") not in FAMILIES:
         raise ValueError("spec needs process_creation, network_connection, file_event, image_load, or mcp_audit event_family")
-    if spec.get("platform") not in ("windows", "mcp"):
-        raise ValueError("platform must be windows or mcp")
+    if spec.get("platform") not in ("windows", "linux", "mcp"):
+        raise ValueError("platform must be windows, linux or mcp")
     if (spec["event_family"] == "mcp_audit") != (spec["platform"] == "mcp"):
-        raise ValueError("MCP audit needs mcp platform; endpoint telemetry needs windows")
+        raise ValueError("MCP audit needs mcp platform; endpoint telemetry needs windows or linux")
+    if spec["platform"] == "linux" and spec["event_family"] != "process_creation":
+        raise ValueError("Linux drafts currently support process_creation only")
     predicates = spec.get("predicates")
     if not isinstance(predicates, list) or not 2 <= len(predicates) <= 8:
         raise ValueError("provide 2-8 concrete AND predicates")
@@ -53,7 +55,7 @@ def validate_spec(spec):
         if (not isinstance(field, str) or not FIELD.fullmatch(field) or op not in OPERATORS
                 or not isinstance(value, str) or not VALUE.fullmatch(value) or value != value.strip()):
             raise ValueError("field/operator/value must be bounded literal comparisons, never query syntax")
-        if op != "equals" and ("_" in value or "\\" in value):
+        if op != "equals" and "\\" in value:
             raise ValueError("substring values cannot contain wildcard or backslash characters")
         key = (field, op, value.casefold())
         if key in seen:
@@ -93,7 +95,7 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
     kind = spec["event_family"]
     category = {"process_creation": "process_creation", "network_connection": "network_connection",
                 "file_event": "file_event", "image_load": "image_load", "mcp_audit": "application"}[kind]
-    product = "mcp_audit" if kind == "mcp_audit" else "windows"
+    product = "mcp_audit" if kind == "mcp_audit" else spec["platform"]
     lines = [f"title: {json.dumps(title)}", f"id: {uuid.uuid5(uuid.NAMESPACE_URL, fingerprint(spec))}",
              "status: experimental",
              ("description: " + json.dumps(description) if description != DEFAULT_DESCRIPTION else
@@ -191,11 +193,15 @@ def _query(spec, config, siem):
     if missing:
         return None, sorted(set(missing))
     if siem == "splunk":
-        # Backslash and wildcard are excluded for substring values by validation.
+        # LIKE treats underscore as a one-character wildcard. A literal
+        # underscore instead uses match() with an escaped regex.
         conditions = []
         for field, op, value in resolved:
             if op == "equals":
                 conditions.append(f'lower({field})={json.dumps(value)}')
+            elif "_" in value:
+                regex = re.escape(value) + ("$" if op == "endswith" else "")
+                conditions.append(f'match(lower({field}),{json.dumps(regex)})')
             else:
                 pattern = "%" + value + ("%" if op == "contains" else "")
                 conditions.append(f'like(lower({field}),{json.dumps(pattern)})')
