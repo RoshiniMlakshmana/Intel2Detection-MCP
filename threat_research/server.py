@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import browser_research, core, corroboration, custom_rules, dashboard_data, digest, drafting, environment, frameworks, lead_queue, live_validation, poller, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow, workup
+from . import browser_research, core, corroboration, custom_rules, dashboard_data, digest, drafting, environment, frameworks, lead_queue, live_validation, poller, proposal_pass, report_inspection, research_pass, rule_repository, rules, soc_lab, soc_replay, workflow, workup
 
 mcp = MCPServer("ThreatResearch")
 
@@ -64,7 +64,7 @@ def polling_status() -> dict:
 
 @mcp.tool()
 def list_sources() -> dict:
-    """List every configured source with its latest fetch status and time, last successful refresh, latest publication date, record count and current error."""
+    """Audit each source: stored lead count, research attempts, readable cited pages, cited pattern/artifact leads, draft-rule leads, fetch health and errors. These are distinct stages, not promises of a rule for every feed item."""
     return dashboard_data.sources_overview()
 
 
@@ -113,6 +113,12 @@ def research_lead(threat_id: str, refresh: bool = False) -> dict:
 def research_and_propose_detection(threat_id: str) -> dict:
     """Read cited pages for one lead, then propose only a bounded unverified detection grounded in a full stored paragraph. Return explicit gaps for insufficient behavior/telemetry. Nothing is analyst-verified, approved, deployed or scored for local risk."""
     return research_pass.run_pass(threat_ids=[threat_id], max_fetches=14)
+
+
+@mcp.tool()
+def propose_stored_drafts(limit: int = 20, after_id: str = "") -> dict:
+    """Review already researched leads, proposing only bounded unverified drafts from inspected paragraphs without refetching sources. Batch size 1-40. Pass next_cursor as after_id to continue. Each result names cited draft IDs or exact gaps. Repeating a batch deduplicates. No source verification, approval, deployment or local risk score."""
+    return _refused_as_data(proposal_pass.propose_stored_batch, None, limit, after_id)
 
 
 @mcp.tool()

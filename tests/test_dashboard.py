@@ -48,6 +48,60 @@ class DashboardDataTest(unittest.TestCase):
         threats = dashboard_data.threats_for_source("CISA KEV", self.path)
         self.assertEqual(threats[0]["id"], "CVE-2099-70001")
 
+    def test_source_card_distinguishes_collected_from_researched_and_drafted(self):
+        with patch.object(sources, "enrich_epss", return_value={}):
+            poller.run_poll(self.path, adapters={"CISA KEV": lambda: [fictional_record()]})
+        before = next(c for c in dashboard_data.sources_overview(self.path)["sources"]
+                      if c["name"] == "CISA KEV")
+        self.assertEqual(before["record_count"], 1)
+        self.assertEqual(before["research_counts"], {
+            "research_attempted": 0, "readable_page_leads": 0,
+            "blocked_page_leads": 0, "unreadable_page_leads": 0, "not_allowlisted_leads": 0,
+            "pattern_or_artifact_leads": 0, "draft_leads": 0})
+        with store.connection(self.path) as db:
+            db.execute("INSERT INTO research_outcomes(threat_id,status,completed_at,detail) VALUES(?,?,?,?)",
+                       ("CVE-2099-70001", "observables_need_analyst_verification", "2099-01-02",
+                        json.dumps({"specific_details_to_verify": [{"excerpt": "fictional hash"}]})))
+            db.execute("INSERT INTO research_page_inspections"
+                       "(threat_id,url,role,status,paragraphs_scanned,inspected_at) VALUES(?,?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/report", "primary_advisory",
+                        "inspected", 3, "2099-01-02"))
+            db.execute("INSERT INTO research_page_inspections"
+                       "(threat_id,url,role,status,inspected_at) VALUES(?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/blocked", "cited_report",
+                        "publisher_blocked", "2099-01-02"))
+        evidence_id = core.add_behavior_evidence("CVE-2099-70001", "https://example.test/report",
+                                                  "Fictional web server launched cmd.exe", "web_server_shell", self.path)
+        rules.propose_rule("CVE-2099-70001", evidence_id, self.path)
+        after = next(c for c in dashboard_data.sources_overview(self.path)["sources"]
+                     if c["name"] == "CISA KEV")
+        self.assertEqual(after["research_counts"], {
+            "research_attempted": 1, "readable_page_leads": 1,
+            "blocked_page_leads": 1, "unreadable_page_leads": 0, "not_allowlisted_leads": 0,
+            "pattern_or_artifact_leads": 1, "draft_leads": 1})
+        page = dashboard.render_sources(self.path)
+        self.assertIn("Research attempted", page)
+        self.assertIn("Cited pattern or artifact", page)
+
+    def test_source_counts_article_review_before_research_pass(self):
+        with patch.object(sources, "enrich_epss", return_value={}):
+            poller.run_poll(self.path, adapters={"CISA KEV": lambda: [fictional_record()]})
+        with store.connection(self.path) as db:
+            db.execute("INSERT INTO article_inspection_queue"
+                       "(threat_id,source_url,status,attempts,next_try) VALUES(?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/report", "inspected", 1, "2099-01-02"))
+            db.execute("INSERT INTO article_behavior_leads"
+                       "(threat_id,source_url,sha256,behavior,paragraph,excerpt,first_seen)"
+                       " VALUES(?,?,?,?,?,?,?)",
+                       ("CVE-2099-70001", "https://example.test/report", "example", "specific_artifacts",
+                        1, "Fictional artifact", "2099-01-02"))
+        card = next(c for c in dashboard_data.sources_overview(self.path)["sources"]
+                    if c["name"] == "CISA KEV")
+        self.assertEqual(card["research_counts"]["research_attempted"], 1)
+        self.assertEqual(card["research_counts"]["readable_page_leads"], 1)
+        self.assertEqual(card["research_counts"]["pattern_or_artifact_leads"], 1)
+        self.assertEqual(card["research_counts"]["draft_leads"], 0)
+
     def test_source_card_shows_collection_error(self):
         def fail():
             raise ValueError("example source unavailable")
@@ -360,6 +414,7 @@ class DashboardHttpTest(unittest.TestCase):
         self.assertIn('href="/attention"', home)
         _, rules_page = self._get("/rules?state=draft")
         self.assertIn('Live validation and risk:', rules_page)
+        self.assertIn('Stored research has not yet had an automatic draft review', rules_page)
         self.assertIn('Not connected.', rules_page)
         _, detail = self._get("/threat?id=CVE-2099-70001&from=rules")
         self.assertIn('href="/rules?state=draft" style="color:var(--text);font-weight:700"', detail)

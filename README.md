@@ -76,7 +76,7 @@ Full setup, the analyst dashboard, and keeping a poller + daily digest running o
 | Draft rules / Approved rules (expand Sigma/KQL/SPL on each row) | `list_rules(state='draft' \| 'approved')` |
 | Pending reviews | `pending_corroboration_reviews()` |
 | Source errors | `source_errors()` (latest fetch status per source, partial fetches, blocked articles) |
-| Sources (exact source/type/status dropdowns and last poll summary) | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
+| Sources (exact source/type/status dropdowns, last poll summary, and per-source counts for researched leads, readable cited pages, patterns/artifacts and drafts) | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
 | Tab counts | `workflow_counts()` |
 | Lead detail progression | `lead_progression(threat_id)`: research needed → cited evidence → required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL → labeled checks → analyst decision → rule repository, naming the missing input at each blocked step |
 
@@ -97,7 +97,7 @@ Every page is recorded with its outcome and time. Publisher blocks and script-re
 - `observables_need_analyst_verification`: untrusted text an analyst must verify. Specific artifacts quoted by secondary reports are listed verbatim for checking against the original publication.
 - `no_readable_source`: the lead stays in the backlog with the URLs to open in a browser.
 
-The pass never records evidence, drafts or approves a rule.
+The pass may propose an unverified draft from a bounded cited pattern. It never verifies the source, approves a rule, or claims a local sighting. Each real poll reviews 20 older researched leads from a durable cursor without fetching pages again. For a faster manual backfill, use `propose_stored_drafts(limit=20)` and repeat with its returned cursor. Each result names drafts and gaps for analyst review.
 
 `deep_research_batch(max_leads=20, max_fetches=120)` raises the **on-demand** research budget while retaining the per-lead page limit and source allowlist. Repeat it as the backlog warrants. Its `selection` shows which backlog leads are due, which await analyst verification, and which unreadable pages are in the 12-hour retry cooldown; `no_work_reason` explains a zero-page result. A concurrent poll does not block it. Previously stored backlog research is reread once when the source-text extractor changes, so a newly supported publisher hunt can be found. Collection covers the configured source feeds, but a feed item is only a lead: reading its linked full article is a separate research step. Research from an unreadable or outside-allowlist page is never counted as completed. Publisher-authored KQL/SPL blocks from readable articles appear in `lead_workup().research.publisher_hunting_queries` with their URL and hash, labelled **unverified publisher hunts**; they are neither generated rules nor validated SIEM queries.
 

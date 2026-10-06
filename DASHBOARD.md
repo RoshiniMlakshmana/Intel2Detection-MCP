@@ -4,16 +4,18 @@
 
 The four main tabs are **Sources → Threat intel → Rules → Needs attention**.
 
-1. **Sources:** choose one of the configured feeds or repositories; **Collect now** starts a background refresh. The last collection time, new-lead count, and fetch errors remain visible while you browse.
+1. **Sources:** choose one of the configured feeds or repositories; **Collect now** starts a background refresh. Each source has a **Research and rules for these leads** disclosure showing how many stored leads were researched, had a readable cited page, yielded a cited pattern or artifact, and have a draft rule. These are lead counts, so a CVE may link to a page hosted elsewhere. The last collection time, new-lead count, and fetch errors remain visible while you browse.
 2. **Threat intel:** filter collected leads by source and open one to read the publisher's quoted pattern, why it may be malicious, and any rule proposal. The extra date and internal queue filters are under **More filters**.
 3. **Rules:** draft, approved, and rejected local rules with Sigma, generic KQL/SPL, testing state, and links back to source evidence. Approval saves locally and does not deploy to a SIEM. Asset, telemetry, and existing-rule inventory connections are shown as unavailable until actually configured.
 4. **Needs attention:** fetch errors, publisher blocks, leads needing research, and pending corroboration reviews. The older detailed queue and error URLs still work from links here.
 
-Research automatically follows a bounded number of directly linked original technical publications on configured hosts. The batch can propose an **unverified** draft when one full inspected paragraph identifies either a malicious file by SHA-256 and filename or an explicit Windows web-server process spawning a named shell process. The lead's **Check cited patterns for a draft** button repeats this review against stored paragraphs without fetching anything. It never treats a headline, CVE description, filename alone, or a publisher hunting query as a tested rule. When the source lacks bounded fields, the gap stays under Needs attention. A blocked publisher page needs an explicit browser capture and source citation.
+Research automatically follows a bounded number of directly linked original technical publications on configured hosts. The batch can propose an **unverified** draft when one full inspected paragraph contains a supported bounded pattern. The lead's **Check cited patterns for a draft** button repeats this review against stored paragraphs without fetching anything. It never treats a headline, CVE description, filename alone, or a publisher hunting query as a tested rule. When the source lacks bounded fields, the gap remains visible for analyst review. A blocked publisher page needs an explicit browser capture and source citation.
 
 NVD retrieval uses smaller pages and halves a page on an oversized response. It retries the same index, preserves completed records and checkpoints, and shows a partial fetch if the run budget is exhausted.
 
 To test one lead with Claude: `Use threat-research research_and_propose_detection("REPORT-ID"). Show the pages read, quoted behavior, draft Sigma/KQL/SPL or the exact blocker. Then show lead_workup("REPORT-ID"). Do not verify, approve, score local risk, or deploy.`
+
+Each real collection also reviews 20 older researched leads from a persistent cursor and shows the last batch's counts on **Rules**. To review those stored leads faster, call `propose_stored_drafts(limit=20)` through Claude and repeat with the returned cursor. It uses stored paragraphs without fetching new pages, reports per-lead draft and gap counts, and does not verify, approve, or deploy.
 
 A local, read-and-annotate web dashboard over the same SQLite store the MCP
 tools and CLI already use. It is a **pure Python standard-library** HTTP

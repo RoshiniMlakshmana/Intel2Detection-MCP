@@ -169,6 +169,17 @@ def _source_card(card):
                  else f'<span class="name">{_e(card["name"])}</span>')
     fetched = (f'<div><span>Items fetched last attempt</span><span>{card["last_fetched_records"]}</span></div>'
                if card.get("last_fetched_records") is not None else "")
+    progress = card.get("research_counts")
+    research_html = (f'''<details><summary>Research and rules for these leads</summary><dl>
+<div><span>Research attempted</span><span>{progress["research_attempted"]}</span></div>
+<div><span>Readable cited page</span><span>{progress["readable_page_leads"]}</span></div>
+<div><span>Publisher blocked</span><span>{progress["blocked_page_leads"]}</span></div>
+<div><span>Unreadable or failed</span><span>{progress["unreadable_page_leads"]}</span></div>
+<div><span>Host not allowed</span><span>{progress["not_allowlisted_leads"]}</span></div>
+<div><span>Cited pattern or artifact</span><span>{progress["pattern_or_artifact_leads"]}</span></div>
+<div><span>Leads with draft rules</span><span>{progress["draft_leads"]}</span></div>
+</dl><small class="muted">Counts are leads attributed to this source. A cited page may be hosted elsewhere.
+Drafts still need analyst review.</small></details>''' if progress else "")
     return f"""<div class="card" data-status="{card['status']}" data-category="{_e(card['category'])}">
 <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
 {name_html}<span class="badge {card['status']}">{card['status'].replace('_',' ')}</span></div>
@@ -179,7 +190,7 @@ def _source_card(card):
 <div><span>Last successful refresh</span><span>{_fmt(card['last_success'])}</span></div>
 <div><span>Latest publication</span><span>{_fmt(card['latest_publication'])}</span></div>
 <div><span>Record count</span><span>{card['record_count'] if card['record_count'] is not None else '—'}</span></div>
-</dl>{error_html}</div>"""
+</dl>{research_html}{error_html}</div>"""
 
 
 def render_sources(path=None, qs=None):
@@ -267,7 +278,8 @@ GitHub detection entries are links to community work, not local rules. Refresh e
 <div class="panel">{last_poll}{draft_link}<p><a href="/attention">Collection and research problems</a></p></div>
 {collection_html}{stale_html}{filters}
 <p class="lede">Showing {len(cards)} of {len(data["sources"])} source and status cards. A stored count is the total
-distinct leads from that source; items fetched on the last attempt can include leads already stored.</p>
+distinct leads from that source; items fetched on the last attempt can include leads already stored.
+Open "Research and rules" on a source to see how far its leads went.</p>
 <div class="grid">{''.join(_source_card(c) for c in cards) or '<p>No sources match these filters.</p>'}</div>
 {_mcp_hint("list_sources()", "source_errors()", "polling_status()")}"""
     return _page("Sources", body, active="/", flash=_flash_from_query(qs), path=path)
@@ -444,6 +456,16 @@ def render_rules(path=None, qs=None):
                    for s in ("draft", "approved", "rejected"))
     title = {"draft": "Draft rules", "approved": "Approved rules", "rejected": "Rejected rules"}[state]
     env = environment.status(path)
+    last_poll = poller.poll_status(path)["last_result"] or {}
+    backfill = (last_poll.get("research_pass") or {}).get("stored_draft_backfill") or {}
+    if backfill.get("error"):
+        backfill_html = f'<p>Last automatic stored-research review failed: {_e(backfill["error"])}</p>'
+    elif "leads_processed" in backfill:
+        backfill_html = (f'<p>Last automatic review: {backfill["leads_processed"]} researched leads checked, '
+                         f'{backfill["drafts_created"]} new unverified drafts, {backfill["gaps_total"]} gaps; '
+                         f'{backfill["remaining_researched_leads"]} older researched leads remain in this pass.</p>')
+    else:
+        backfill_html = '<p>Stored research has not yet had an automatic draft review on this installation.</p>'
     inventory_scope = rules.inventory_declaration_status(path)
     env_text = (f'Connected: {_e(env["siem"])}; {env["assets"]} assets on file.' if env["configured"] else
                 'Not connected. Configure telemetry and assets to compare coverage, test in a SIEM, and score environment risk.')
@@ -455,6 +477,7 @@ def render_rules(path=None, qs=None):
     body = f"""<h1>{title}</h1>
 <p class="lede">Drafts are suggestions to check. Approval saves a rule locally; it does not deploy it.</p>
 <div class="tags">{tabs}</div>
+<div class="panel">{backfill_html}<small class="muted">Each collection checks up to 20 stored research leads for source-backed rules. Open a lead to see why a pattern was skipped.</small></div>
 <div class="panel"><b>Live validation and risk:</b> {env_text}<br><small class="muted">{inventory_note}</small></div>
 {_pager("/rules", {"state": state}, result)}
 <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Lead</th><th>Behavior</th><th>Pattern score</th>

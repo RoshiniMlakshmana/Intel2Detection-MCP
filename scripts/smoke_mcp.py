@@ -27,7 +27,7 @@ async def main():
                         "research_detection_plan", "draft_custom_detection", "search_framework_techniques",
                         "list_sources", "list_leads", "lead_progression", "workflow_counts", "list_rules",
                         "source_errors", "run_research_pass", "research_lead", "lead_workup", "triage_raw_leads",
-                        "triage_status", "propose_detection_from_paragraph", "verify_draft_source",
+                        "triage_status", "propose_stored_drafts", "propose_detection_from_paragraph", "verify_draft_source",
                         "record_local_event_context", "record_manual_source_review"} <= names
                 result = await session.call_tool("evaluate_synthetic_soc_lab", {})
                 assert not result.is_error
@@ -40,6 +40,9 @@ async def main():
                     response = await session.call_tool(name, arguments)
                     assert not response.is_error, (name, response.content)
                     return json.loads(response.content[0].text)
+
+                stored = await call("propose_stored_drafts", {"limit": 1})
+                assert stored["leads_processed"] == 0 and stored["next_cursor"] is None, stored
 
                 registered = await call("register_campaign_report", {
                     "title": "Fictional campaign for MCP smoke validation",

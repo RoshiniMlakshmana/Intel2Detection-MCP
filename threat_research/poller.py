@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, digest, lead_queue, research_pass, store
+from . import __version__, digest, lead_queue, proposal_pass, research_pass, store
 from .core import collect_daily, now
 
 
@@ -173,6 +173,13 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
                                           "untriaged_remaining": triage["untriaged_remaining"]}
             except (OSError, ValueError) as exc:
                 research["raw_triage"] = {"error": str(exc)[:200]}
+            # Work through older research already in SQLite without another
+            # publisher fetch. The durable cursor resumes on the next poll;
+            # each draft remains unverified and later batches deduplicate.
+            try:
+                research["stored_draft_backfill"] = proposal_pass.advance_stored_backfill(path, limit=20)
+            except (OSError, ValueError) as exc:
+                research["stored_draft_backfill"] = {"error": str(exc)[:200]}
         framework_update = None
         if adapters is None:
             from . import frameworks
