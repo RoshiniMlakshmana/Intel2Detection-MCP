@@ -11,7 +11,7 @@ import json
 import os
 
 from . import environment, frameworks, lead_queue, poller, repo_updates, research_feeds, rules, store
-from .core import backfill_source_names, get_threat, now, research_view
+from .core import backfill_source_names, get_threat, now, research_view, stored_source_counts
 
 
 def source_catalog():
@@ -94,9 +94,7 @@ def sources_overview(path: Path | None = None):
     source_errors = last_result.get("source_errors", {})
     with store.connection(path) as db:
         rows = {r["name"]: dict(r) for r in db.execute("SELECT * FROM source_state")}
-        counts = {r["source_name"]: r["n"] for r in db.execute(
-            "SELECT source_name, COUNT(DISTINCT threat_id) AS n FROM evidence "
-            "WHERE kind='source_fact' AND source_name IS NOT NULL GROUP BY source_name")}
+        counts = stored_source_counts(db)
         latest_pub = {r["source_name"]: r["latest"] for r in db.execute(
             "SELECT e.source_name, MAX(t.published) AS latest FROM evidence e "
             "JOIN threats t ON t.id=e.threat_id WHERE e.kind='source_fact' AND e.source_name IS NOT NULL "
@@ -118,10 +116,13 @@ def sources_overview(path: Path | None = None):
             status, error = "disabled", "Publisher blocks most article fetches; use original technical reports."
         elif name == "ThreatFox C2" and not os.environ.get("THREATFOX_AUTH_KEY"):
             status, error = "not_configured", "Set THREATFOX_AUTH_KEY locally."
+        elif name.startswith(("RSS: ", "GitHub: ")) and status == "ok" and not counts.get(name, 0):
+            status, error = "empty_feed", poller.EMPTY_SOURCE_DETAIL
         cards.append({
             "name": name, "category": category,
             "last_success": row["last_success"] if row else None,
             "record_count": counts.get(name, 0),
+            "records_fetched_total": row["total_records"] if row else 0,
             "research_counts": research_counts.get(name, {
                 "research_attempted": 0, "readable_page_leads": 0,
                 "blocked_page_leads": 0, "unreadable_page_leads": 0, "not_allowlisted_leads": 0,

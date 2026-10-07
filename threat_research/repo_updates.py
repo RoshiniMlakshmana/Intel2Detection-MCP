@@ -91,6 +91,14 @@ def collect_catalog(repo, path, kind, since, until=None, database=None, source_n
     store.initialize(database)
     with store.connection(database) as db:
         state = db.execute("SELECT 1 FROM repo_bootstraps WHERE repo=?", (repo,)).fetchone()
+        if state and kind == "community_rule":
+            # A checkpoint is valid only while its indexed pointers still exist.
+            # Recover incomplete/restored databases instead of watching commits
+            # forever with an empty community index.
+            state = db.execute("SELECT 1 FROM evidence e JOIN threats t ON t.id=e.threat_id "
+                               "WHERE e.kind='source_fact' AND t.kind='community_rule' "
+                               "AND t.id GLOB 'RULEPTR-*' AND e.source_url LIKE ? LIMIT 1",
+                               ("https://github.com/" + repo + "/blob/%",)).fetchone()
     if kind != "community_rule" or state:
         records = collect_repo(repo, path, kind, since, until, fetch=fetch)
         if repo == "Azure/Azure-Sentinel":
@@ -130,7 +138,7 @@ def collect_catalog(repo, path, kind, since, until=None, database=None, source_n
                         "published": at, "updated": at, "affected": [],
                         "source": "https://github.com/" + repo + "/blob/" + sha + "/" + urllib.parse.quote(file, safe="/"),
                         "claim": "Community file pointer collected at snapshot time, not its publication date. No rule body was imported or validated.",
-                        "reported_by": source_name or ("GitHub: " + repo),
+                        "reported_by": source_name or next("GitHub: " + name for name, r, _, _ in REPOSITORIES if r == repo),
                         "bootstrap_repo": repo, "bootstrap_sha": sha})
     if not records:
         raise ValueError("community repository initial tree has no rules in configured folders")

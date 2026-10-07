@@ -80,6 +80,22 @@ retry; completed snapshots clear the cursor before advancing toward the current
 poll window. `GITHUB_TOKEN` is honored for advisory requests as well as repositories.
 An incomplete catch-up remains `partial`/`degraded`; it is never reported as complete.
 
+Version 0.12.2 repairs missing source labels on historical community `blob`/`commit`
+pointers and known repository-name aliases. Publisher host matching accepts the
+same host with or without `www`. Existing explicit source attribution is preserved.
+Health and `list_sources.record_count` now use the same durable source-fact count.
+A positive cumulative fetch counter with zero attributed stored facts reports
+`empty_feed`; `records_fetched_total` exposes that counter separately, including
+repeat fetches. A populated source returning zero new items remains healthy.
+Empty RSS sources retain the initial lookback regardless of old fetch counters.
+A community bootstrap checkpoint with no remaining stored rule pointers triggers
+a fresh initial index instead of silently switching to commit-only polling.
+
+Process drafting also binds a command from an immediately following sentence
+when that sentence explicitly names the same child process as its subject and
+states that it executed the command. Another process, negation, or an intervening
+process reference cannot supply that command predicate.
+
 New/unpopulated RSS sources start with a 365-day window. A source that has never
 produced a usable record reports `empty_feed`; an already populated source may
 legitimately return zero during a quiet poll. Empty feeds make the poll degraded.

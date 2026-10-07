@@ -39,6 +39,27 @@ class ExtractionFixes(Base):
         self.assertEqual(again['proposals'][0]['status'], 'existing_draft')
         self.assertEqual(again['gaps'], [])
 
+    def test_same_child_process_in_next_sentence_keeps_its_command_predicate(self):
+        html = (b'<html><article><p>The attacker used Hub.Agent.exe to launch PowerShell. '
+                b'The PowerShell process changed session settings and executed Invoke-WebRequest '
+                b'to fetch a malicious package.</p></article></html>')
+        ident = self.report(html=html)
+        result = proposal_pass.propose_from_stored(ident, self.path)
+        self.assertEqual(len(result['proposals']), 1, result)
+        spec = custom_rules.get_spec(result['proposals'][0]['rule_id'], self.path)
+        self.assertEqual({p['field']:p['value'] for p in spec['predicates']},
+                         {'ParentImage':'Hub.Agent.exe', 'Image':'PowerShell', 'CommandLine':'Invoke-WebRequest'})
+
+    def test_next_sentence_command_requires_the_same_explicit_child_subject(self):
+        for followup in ('The cmd.exe process executed Invoke-WebRequest.',
+                         'Another PowerShell process executed Invoke-WebRequest.',
+                         'The PowerShell process did not execute Invoke-WebRequest.',
+                         'The PowerShell process launched helper.exe which executed Invoke-WebRequest.'):
+            with self.subTest(followup=followup):
+                spec = proposal_pass._process_spec({'quoted_paragraph':
+                    'The attacker used Hub.Agent.exe to launch PowerShell. ' + followup})
+                self.assertFalse(any(p['field']=='CommandLine' for p in (spec or {}).get('predicates', [])))
+
     def test_linux_report_produces_process_draft(self):
         ident = self.report(html=b'<html><article><p>The attacker used nginx to launch bash with curl to download the malicious payload on Linux.</p></article></html>')
         result = proposal_pass.propose_from_stored(ident, self.path)
@@ -145,7 +166,8 @@ class CollectionFixes(Base):
         self.assertEqual(poller.poll_status(self.path)['interval_minutes'], empty['interval_minutes'])
         with store.connection(self.path) as db:
             self.assertEqual(db.execute('SELECT status FROM source_attempts').fetchone()[0], 'empty_feed')
-            db.execute('UPDATE source_state SET total_records=10')
+        core.ingest([{'id':'REPORT-FIXTURE', 'title':'Fictional report', 'source':'https://example.test/quiet',
+                      'reported_by':'RSS: Test feed'}], self.path)
         quiet = poller.run_poll(self.path, adapters={'RSS: Test feed': lambda: []}, notify=False)
         self.assertEqual(quiet['status'], 'collected')
         with store.connection(self.path) as db:

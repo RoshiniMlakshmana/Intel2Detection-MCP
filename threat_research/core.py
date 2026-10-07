@@ -56,8 +56,10 @@ def ingest(records, path: Path | None = None, return_new_ids=False):
                   json.dumps(sorted(affected)), json.dumps(sorted(refs)), record.get("kind", "advisory"),
                   record.get("indicator"), record.get("indicator_type"), record.get("confidence"),
                   record.get("expires_at")))
-            db.execute("""INSERT OR IGNORE INTO evidence
-                (threat_id,source_url,claim,kind,behavior,observed_at,source_name) VALUES (?,?,?,?,?,?,?)""",
+            db.execute("""INSERT INTO evidence
+                (threat_id,source_url,claim,kind,behavior,observed_at,source_name) VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(threat_id,source_url,claim,kind) DO UPDATE SET
+                    source_name=COALESCE(evidence.source_name,excluded.source_name)""",
                 (ident, record["source"], record.get("claim", "Source published a record."),
                  "source_fact", None, at, record.get("reported_by")))
             for ref in record.get("references", []):
@@ -136,8 +138,7 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
     if include_research:
         try:
             with store.connection(path) as db:
-                populated = {r["name"] for r in db.execute("SELECT name FROM source_state WHERE total_records>0")}
-                populated |= {r["source_name"] for r in db.execute("SELECT DISTINCT source_name FROM evidence WHERE source_name IS NOT NULL")}
+                populated = set(stored_source_counts(db))
             feed_since = dict(source_since)
             for name, _, _ in research_feeds.FEEDS:
                 if "RSS: " + name not in populated:
@@ -170,31 +171,47 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
     return result
 
 
+def stored_source_counts(db):
+    """Count durable attributed source facts, rather than cumulative fetches."""
+    return {r["source_name"]: r["n"] for r in db.execute(
+        "SELECT e.source_name,COUNT(DISTINCT e.threat_id) AS n FROM evidence e "
+        "JOIN threats t ON t.id=e.threat_id WHERE e.kind='source_fact' "
+        "AND e.source_name IS NOT NULL GROUP BY e.source_name")}
+
+
 def backfill_source_names(path: Path | None = None):
     """Label older evidence rows collected before source_name existed.
 
     Best-effort hostname/prefix matching against the same adapter catalog
     collect_daily already uses; it never guesses a source that isn't in
-    that catalog, and never touches a row that already has a source_name.
+    that catalog. Repair only missing labels and known repository-name aliases;
+    preserve all other existing attributions.
     """
     from . import repo_updates, research_feeds
 
     store.initialize(path)
     with store.connection(path) as db:
-        pending = db.execute("SELECT COUNT(*) FROM evidence WHERE kind='source_fact' AND source_name IS NULL").fetchone()[0]
-        if not pending:
+        aliases = {"GitHub: " + repo: "GitHub: " + name for name, repo, _, _ in repo_updates.REPOSITORIES}
+        rows = db.execute("SELECT id,source_url,source_name FROM evidence WHERE kind='source_fact' "
+                          "AND (source_name IS NULL OR source_name IN (" +
+                          ",".join("?" for _ in aliases) + "))", tuple(aliases)).fetchall()
+        if not rows:
             return 0
-        rows = db.execute("SELECT id,source_url FROM evidence WHERE kind='source_fact' AND source_name IS NULL").fetchall()
-        rss_hosts = {urlsplit(url).hostname: "RSS: " + name for name, url, _ in research_feeds.FEEDS}
+        rss_hosts = {(urlsplit(url).hostname or "").removeprefix("www."): "RSS: " + name
+                     for name, url, _ in research_feeds.FEEDS}
         # Feeds served through a redirector host publish articles elsewhere.
         rss_hosts["thehackernews.com"] = "RSS: The Hacker News"
-        repo_prefixes = {f"https://github.com/{repo}/commit/": "GitHub: " + name for name, repo, _, _ in repo_updates.REPOSITORIES}
+        rss_hosts["googleprojectzero.blogspot.com"] = "RSS: Google Project Zero"
+        repo_prefixes = {f"https://github.com/{repo}/{route}/": "GitHub: " + name
+                         for name, repo, _, _ in repo_updates.REPOSITORIES for route in ("commit", "blob")}
         updated = 0
         for row in rows:
             url = row["source_url"]
-            host = urlsplit(url).hostname
-            name = None
-            if url == "https://www.cisa.gov/known-exploited-vulnerabilities-catalog":
+            host = (urlsplit(url).hostname or "").removeprefix("www.")
+            name = aliases.get(row["source_name"])
+            if name:
+                pass
+            elif url == "https://www.cisa.gov/known-exploited-vulnerabilities-catalog":
                 name = "CISA KEV"
             elif url.startswith("https://nvd.nist.gov/vuln/detail/") or url.startswith("https://www.cve.org/CVERecord"):
                 name = "NVD"

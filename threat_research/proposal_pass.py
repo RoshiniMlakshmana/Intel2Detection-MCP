@@ -59,7 +59,22 @@ def _process_spec(pattern):
             predicates = [{"field": "ParentImage", "operator": "endswith", "value": parent.group()},
                           {"field": "Image", "operator": child_op, "value": child.group()}]
             command = COMMAND_TOKEN.search(quote, child.end(), min(len(quote), child.end() + 100))
-            if command and not re.search(r"[!?;]|\.(?:\s|$)", quote[child.end():command.start()]):
+            if command and re.search(r"[!?;]|\.(?:\s|$)", quote[child.end():command.start()]):
+                command = None
+            if command is None:
+                # The next sentence may explicitly refer to the same child:
+                # "X launched Y. The Y process ... executed command Z."
+                # Require that exact subject, not an arbitrary nearby command.
+                continuation = re.match(r"\.\s+The\s+" + re.escape(child.group()) +
+                                        r"\s+process\b([^.!?;]{0,180})", quote[child.end():], re.I)
+                if continuation:
+                    clause = continuation.group(1)
+                    candidate = COMMAND_TOKEN.search(clause)
+                    before = clause[:candidate.start()] if candidate else ""
+                    if (candidate and re.search(r"\b(?:executed|ran|invoked)\b", before, re.I)
+                            and not PROCESS_TOKEN.search(before) and not behavior_leads.NEGATION.search(clause)):
+                        command = candidate
+            if command:
                 predicates.append({"field": "CommandLine", "operator": "contains", "value": command.group()})
             return {"event_family": "process_creation",
                     "platform": "windows" if parent.group().lower().endswith(".exe") or child.group().lower() in ("powershell", "pwsh") else "linux",

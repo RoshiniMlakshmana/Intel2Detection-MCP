@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__, digest, lead_queue, proposal_pass, research_feeds, research_pass, store
-from .core import collect_daily, now
+from .core import backfill_source_names, collect_daily, now, stored_source_counts
+
+EMPTY_SOURCE_DETAIL = "No attributed source facts are stored; inspect URL, parser, lookback and source attribution."
 
 
 def interval_minutes():
@@ -56,8 +58,9 @@ def _source_windows(path, at):
     """Overlap one hour; retry failed sources from their last success, up to seven days."""
     with store.connection(path) as db:
         rows = db.execute("SELECT name,last_success,total_records FROM source_state").fetchall()
+        populated = stored_source_counts(db)
     floor = at - timedelta(days=7)
-    return {r["name"]: (at - timedelta(days=research_feeds.INITIAL_LOOKBACK_DAYS) if r["name"].startswith("RSS: ") and not r["total_records"] else
+    return {r["name"]: (at - timedelta(days=research_feeds.INITIAL_LOOKBACK_DAYS) if r["name"].startswith("RSS: ") and not populated.get(r["name"], 0) else
             max(floor, datetime.fromisoformat(r["last_success"].replace("Z", "+00:00")) - timedelta(hours=1)))
             for r in rows}
 
@@ -117,6 +120,7 @@ def run_poll(path: Path | None = None, adapters=None, send=None, notify=True):
         return {"status": "already_running", "started": started}
     result = None
     try:
+        backfill_source_names(path)
         until = datetime.now(timezone.utc)
         source_since = _source_windows(path, until) if adapters is None else None
         result = collect_daily(path, adapters=adapters, include_ids=True, until=until, source_since=source_since)
@@ -146,10 +150,11 @@ def run_poll(path: Path | None = None, adapters=None, send=None, notify=True):
             db.executemany("UPDATE source_state SET last_error=?,last_error_at=? WHERE name=?",
                            [(message, stamp, name) for name, message in result["errors"].items()
                             if name not in partial])
-            empty = {r["name"] for r in db.execute("SELECT s.name FROM source_state s WHERE s.total_records=0 AND NOT EXISTS(SELECT 1 FROM evidence e WHERE e.source_name=s.name)")
-                     if r["name"].startswith(("RSS: ", "GitHub: "))}
+            stored_counts = stored_source_counts(db)
+            empty = {r["name"] for r in db.execute("SELECT name FROM source_state")
+                     if r["name"].startswith(("RSS: ", "GitHub: ")) and not stored_counts.get(r["name"], 0)}
             attempts = [(name, stamp, "partial" if name in partial else "empty_feed" if name in empty else "ok", count,
-                         result["errors"].get(name) or ("No usable records have ever been collected; inspect URL, parser and lookback."
+                         result["errors"].get(name) or (EMPTY_SOURCE_DETAIL
                          if name in empty else None)) for name, count in result["sources"].items()]
             attempts += [(name, stamp, "empty_feed" if "no RSS/Atom entries" in message else "error", 0, message) for name, message in result["errors"].items()
                          if name not in result["sources"]]
