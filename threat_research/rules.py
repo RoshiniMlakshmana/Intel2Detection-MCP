@@ -437,6 +437,9 @@ def implement_rule(rule_id, approval_phrase, evidence_id=None, path: Path | None
             raise ValueError("this draft was proposed from a cited paragraph that the analyst has not verified; "
                              "run verify_draft_source(rule_id, 'I verified this source paragraph') before approval")
         if source_link:
+            from .drafting import source_link as current_source_link
+            if not current_source_link(rule_id, path)["source_verification_current"]:
+                raise ValueError("source changed since verification or cited values disappeared; re-check and verify the current source before approval")
             from .soc_replay import rule_content_hash
             check = db.execute("SELECT rule_hash,sample_provenance FROM rule_tests WHERE rule_id=? "
                                "ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()

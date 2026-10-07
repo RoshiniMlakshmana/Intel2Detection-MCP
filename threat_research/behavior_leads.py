@@ -5,7 +5,7 @@ import re
 NEGATION = re.compile(r"\b(?:no evidence|no signs|did not|was not|not observed|not detected|false positive)\b", re.I)
 WEB_PARENT = re.compile(r"\b(?:w3wp|httpd|nginx|apache2)(?:\.exe)?\b", re.I)
 SHELL = re.compile(r"\b(?:cmd|powershell|pwsh|sh|bash)(?:\.exe)?\b", re.I)
-CHILD_ACTION = re.compile(r"\b(?:spawned|launched|created a child process|started a shell|executed)\b", re.I)
+CHILD_ACTION = re.compile(r"\b(?:spawn(?:ed|s)?|launch(?:ed|es)?|created a child process|started a shell|execut(?:ed|es)|used)\b", re.I)
 POWERSHELL = re.compile(r"\b(?:powershell|pwsh)(?:\.exe)?\b", re.I)
 ENCODED = re.compile(r"(?:-encodedcommand\b|-enc\b|encoded command)", re.I)
 EXECUTE = re.compile(r"\b(?:executed|ran|launched|started)\b", re.I)
@@ -53,6 +53,8 @@ def behavior_patterns(paragraphs, limit=30):
         if NEGATION.search(paragraph):
             continue
         kinds = []
+        if has_behavior_context(paragraph) and CHILD_ACTION.search(paragraph) and re.search(r"\b(?:powershell|bash|sh|curl|wget|Invoke-WebRequest|msiexec)(?:\.exe)?\b", paragraph, re.I):
+            kinds.append("process_chain")
         if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
             kinds.append("dll_sideloading")
         if C2.search(paragraph) and BEACON.search(paragraph) and NETWORK.search(paragraph):
@@ -100,7 +102,7 @@ def specific_details(paragraphs, limit=30):
         # A file hash in a threat report is itself a specific artifact; other
         # tokens (paths, file names, IPs) need actor or malware context.
         labeled = HASH.search(paragraph) and HASH_LABEL.search(paragraph)
-        if NEGATION.search(paragraph) or not (ACTOR.search(paragraph) or STRONG_HASH.search(paragraph) or labeled):
+        if NEGATION.search(paragraph) or not (has_behavior_context(paragraph) or STRONG_HASH.search(paragraph) or labeled):
             continue
         tokens = list(dict.fromkeys(m.group(0) for m in ARTIFACT.finditer(paragraph)))
         if tokens:
@@ -109,3 +111,12 @@ def specific_details(paragraphs, limit=30):
         if len(output) >= limit:
             break
     return output
+
+
+def execution_chain(text, anchored=False):
+    """Explicit parent launch plus a measurable command; still only a draft hypothesis."""
+    return bool((re.match if anchored else re.search)(r"\b[\w.-]+\.exe\b.{0,100}\b(?:launch(?:ed|es)?|spawn(?:ed|s)?|executed|used)\b.{0,60}\b(?:powershell(?:\.exe)?|cmd\.exe|msiexec\.exe)\b.{0,140}(?:Invoke-WebRequest|Invoke-RestMethod|/qn\b)", text, re.I))
+
+
+def has_behavior_context(text):
+    return bool(ACTOR.search(text) or execution_chain(text))

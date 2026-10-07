@@ -19,13 +19,13 @@ FAMILIES = {"process_creation", "network_connection", "file_event", "image_load"
             "web_access", "proxy", "mcp_audit"}
 FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 VALUE = re.compile(r"^[A-Za-z0-9 .:/_\\-]{1,100}$")
-OPERATORS = {"equals", "contains", "endswith"}
+OPERATORS = {"equals", "contains", "endswith", "startswith", "has"}
 DEFENDER_FIELDS = {
     "process_creation": {"Image": "FileName", "ParentImage": "InitiatingProcessFileName",
                          "CommandLine": "ProcessCommandLine", "User": "AccountName"},
     "network_connection": {"DestinationIp": "RemoteIP", "DestinationPort": "RemotePort",
                            "DestinationHostname": "RemoteUrl", "Image": "InitiatingProcessFileName"},
-    "image_load": {"Image": "InitiatingProcessFileName", "ImageLoaded": "FileName"},
+    "image_load": {"Image": "InitiatingProcessFileName", "ImageLoaded": "FolderPath"},
     # Windows file events (Sysmon FileCreate / Defender DeviceFileEvents).
     "file_event": {"TargetFilename": "FolderPath", "Image": "InitiatingProcessFolderPath",
                    "SHA256": "SHA256", "User": "InitiatingProcessAccountName"},
@@ -34,6 +34,11 @@ DEFENDER_FIELDS = {
                   "authorization_decision": "authorization_decision_s", "principal_id": "principal_id_s",
                   "request_id": "request_id_s", "tool_name": "tool_name_s", "resource_scope": "resource_scope_s"},
 }
+
+
+def term_regex(value):
+    """KQL whole-term boundaries (underscore is a delimiter), literal RHS."""
+    return r"(?<![^\W_])" + re.escape(value) + r"(?![^\W_])"
 
 
 def _predicates(items, label, minimum, maximum):
@@ -49,8 +54,6 @@ def _predicates(items, label, minimum, maximum):
         if (not isinstance(field, str) or not FIELD.fullmatch(field) or op not in OPERATORS
                 or not isinstance(value, str) or not VALUE.fullmatch(value) or value != value.strip()):
             raise ValueError("field/operator/value must be bounded literal comparisons, never query syntax")
-        if op != "equals" and "\\" in value:
-            raise ValueError("substring values cannot contain wildcard or backslash characters")
         if field == "Signed" and (op != "equals" or value.lower() not in ("true", "false")):
             raise ValueError("Signed must be an exact true or false value")
         key = (field, op, value if item.get("case_sensitive") else value.casefold(), item.get("case_sensitive", False))
@@ -138,7 +141,7 @@ def sigma_extras(sigma):
     return {"description": description, "references": tuple(references)}
 
 
-def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, references=()):
+def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, references=(), id_seed=None):
     # JSON strings/lists are legal YAML flow scalars.
     kind = spec["event_family"]
     category = {"process_creation": "process_creation", "network_connection": "network_connection",
@@ -154,7 +157,8 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
             base_spec = {"event_family": kind, "platform": spec["platform"], "predicates": predicates}
             name = f"step_{fingerprint(spec)[:12]}_{index}"
             names.append(name)
-            base = _sigma(f"{title} - {name}", base_spec, false_positives, description, references)
+            base = _sigma(f"{title} - {name}", base_spec, false_positives, description, references,
+                          id_seed=f"{fingerprint(spec)}:step:{index}")
             base = re.sub(r"^(status|level):.*\n", "", base, flags=re.M)
             bases.append(base.replace("logsource:\n", f"name: {name}\nlogsource:\n", 1).rstrip())
         group = spec["sequence"]["group_by"]
@@ -169,7 +173,7 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
                        "falsepositives:", f"  - {json.dumps(false_positives)}",
                        "level: medium"]
         return "\n---\n".join(bases + ["\n".join(correlation)]) + "\n"
-    lines = [f"title: {json.dumps(title)}", f"id: {uuid.uuid5(uuid.NAMESPACE_URL, fingerprint(spec))}",
+    lines = [f"title: {json.dumps(title)}", f"id: {uuid.uuid5(uuid.NAMESPACE_URL, id_seed or fingerprint(spec))}",
              "status: experimental",
              ("description: " + json.dumps(description) if description != DEFAULT_DESCRIPTION else
               "description: " + DEFAULT_DESCRIPTION)]
@@ -177,23 +181,25 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
         lines.append("references:")
         lines.extend(f"  - {json.dumps(ref)}" for ref in references)
     lines += ["logsource:", f"  category: {category}", f"  product: {product}", "detection:"]
-    suffix = {"equals": "", "contains": "|contains", "endswith": "|endswith"}
+    suffix = {"equals": "", "contains": "|contains", "endswith": "|endswith", "startswith": "|startswith", "has": "|re"}
     def key(item):
-        return item["field"] + suffix[item["operator"]] + ("|cased" if item.get("case_sensitive") else "")
+        return item["field"] + suffix[item["operator"]] + ("|cased" if item.get("case_sensitive") and item["operator"] != "has" else "")
+    def scalar(item):
+        if item["operator"] == "has":
+            return json.dumps(("" if item.get("case_sensitive") else "(?i)") + term_regex(item["value"]))
+        return item["value"].lower() if item["field"] == "Signed" else json.dumps(item["value"])
     if not spec.get("any_of") and not spec.get("exclude") and len({key(p)
                                                                       for p in spec["predicates"]}) == len(spec["predicates"]):
         lines.append("  selection:")
         for item in spec["predicates"]:
-            scalar = item["value"].lower() if item["field"] == "Signed" else json.dumps(item["value"])
-            lines.append(f"    {json.dumps(key(item))}: {scalar}")
+            lines.append(f"    {json.dumps(key(item))}: {scalar(item)}")
         condition = "selection"
     else:
         groups = [(f"selection_{i}", p) for i, p in enumerate(spec["predicates"], 1)]
         groups += [(f"alternative_{i}", p) for i, p in enumerate(spec.get("any_of", []), 1)]
         groups += [(f"filter_{i}", p) for i, p in enumerate(spec.get("exclude", []), 1)]
         for name, item in groups:
-            scalar = item["value"].lower() if item["field"] == "Signed" else json.dumps(item["value"])
-            lines += [f"  {name}:", f"    {json.dumps(key(item))}: {scalar}"]
+            lines += [f"  {name}:", f"    {json.dumps(key(item))}: {scalar(item)}"]
         condition = " and ".join(n for n, _ in groups if n.startswith("selection_"))
         if spec.get("any_of"):
             condition += " and 1 of alternative_*"
@@ -297,18 +303,21 @@ def _query(spec, config, siem):
             field = field if cased else f"lower({field})"
             if op == "equals":
                 conditions.append(f'{field}={json.dumps(value)}')
-            elif "_" in value:
-                regex = re.escape(value) + ("$" if op == "endswith" else "")
+            elif op == "has" or "_" in value or "\\" in value:
+                regex = term_regex(value) if op == "has" else ("^" if op == "startswith" else "") + re.escape(value) + ("$" if op == "endswith" else "")
                 conditions.append(f'match({field},{json.dumps(regex)})')
             else:
-                pattern = "%" + value + ("%" if op == "contains" else "")
+                pattern = ("" if op == "startswith" else "%") + value + ("%" if op in ("contains", "startswith") else "")
                 conditions.append(f'like({field},{json.dumps(pattern)})')
-        prefix = f"index={config['index']} sourcetype={config['sourcetype']}\n| where "
+        code = config.get("event_code")
+        if code is not None and (not isinstance(code, int) or isinstance(code, bool) or code not in (1, 3, 7, 11)):
+            raise ValueError("invalid Sysmon event_code")
+        prefix = f"index={config['index']} sourcetype={config['sourcetype']}" + (f" EventCode={code}" if code else "") + "\n| where "
     else:
         conditions = []
         for field, op, value, cased in resolved:
-            escaped = value.replace("'", "''")
-            operator = {"equals": "==", "contains": "contains", "endswith": "endswith"}[op]
+            escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+            operator = {"equals": "==", "contains": "contains", "endswith": "endswith", "startswith": "startswith", "has": "has"}[op]
             if cased and op != "equals":
                 operator += "_cs"
             expr = f"tostring({field})" if cased else f"tolower(tostring({field}))"

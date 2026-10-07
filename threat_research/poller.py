@@ -25,18 +25,21 @@ def poll_status(path: Path | None = None):
         sources = db.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
         attempts = [dict(r) for r in db.execute("SELECT * FROM source_attempts ORDER BY status!='error',name")]
     last_result = json.loads(state["last_result"]) if state and state["last_result"] else None
+    configured_interval = (last_result or {}).get("interval_minutes", interval_minutes())
+    if not isinstance(configured_interval, int) or not 5 <= configured_interval <= 1440:
+        configured_interval = interval_minutes()
     age_minutes = None
     if state and state["last_completed"]:
         completed = datetime.fromisoformat(state["last_completed"].replace("Z", "+00:00"))
         age_minutes = round((datetime.now(timezone.utc) - completed).total_seconds() / 60)
     produced_by = (last_result or {}).get("collector_version")
-    return {"interval_minutes": interval_minutes(), "running": bool(state and state["lease_until"] and state["lease_until"] > now()),
+    return {"database": str((path or store.db_path()).resolve()), "interval_minutes": configured_interval, "running": bool(state and state["lease_until"] and state["lease_until"] > now()),
             "installed_collector_version": __version__,
             "last_result_age_minutes": age_minutes,
             # A result older than two intervals, or produced by different
             # collector code, may describe failures this installation has
             # already fixed; re-run poll_now before acting on its errors.
-            "last_result_stale": bool(age_minutes is None or age_minutes > 2 * interval_minutes()
+            "last_result_stale": bool(age_minutes is None or age_minutes > 2 * configured_interval
                                       or produced_by != __version__),
             "last_result_collector_version": produced_by or "unknown (older than 0.11.0)",
             "source_attempts": attempts,
@@ -52,9 +55,10 @@ def poll_status(path: Path | None = None):
 def _source_windows(path, at):
     """Overlap one hour; retry failed sources from their last success, up to seven days."""
     with store.connection(path) as db:
-        rows = db.execute("SELECT name,last_success FROM source_state").fetchall()
+        rows = db.execute("SELECT name,last_success,total_records FROM source_state").fetchall()
     floor = at - timedelta(days=7)
-    return {r["name"]: max(floor, datetime.fromisoformat(r["last_success"].replace("Z", "+00:00")) - timedelta(hours=1))
+    return {r["name"]: (at - timedelta(days=90) if r["name"].startswith("RSS: ") and not r["total_records"] else
+            max(floor, datetime.fromisoformat(r["last_success"].replace("Z", "+00:00")) - timedelta(hours=1)))
             for r in rows}
 
 
@@ -100,7 +104,7 @@ def _deliver_pending(path, send=None):
     return {"status": "delivered", "sent": len(rows)}
 
 
-def run_poll(path: Path | None = None, adapters=None, send=None):
+def run_poll(path: Path | None = None, adapters=None, send=None, notify=True):
     """Run one collection. A SQLite lease prevents overlapping workers on one DB."""
     store.initialize(path)
     started = now()
@@ -142,9 +146,12 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
             db.executemany("UPDATE source_state SET last_error=?,last_error_at=? WHERE name=?",
                            [(message, stamp, name) for name, message in result["errors"].items()
                             if name not in partial])
-            attempts = [(name, stamp, "partial" if name in partial else "ok", count,
-                         result["errors"].get(name)) for name, count in result["sources"].items()]
-            attempts += [(name, stamp, "error", 0, message) for name, message in result["errors"].items()
+            empty = {r["name"] for r in db.execute("SELECT s.name FROM source_state s WHERE s.total_records=0 AND NOT EXISTS(SELECT 1 FROM evidence e WHERE e.source_name=s.name)")
+                     if r["name"].startswith(("RSS: ", "GitHub: "))}
+            attempts = [(name, stamp, "partial" if name in partial else "empty_feed" if name in empty else "ok", count,
+                         result["errors"].get(name) or ("No usable records have ever been collected; inspect URL, parser and lookback."
+                         if name in empty else None)) for name, count in result["sources"].items()]
+            attempts += [(name, stamp, "empty_feed" if "no RSS/Atom entries" in message else "error", 0, message) for name, message in result["errors"].items()
                          if name not in result["sources"]]
             db.executemany("INSERT INTO source_attempts(name,attempted_at,status,records,detail) VALUES (?,?,?,?,?) "
                            "ON CONFLICT(name) DO UPDATE SET attempted_at=excluded.attempted_at,status=excluded.status,"
@@ -187,15 +194,15 @@ def run_poll(path: Path | None = None, adapters=None, send=None):
         result.pop("new_ids")
         alert_ids = result.pop("alert_ids")
         queued = _queue_new(alert_ids, path)
-        notification = _deliver_pending(path, send=send)
-        summary = {"status": "degraded" if result["errors"] or article_review["errors"] or (framework_update and framework_update["errors"]) else "collected", "started": started, "completed": now(),
+        notification = _deliver_pending(path, send=send) if notify else {"status": "disabled_for_collection_job"}
+        summary = {"status": "degraded" if empty or result["errors"] or article_review["errors"] or (framework_update and framework_update["errors"]) else "collected", "started": started, "completed": now(),
                    "new_records": result["new_records"], "alert_leads_queued": queued,
                    "article_review": article_review,
                    "research_pass": research,
                    "framework_update": framework_update,
                    "notification": notification, "source_counts": result["sources"],
-                   "source_errors": result["errors"], "partial_sources": result.get("partial", {}),
-                   "collector_version": __version__}
+                   "source_errors": result["errors"], "empty_sources": sorted(empty), "partial_sources": result.get("partial", {}),
+                   "collector_version": __version__, "interval_minutes": interval_minutes()}
         return summary
     except Exception as exc:
         summary = {"status": "failed", "started": started, "completed": now(),

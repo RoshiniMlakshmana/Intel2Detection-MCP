@@ -245,7 +245,7 @@ class AutomaticProposalTest(Base):
         self.assertIn('"ImageLoaded|endswith": "WinSparkle.dll"', image["sigma"])
         profile = {"name": "Fixture Defender", "siem": "defender", "telemetry": {
             "image_load": {"table": "DeviceImageLoadEvents",
-                           "fields": ["InitiatingProcessFileName", "FileName"]}}}
+                           "fields": ["InitiatingProcessFileName", "FileName", "FolderPath"]}}}
         environment.onboard(profile, [{"asset_id": "fixture-1", "hostname": "fixture-1",
                                       "product": "Fixture", "version": "1", "confirmed_cves": [],
                                       "internet_exposed": False, "criticality": "low",

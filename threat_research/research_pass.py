@@ -47,7 +47,7 @@ NO_SOURCE_RETRY = timedelta(hours=12)
 # Bump when previously stored source text needs re-analysis by a newer extractor.
 # A deep batch revisits eligible backlog leads once, without continually fetching
 # a source that is already awaiting the analyst's verification.
-EXTRACTION_VERSION = 6
+EXTRACTION_VERSION = 7
 KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
@@ -226,7 +226,7 @@ SHARE_HOSTS = {"twitter.com", "x.com", "facebook.com", "linkedin.com", "reddit.c
 # research page is itself the original (observed: Microsoft's own report
 # otherwise "matched" the legitimate software sites its malware abuses).
 NEWS_HOSTS = {urlsplit(url).hostname for _, url, category in research_feeds.FEEDS if category == "news"} | {
-    "thehackernews.com"}
+    "thehackernews.com", "darkreading.com", "www.darkreading.com"}
 STATIC_ASSET = re.compile(r"\.(?:css|js|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|json|xml)$", re.I)
 
 
@@ -424,6 +424,8 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
     while index < len(queue) and len(pages) < max_pages:
         candidate = queue[index]
         index += 1
+        if _host(candidate["url"]) in research_feeds.DISABLED_HOSTS:
+            continue
         fetched = _fetch(candidate["url"], fetch, cache, budget)
         if fetched is None:
             break

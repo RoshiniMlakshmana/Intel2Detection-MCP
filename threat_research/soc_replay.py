@@ -6,13 +6,14 @@ templates; it is not a Sigma engine or a Splunk/Defender query execution.
 
 import hashlib
 import json
+import re
 import sys
 import time
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
-from . import store
+from . import custom_rules, store
 from .core import now
 from .rules import TEMPLATES
 
@@ -74,7 +75,8 @@ def _matches(rule, event):
             if not predicate.get("case_sensitive"):
                 observed, expected = observed.casefold(), expected.casefold()
             return {"equals": observed == expected, "contains": expected in observed,
-                    "endswith": observed.endswith(expected)}[predicate["operator"]]
+                    "endswith": observed.endswith(expected), "startswith": observed.startswith(expected),
+                    "has": bool(re.search(custom_rules.term_regex(expected), observed))}[predicate["operator"]]
         return (all(matches_predicate(p) for p in spec["predicates"])
                 and (not spec.get("any_of") or any(matches_predicate(p) for p in spec["any_of"]))
                 and not any(matches_predicate(p) for p in spec.get("exclude", [])))

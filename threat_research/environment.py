@@ -81,6 +81,8 @@ def validate_profile(profile):
                 not isinstance(value, str) or not SAFE_TOKEN.fullmatch(value) for key, value in mapping.items()):
             raise ValueError(f"{family}: optional field_map must map safe canonical and local fields")
         if profile["siem"] == "splunk":
+            if "event_code" in config and (not isinstance(config["event_code"], int) or isinstance(config["event_code"], bool) or config["event_code"] not in (1, 3, 7, 11)):
+                raise ValueError(f"{family}: event_code must be a Sysmon event number (1, 3, 7, 11)")
             for key in ("index", "sourcetype"):
                 if not isinstance(config.get(key), str) or not SAFE_TOKEN.fullmatch(config[key]):
                     raise ValueError(f"{family}: Splunk {key} is required")
@@ -129,6 +131,16 @@ def parse_assets(contents):
     if not rows:
         raise ValueError("asset CSV has no assets")
     return rows
+
+
+def configure_telemetry(profile, path: Path | None = None):
+    """Declare actual field mappings without fabricating an asset inventory."""
+    validate_profile(profile)
+    store.initialize(path)
+    with store.connection(path) as db:
+        db.execute("INSERT INTO environment_config(id,profile,updated_at) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET profile=excluded.profile", (json.dumps(profile), now()))
+        db.execute("INSERT INTO audit(at,action,target,detail) VALUES (?,?,?,?)", (now(), "telemetry_configured", "environment", json.dumps({"siem": profile["siem"], "families": sorted(profile["telemetry"])})))
+    return {"status": "configured", "siem": profile["siem"], "telemetry_families": sorted(profile["telemetry"]), "native_validation": "pending", "note": "Field mappings declared; connectivity, data ingestion and native SIEM tests still required."}
 
 
 def onboard(profile, assets, path: Path | None = None):
@@ -299,7 +311,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def probe_splunk(family, path: Path | None = None, fetch=None):
     """Read at most one recent event through Splunk's v2 search export API."""
-    if family not in ("process_creation", "network_connection", "mcp_audit"):
+    if family not in ("process_creation", "network_connection", "file_event", "image_load", "mcp_audit"):
         raise ValueError("unsupported telemetry family")
     with store.connection(path) as db:
         row = db.execute("SELECT profile FROM environment_config WHERE id=1").fetchone()
@@ -315,7 +327,8 @@ def probe_splunk(family, path: Path | None = None, fetch=None):
     token = os.environ.get("SPLUNK_TOKEN", "")
     if not token and fetch is None:
         raise ValueError("SPLUNK_TOKEN environment variable is required")
-    event_code = " EventCode=1" if family == "process_creation" else " EventCode=3" if family == "network_connection" else ""
+    code = config.get("event_code", {"process_creation": 1, "network_connection": 3, "file_event": 11, "image_load": 7}.get(family))
+    event_code = f" EventCode={code}" if code else ""
     search = f"search index={config['index']} sourcetype={config['sourcetype']}{event_code} | head 1"
     endpoint = profile["splunk_url"].rstrip("/") + "/services/search/v2/jobs/export"
     data = urllib.parse.urlencode({"search": search, "earliest_time": "-24h", "latest_time": "now", "output_mode": "json"}).encode()

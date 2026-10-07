@@ -16,47 +16,89 @@ TABLES = {
     "DeviceNetworkEvents": ("network_connection", {"InitiatingProcessFileName": "Image",
                                                    "RemoteUrl": "DestinationHostname", "RemoteIP": "DestinationIp"}),
 }
-COMPARE = re.compile(r"\s*([A-Za-z][A-Za-z0-9_]*)\s*(==|=~|contains|endswith)\s*(['\"])([^'\"\n]{1,100})\3\s*", re.I)
+# Tokenize the entire input: quoted "and"/"|" are literals, not separators.
+TOKEN = re.compile(r"\s*(?:(?P<literal>'[^'\n]{1,100}'|\"[^\"\n]{1,100}\")|(?P<op>==|=~)|(?P<word>[A-Za-z][A-Za-z0-9_]*)|(?P<punct>[|(),]))")
 
 
 def bounded_spec(text):
-    """Return a spec only if every filtering clause is a supported literal AND."""
+    """Translate literal AND filters; reject any unconsumed syntax or clause."""
     if not isinstance(text, str) or len(text) > 5000:
         return None
-    pieces = [p.strip() for p in text.split("|")]
-    if not pieces or pieces[0] not in TABLES:
-        return None
-    family, field_map = TABLES[pieces[0]]
-    # Device* tables exist on Windows and Linux. A query without a platform
-    # cue must not be mislabeled Windows simply because it uses Defender.
-    if re.search(r"(?i)\.exe\b|\.dll\b|[A-Za-z]:\\", text):
-        platform = "windows"
-    elif re.search(r"(?i)\b(?:linux|zimbra)\b|/(?:opt|bin|tmp|var)/", text):
-        platform = "linux"
-    else:
-        return None
-    filters = [p[6:].strip() for p in pieces[1:] if p.lower().startswith("where ")]
-    if not filters or any(not (p.lower().startswith("where ") or re.fullmatch(r"project\s+[A-Za-z][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*)*", p, re.I))
-                                for p in pieces[1:]):
-        return None
-    if any(p.lower().startswith("project ") for p in pieces[1:-1]):
-        return None  # Projection before filtering can change which fields exist.
-    expression = " and ".join(filters)
-    parts = re.split(r"\s+and\s+", expression, flags=re.I)
-    if not 2 <= len(parts) <= 8:
-        return None
-    predicates = []
-    for part in parts:
-        match = COMPARE.fullmatch(part)
-        if not match or match[1] not in field_map:
+    tokens, pos = [], 0
+    while pos < len(text.rstrip()):
+        match = TOKEN.match(text, pos)
+        if not match:
             return None
-        predicates.append({"field": field_map[match[1]],
-                           "operator": "equals" if match[2] in ("==", "=~") else match[2].lower(),
-                           "value": match[4]})
-        if match[2] == "==":
-            predicates[-1]["case_sensitive"] = True
+        tokens.append(match.group(match.lastgroup))
+        pos = match.end()
+    if not tokens or tokens[0] not in TABLES:
+        return None
+    family, mapping = TABLES[tokens[0]]
+    platform = ("windows" if re.search(r"(?i)\.exe\b|\.dll\b|[A-Za-z]:\\", text) else
+                "linux" if re.search(r"(?i)\b(?:linux|zimbra)\b|/(?:opt|bin|tmp|var|usr)/", text) else None)
+    if not platform:
+        return None
+    predicates, alternatives = [], []
+    i = 1
     try:
-        return custom_rules.validate_spec({"event_family": family, "platform": platform,
-                                           "predicates": predicates})
-    except ValueError:
+        while i < len(tokens):
+            if tokens[i] != "|":
+                return None
+            i += 1
+            if tokens[i].lower() == "project":
+                # Projection is optional and must be last; no computed fields.
+                rest = tokens[i+1:]
+                if not rest or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*" if j % 2 == 0 else ",", v)
+                                   for j, v in enumerate(rest)) or len(rest) % 2 == 0:
+                    return None
+                i = len(tokens)
+                break
+            if tokens[i].lower() != "where":
+                return None
+            i += 1
+            while True:
+                field, op = tokens[i], tokens[i+1].lower()
+                if field not in mapping or op not in ("==", "=~", "has", "contains", "endswith", "has_any", "has_all"):
+                    return None
+                i += 2
+                values = []
+                if op in ("has_any", "has_all"):
+                    if tokens[i] != "(":
+                        return None
+                    i += 1
+                    while True:
+                        value = tokens[i]
+                        if value[0] not in ("'", '"'):
+                            return None
+                        values.append(value[1:-1]); i += 1
+                        if tokens[i] == ")":
+                            i += 1; break
+                        if tokens[i] != ",":
+                            return None
+                        i += 1
+                else:
+                    value = tokens[i]; i += 1
+                    if value[0] not in ("'", '"'):
+                        return None
+                    values = [value[1:-1]]
+                if op == "has_any" and alternatives:
+                    return None  # Multiple independent OR groups need richer logic.
+                target = alternatives if op == "has_any" else predicates
+                for value in dict.fromkeys(values):
+                    item = {"field": mapping[field], "operator": "equals" if op in ("==", "=~") else
+                            "has" if op in ("has_all", "has_any") else op, "value": value}
+                    if op == "==":
+                        item["case_sensitive"] = True
+                    if item not in target:
+                        target.append(item)
+                if i == len(tokens) or tokens[i] == "|":
+                    break
+                if tokens[i].lower() != "and":
+                    return None
+                i += 1
+        spec = {"event_family": family, "platform": platform, "predicates": predicates}
+        if alternatives:
+            spec["any_of"] = alternatives
+        return custom_rules.validate_spec(spec)
+    except (IndexError, ValueError):
         return None

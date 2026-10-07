@@ -77,6 +77,7 @@ def ingest(records, path: Path | None = None, return_new_ids=False):
 
 def collect_daily(path: Path | None = None, since=None, until=None, adapters=None, include_ids=False, source_since=None):
     """Collect independently: a failed source cannot be mistaken for no threats."""
+    store.initialize(path)
     until = until or datetime.now(timezone.utc)
     since = since or until - timedelta(days=2)
     include_research = adapters is None
@@ -92,7 +93,8 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
         adapters["RansomLook leak claims"] = lambda: leak_claims.collect_ransomlook(source_since.get("RansomLook leak claims", since), until)
         for name, repo, repo_path, kind in repo_updates.REPOSITORIES:
             adapters["GitHub: " + name] = (lambda r=repo, p=repo_path, k=kind, n=name:
-                                                   repo_updates.collect_repo(r, p, k, source_since.get("GitHub: " + n, since), until))
+                                                   repo_updates.collect_catalog(r, p, k, source_since.get("GitHub: " + n, since), until,
+                                                       database=path, source_name="GitHub: " + n))
     result = {"new_records": 0, "sources": {}, "errors": {}, "partial": {}}
     newly_inserted = []
     promoted = []
@@ -110,6 +112,10 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
             for record in records:
                 record.setdefault("reported_by", name)
             inserted, fresh, changed = ingest(records, path, return_new_ids=True)
+            if records and records[0].get("bootstrap_repo"):
+                with store.connection(path) as db:
+                    db.execute("INSERT OR REPLACE INTO repo_bootstraps(repo,snapshot_sha,completed_at) VALUES (?,?,?)",
+                               (records[0]["bootstrap_repo"], records[0]["bootstrap_sha"], now()))
             result["sources"][name] = len(records)
             result["new_records"] += inserted
             newly_inserted.extend(fresh)
@@ -119,8 +125,15 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
             result["errors"][name] = str(exc)[:300]
     if include_research:
         try:
-            if source_since:
-                report_records, counts, errors = research_feeds.collect_research(since, until, since_by_name=source_since, retries=1)
+            with store.connection(path) as db:
+                populated = {r["name"] for r in db.execute("SELECT name FROM source_state WHERE total_records>0")}
+                populated |= {r["source_name"] for r in db.execute("SELECT DISTINCT source_name FROM evidence WHERE source_name IS NOT NULL")}
+            feed_since = dict(source_since)
+            for name, _, _ in research_feeds.FEEDS:
+                if "RSS: " + name not in populated:
+                    feed_since["RSS: " + name] = until - timedelta(days=90)
+            if feed_since:
+                report_records, counts, errors = research_feeds.collect_research(since, until, since_by_name=feed_since, retries=1)
             else:
                 report_records, counts, errors = research_feeds.collect_research(since, until, retries=1)
             result["errors"].update({"RSS: " + name: error for name, error in errors.items()})

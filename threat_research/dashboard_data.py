@@ -8,6 +8,7 @@ the MCP tool surface and the dashboard's view-model concerns apart.
 
 from pathlib import Path
 import json
+import os
 
 from . import environment, frameworks, lead_queue, poller, repo_updates, research_feeds, rules, store
 from .core import backfill_source_names, get_threat, now, research_view
@@ -23,6 +24,7 @@ def source_catalog():
              ("ThreatFox C2", "community IOC feed (optional, needs THREATFOX_AUTH_KEY)")]
     names += [("GitHub: " + name, "curated GitHub repository") for name, _, _, _ in repo_updates.REPOSITORIES]
     names += [("RSS: " + name, f"{kind} RSS/Atom feed") for name, _, kind in research_feeds.FEEDS]
+    names.append(("RSS: Dark Reading", "disabled: publisher blocks most article fetches"))
     return names
 
 
@@ -107,11 +109,15 @@ def sources_overview(path: Path | None = None):
         row = rows.get(name)
         attempt = attempts.get(name)
         if attempt:
-            error = attempt["detail"] if attempt["status"] in ("error", "partial") else None
-            status = {"error": "error", "partial": "partial"}.get(attempt["status"], "ok")
+            error = attempt["detail"] if attempt["status"] in ("error", "partial", "empty_feed") else None
+            status = {"error": "error", "partial": "partial", "empty_feed": "empty_feed"}.get(attempt["status"], "ok")
         else:
             error = source_errors.get(name) or (row["last_error"] if row else None)
             status = "error" if error else "ok" if row else "never_collected"
+        if name == "RSS: Dark Reading":
+            status, error = "disabled", "Publisher blocks most article fetches; use original technical reports."
+        elif name == "ThreatFox C2" and not os.environ.get("THREATFOX_AUTH_KEY"):
+            status, error = "not_configured", "Set THREATFOX_AUTH_KEY locally."
         cards.append({
             "name": name, "category": category,
             "last_success": row["last_success"] if row else None,
@@ -162,7 +168,7 @@ def sources_overview(path: Path | None = None):
             "email_configured": state["email_configured"],
             "last_result_stale": state["last_result_stale"],
             "last_result_age_minutes": state["last_result_age_minutes"],
-            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "partial", "backlogged"), c["name"]))}
+            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "partial", "empty_feed", "backlogged"), c["name"]))}
 
 
 def threats_for_source(name, path: Path | None = None, limit=50):

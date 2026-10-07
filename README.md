@@ -161,6 +161,9 @@ git pull
 
 Then fully quit and reopen Claude Desktop (tray icon → Quit) so it restarts the MCP server, and run `poll_now`. A `polling_status` result marked `last_result_stale` describes an older run and may list errors that are already fixed.
 
+For the independent Windows collector, feed recovery, initial community sync and
+a concrete Splunk Sysmon lab profile, see [COLLECTOR_SETUP.md](COLLECTOR_SETUP.md).
+
 ## 5. Deploy for a team
 
 Each organization gets an isolated database and rule repository:

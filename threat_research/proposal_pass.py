@@ -16,15 +16,17 @@ from pathlib import Path
 from . import behavior_leads, drafting, research_pass, store, workup
 from .core import now
 
+SYSTEM32_EXCLUSION = {"field": "ImageLoaded", "operator": "startswith", "value": "C:\\Windows\\System32\\"}
+
 
 ENCODED_FLAG = re.compile(r"(?<!\w)-(?:EncodedCommand|enc)\b", re.I)
 EXECUTION_ACTOR = re.compile(r"\b(?:attackers?|adversar(?:y|ies)|threat actors?|intruders?|"
                              r"malware|malicious|payload|backdoor|implant)\b", re.I)
 WINDOWS_EXE = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b", re.I)
-PROCESS_TOKEN = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b|\b(?:PowerShell|pwsh|bash|sh)\b", re.I)
+PROCESS_TOKEN = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b|\b(?:PowerShell|pwsh|bash|sh|nginx|httpd|apache2|python3?|curl|wget|perl|openssl)\b", re.I)
 PROCESS_ACTION = re.compile(r"\b(?:spawn(?:s|ed)?|launch(?:es|ed)?|start(?:s|ed)?|execut(?:es|ed)|"
-                            r"invok(?:es|ed)|run(?:s|ning)?)\b", re.I)
-COMMAND_TOKEN = re.compile(r"\b(?:Invoke-WebRequest|curl|wget|mshta|certutil|bitsadmin)\b", re.I)
+                            r"invok(?:es|ed)|used|run(?:s|ning)?)\b", re.I)
+COMMAND_TOKEN = re.compile(r"\b(?:Invoke-WebRequest|Invoke-RestMethod|curl|wget|mshta|certutil|bitsadmin)\b|(?<!\w)/qn\b", re.I)
 WINDOWS_DLL = re.compile(r"\b[A-Za-z0-9_.-]+\.dll\b", re.I)
 HOSTNAME = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
 DLL_LOAD = re.compile(r"\b(?:load(?:s|ed|ing)?|side[ -]?load(?:s|ed|ing)?)\b", re.I)
@@ -38,7 +40,7 @@ def _actor_before(quote, process):
     """An attacker/malware cue must modify this action, not another sentence."""
     prefix = quote[max(0, process.start() - 140):process.start()]
     actors = list(EXECUTION_ACTOR.finditer(prefix))
-    return bool(actors and not re.search(r"[.!?;]", prefix[actors[-1].end():]))
+    return bool(actors and not re.search(r"[!?;]|\.(?:\s|$)", prefix[actors[-1].end():]))
 
 
 def _process_spec(pattern):
@@ -47,19 +49,20 @@ def _process_spec(pattern):
     for parent in PROCESS_TOKEN.finditer(quote):
         for child in PROCESS_TOKEN.finditer(quote, parent.end(), min(len(quote), parent.end() + 160)):
             between = quote[parent.end():child.start()]
-            if not PROCESS_ACTION.search(between) or re.search(r"[.!?;]", between):
+            if (not PROCESS_ACTION.search(between) or re.search(r"[!?;]|\.(?:\s|$)", between)
+                    or re.search(r"\b(?:was|were)\s+(?:used|launched|spawned|executed)\s+by\b", between, re.I)):
                 continue
-            if not (_actor_before(quote, parent) or EXECUTION_ACTOR.search(
-                    re.split(r"[.!?;]", quote[child.end():child.end()+100], maxsplit=1)[0])):
+            if not (behavior_leads.execution_chain(quote[parent.start():], anchored=True) or _actor_before(quote, parent) or EXECUTION_ACTOR.search(
+                    re.split(r"[!?;]|\.(?:\s|$)", quote[child.end():child.end()+100], maxsplit=1)[0])):
                 continue
             child_op = "endswith" if child.group().lower().endswith(".exe") else "contains"
             predicates = [{"field": "ParentImage", "operator": "endswith", "value": parent.group()},
                           {"field": "Image", "operator": child_op, "value": child.group()}]
             command = COMMAND_TOKEN.search(quote, child.end(), min(len(quote), child.end() + 100))
-            if command and not re.search(r"[.!?;]", quote[child.end():command.start()]):
+            if command and not re.search(r"[!?;]|\.(?:\s|$)", quote[child.end():command.start()]):
                 predicates.append({"field": "CommandLine", "operator": "contains", "value": command.group()})
             return {"event_family": "process_creation",
-                    "platform": "linux" if parent.group().lower() in ("sh", "bash") else "windows",
+                    "platform": "windows" if parent.group().lower().endswith(".exe") or child.group().lower() in ("powershell", "pwsh") else "linux",
                     "predicates": predicates}
     if (pattern.get("observable") or {}).get("lexical_behavior") != "web_server_shell":
         return None
@@ -85,7 +88,7 @@ def _encoded_powershell_spec(pattern):
         if not process.group().lower().endswith(".exe"):
             continue
         for flag in ENCODED_FLAG.finditer(quote, process.end(), min(len(quote), process.end() + 100)):
-            prefix = re.split(r"[.!?;]", quote[max(0, process.start() - 120):process.start()])[-1]
+            prefix = re.split(r"[!?;]|\.(?:\s|$)", quote[max(0, process.start() - 120):process.start()])[-1]
             if (not EXECUTION_ACTOR.search(prefix) or not behavior_leads.EXECUTE.search(prefix)
                     or any(mark in quote[process.end():flag.start()] for mark in ".!?;")):
                 continue
@@ -98,16 +101,16 @@ def _encoded_powershell_spec(pattern):
 def _process_command_spec(pattern):
     """An explicitly executed command under a named process, never a list of tools."""
     quote = pattern["quoted_paragraph"]
-    for process in WINDOWS_EXE.finditer(quote):
+    for process in PROCESS_TOKEN.finditer(quote):
         if not _actor_before(quote, process):
             continue
         command = COMMAND_TOKEN.search(quote, process.end(), min(len(quote), process.end() + 140))
         if not command:
             continue
         between = quote[process.end():command.start()]
-        if re.search(r"[.!?;]", between) or not re.search(r"\b(?:command(?:\s+line)?|with|to\s+(?:execute|run|invoke))\b", between, re.I):
+        if re.search(r"[!?;]|\.(?:\s|$)", between) or not re.search(r"(?:\b(?:command(?:\s+line)?|with|to\s+(?:execute|run|invoke))\b|(?<!\w)-l?c\b)", between, re.I):
             continue
-        return {"event_family": "process_creation", "platform": "windows", "predicates": [
+        return {"event_family": "process_creation", "platform": "windows" if process.group().lower().endswith(".exe") else "linux", "predicates": [
             {"field": "Image", "operator": "endswith", "value": process.group()},
             {"field": "CommandLine", "operator": "contains", "value": command.group()}]}
     return None
@@ -124,14 +127,13 @@ def _image_load_spec(pattern):
             # Talos describes a signed executable which "sideloads slc.dll,
             # the Antino backdoor"; the actor cue follows the module. A cue
             # in a previous sentence does not justify an unrelated DLL load.
-            suffix = re.split(r"[.!?;]", quote[module.end():module.end() + 120], maxsplit=1)[0]
-            if (DLL_LOAD.search(between) and not re.search(r"[.!?;]", between)
+            suffix = re.split(r"[!?;]|\.(?:\s|$)", quote[module.end():module.end() + 120], maxsplit=1)[0]
+            if (DLL_LOAD.search(between) and not re.search(r"[!?;]|\.(?:\s|$)", between)
                     and (_actor_before(quote, process) or EXECUTION_ACTOR.search(suffix))):
                 spec = {"event_family": "image_load", "platform": "windows", "predicates": [
                     {"field": "Image", "operator": "endswith", "value": process.group()},
                     {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}]}
-                if re.search(r"\b(?:not\s+in|outside(?:\s+of)?)\s+System32\b", quote, re.I):
-                    spec["exclude"] = [{"field": "ImageLoaded", "operator": "contains", "value": "System32"}]
+                spec["exclude"] = [dict(SYSTEM32_EXCLUSION)]
                 return spec
     return None
 
@@ -147,7 +149,7 @@ def _c2_process_spec(pattern):
         for host in HOSTNAME.finditer(quote, process.end(), min(len(quote), process.end() + 200)):
             between = quote[process.end():host.start()]
             if (C2_ACTION.search(between) and behavior_leads.C2.search(between)
-                    and not re.search(r"[.!?;]", between)):
+                    and not re.search(r"[!?;]|\.(?:\s|$)", between)):
                 return {"event_family": "network_connection", "platform": "windows", "predicates": [
                     {"field": "Image", "operator": "endswith", "value": process.group()},
                     {"field": "DestinationHostname", "operator": "equals", "value": host.group()}]}
@@ -175,6 +177,11 @@ def behavior_spec(pattern):
 
 
 def propose_from_stored(threat_id: str, path: Path | None = None):
+    from . import sources
+    if sources.CVE.fullmatch(threat_id.upper()):
+        return {"threat_id": threat_id.upper(), "research_status": "exposure_patch_review",
+                "patterns_reviewed": 0, "proposals": [], "gaps": [],
+                "note": "CVE-only leads go to exposure and patch review. Draft behavior from the original report lead."}
     analysis = workup.pattern_analysis(threat_id, path)
     proposals, gaps = [], []
     if not analysis["patterns"]:
@@ -197,7 +204,7 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                          "reason": "Secondary news source: inspect its original technical publication first."})
             continue
         if (not pattern["quote_is_full_text"] or behavior_leads.NEGATION.search(quote)
-                or (not pattern.get("publisher_query") and not behavior_leads.ACTOR.search(quote))):
+                or (not pattern.get("publisher_query") and not behavior_leads.has_behavior_context(quote))):
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                          "reason": "The inspected paragraph does not tie the file to attacker activity."})
             continue
@@ -213,8 +220,8 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
             parent = next(p["value"] for p in spec["predicates"] if p["field"] == "ParentImage")
             child = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
             title = f"Reported {parent} spawning {child} ({analysis['threat_id']})"[:150]
-            rationale = (f"Paragraph {pattern['paragraph']} reports {parent} spawning {child} during attacker "
-                         "activity. This is a behavior hypothesis from the publisher; check the process fields "
+            rationale = (f"Paragraph {pattern['paragraph']} reports {parent} spawning {child} in the cited "
+                         "process chain. This is a behavior hypothesis from the publisher; check the process fields "
                          "and local context before approval.")
             false_positives = ("Web administration and application maintenance can launch a shell. "
                                "Review account, command line, host and change window against benign events.")
@@ -270,16 +277,27 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                          "reason": f"Candidate refused: {exc}"})
             continue
+        if any(p["rule_id"] == result["rule_id"] and p["source_url"] == pattern["source_url"]
+               and p["paragraph"] == pattern["paragraph"] for p in proposals):
+            continue
         proposals.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                           "status": result["status"], "rule_id": result["rule_id"],
                           "source_verification": ("unverified" if result["status"] == "draft_unverified" else
                                                   "see existing rule"), "reason": rationale})
+    with store.connection(path) as db:
+        existing = db.execute("SELECT l.source_url,l.paragraph,l.rule_id,r.status FROM rule_source_links l JOIN rules r ON r.id=l.rule_id WHERE l.threat_id=?", (analysis["threat_id"],)).fetchall()
     covered = {(p["source_url"], p["paragraph"]) for p in proposals}
+    for row in existing:
+        citation = (row["source_url"], row["paragraph"])
+        if citation not in covered:
+            proposals.append({"source_url": row["source_url"], "paragraph": row["paragraph"], "rule_id": row["rule_id"],
+                              "status": "existing_draft" if row["status"] == "draft" else "existing_coverage",
+                              "source_verification": "see existing rule", "reason": "This citation already has a source-linked rule."})
+            covered.add(citation)
     # The artifact extractor can list a filename from the same paragraph as
     # an explicit behavior. Do not report "filename alone" as a second gap
     # when the process/module or process/destination rule used that paragraph.
-    gaps = [gap for gap in gaps if (gap["source_url"], gap["paragraph"]) not in covered or
-            not gap["reason"].startswith(("Only file names or paths", "No file name paired with a hash"))]
+    gaps = [gap for gap in gaps if (gap["source_url"], gap["paragraph"]) not in covered]
     return {"threat_id": analysis["threat_id"], "research_status": analysis["status"],
             "patterns_reviewed": len(analysis["patterns"]), "proposals": proposals, "gaps": gaps,
             "note": "No source was analyst-verified, no rule was approved or deployed, and no local risk was scored."}

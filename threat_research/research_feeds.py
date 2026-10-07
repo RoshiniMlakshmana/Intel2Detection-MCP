@@ -43,7 +43,7 @@ FEEDS = (
     ("ANY.RUN", "https://any.run/cybersecurity-blog/rss/", "research"),
     ("Qualys Security", "https://blog.qualys.com/feed", "research"),
     ("CrowdStrike", "https://www.crowdstrike.com/en-us/blog/feed", "research"),
-    ("Aqua Security", "https://blog.aquasec.com/rss.xml", "research"),
+    ("Aqua Security", "https://www.aquasec.com/feed/", "research"),
     ("Objective-See", "https://objective-see.org/rss.xml", "research"),
     ("Snyk", "https://snyk.io/blog/feed/", "research"),
     ("Semgrep", "https://semgrep.dev/blog/rss/", "research"),
@@ -53,9 +53,10 @@ FEEDS = (
     ("BleepingComputer", "https://www.bleepingcomputer.com/feed/", "news"),
     ("Krebs on Security", "https://krebsonsecurity.com/feed/", "news"),
     ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews", "news"),
-    ("Dark Reading", "https://www.darkreading.com/rss.xml", "news"),
     ("SecurityWeek", "https://www.securityweek.com/feed/", "news"),
 )
+
+DISABLED_HOSTS = {"darkreading.com", "www.darkreading.com"}
 
 CVE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.I)
 TAGS = re.compile(r"<[^>]{0,2000}>")
@@ -160,7 +161,7 @@ def parse_feed(raw, name, kind, since, until=None, max_bytes=DEFAULT_MAX_BYTES):
         raise ValueError("feed has no RSS/Atom entries")
     until = until or datetime.now(timezone.utc)
     results = []
-    for node in entries[:100]:
+    for node in entries[:2000]:
         title = _plain(_element_text(node, {"title"}))[:300]
         excerpt = _plain(_element_text(node, {"description", "summary", "content", "encoded"}))[:1600]
         published = _date(_element_text(node, {"pubdate", "published", "updated", "date"}))
