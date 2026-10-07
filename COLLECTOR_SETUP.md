@@ -67,6 +67,35 @@ availability can change; these checks do not establish the laptop's current stat
 
 ## Splunk Sysmon lab
 
+### No SIEM: one-command offline check
+
+First update/install the checkout as above, then run in PowerShell:
+
+```powershell
+& .\scripts\check_offline.ps1
+```
+
+This runs the unit suite (including the new Windows/Linux extraction, KQL,
+exclusion, ID and source-refresh regressions), an actual MCP stdio smoke check,
+and the existing synthetic source-to-draft lab. It creates a separate timestamped
+`offline-lab-*` directory with a lab database, fictitious asset/telemetry profile,
+draft Sigma/KQL/SPL, labeled events and `report.json`. It temporarily isolates DB
+and rule-repository environment settings and restores them afterwards. A failed
+stage stops the script; an existing nonempty output directory is never overwritten.
+The lab has 3 draft rules and 12 events. Its expected TP=3, FP=2, FN=2, TN=5 include
+intentional benign matches and evasion cases. Matching that baseline validates the
+demonstration's behavior; it does not mean all rules have perfect detection accuracy.
+The lab itself performs no live SIEM or publisher calls; the full unit suite may
+also exercise existing public-framework retrieval paths.
+
+After this check, fully **quit Claude from the tray**, reopen it, start a new chat,
+and confirm `propose_stored_draft_gaps` and `screen_benign_baseline` are available.
+Ask it to run `evaluate_synthetic_soc_lab` for a quick isolated in-app check.
+Restarting only reloads the server; it does not run these checks or verify actual
+stored reports. Keep the lab database separate from the real collection database.
+The PowerShell wrapper must be checked on Windows; its underlying Python stages
+were exercised on Linux. No live SIEM or API credentials are needed for this lab.
+
 Install Splunk locally, create index `sysmon`, and forward real Sysmon XML events
 with sourcetype `XmlWinEventLog:Microsoft-Windows-Sysmon/Operational`. Enable process
 creation (1), network connection (3), image loads (7), and file creation (11) in
