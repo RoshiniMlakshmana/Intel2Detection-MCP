@@ -28,7 +28,8 @@ async def main():
                         "list_sources", "list_leads", "lead_progression", "workflow_counts", "list_rules",
                         "source_errors", "run_research_pass", "research_lead", "lead_workup", "triage_raw_leads",
                         "triage_status", "propose_stored_drafts", "propose_detection_from_paragraph", "verify_draft_source",
-                        "record_local_event_context", "record_manual_source_review"} <= names
+                        "record_local_event_context", "record_manual_source_review", "screen_benign_baseline",
+                        "propose_stored_draft_gaps"} <= names
                 result = await session.call_tool("evaluate_synthetic_soc_lab", {})
                 assert not result.is_error
                 report = json.loads(result.content[0].text)

@@ -21,6 +21,10 @@ ENCODED_FLAG = re.compile(r"(?<!\w)-(?:EncodedCommand|enc)\b", re.I)
 EXECUTION_ACTOR = re.compile(r"\b(?:attackers?|adversar(?:y|ies)|threat actors?|intruders?|"
                              r"malware|malicious|payload|backdoor|implant)\b", re.I)
 WINDOWS_EXE = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b", re.I)
+PROCESS_TOKEN = re.compile(r"\b[A-Za-z0-9_.-]+\.exe\b|\b(?:PowerShell|pwsh|bash|sh)\b", re.I)
+PROCESS_ACTION = re.compile(r"\b(?:spawn(?:s|ed)?|launch(?:es|ed)?|start(?:s|ed)?|execut(?:es|ed)|"
+                            r"invok(?:es|ed)|run(?:s|ning)?)\b", re.I)
+COMMAND_TOKEN = re.compile(r"\b(?:Invoke-WebRequest|curl|wget|mshta|certutil|bitsadmin)\b", re.I)
 WINDOWS_DLL = re.compile(r"\b[A-Za-z0-9_.-]+\.dll\b", re.I)
 HOSTNAME = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
 DLL_LOAD = re.compile(r"\b(?:load(?:s|ed|ing)?|side[ -]?load(?:s|ed|ing)?)\b", re.I)
@@ -39,9 +43,26 @@ def _actor_before(quote, process):
 
 def _process_spec(pattern):
     """Use exactly the process names in an explicit parent-spawns-child claim."""
+    quote = pattern["quoted_paragraph"]
+    for parent in PROCESS_TOKEN.finditer(quote):
+        for child in PROCESS_TOKEN.finditer(quote, parent.end(), min(len(quote), parent.end() + 160)):
+            between = quote[parent.end():child.start()]
+            if not PROCESS_ACTION.search(between) or re.search(r"[.!?;]", between):
+                continue
+            if not (_actor_before(quote, parent) or EXECUTION_ACTOR.search(
+                    re.split(r"[.!?;]", quote[child.end():child.end()+100], maxsplit=1)[0])):
+                continue
+            child_op = "endswith" if child.group().lower().endswith(".exe") else "contains"
+            predicates = [{"field": "ParentImage", "operator": "endswith", "value": parent.group()},
+                          {"field": "Image", "operator": child_op, "value": child.group()}]
+            command = COMMAND_TOKEN.search(quote, child.end(), min(len(quote), child.end() + 100))
+            if command and not re.search(r"[.!?;]", quote[child.end():command.start()]):
+                predicates.append({"field": "CommandLine", "operator": "contains", "value": command.group()})
+            return {"event_family": "process_creation",
+                    "platform": "linux" if parent.group().lower() in ("sh", "bash") else "windows",
+                    "predicates": predicates}
     if (pattern.get("observable") or {}).get("lexical_behavior") != "web_server_shell":
         return None
-    quote = pattern["quoted_paragraph"]
     parent, child = behavior_leads.WEB_PARENT.search(quote), behavior_leads.SHELL.search(quote)
     if not (parent and child and parent.end() < child.start() <= parent.end() + 180
             and behavior_leads.CHILD_ACTION.search(quote[parent.end():child.start()])):
@@ -74,6 +95,24 @@ def _encoded_powershell_spec(pattern):
     return None
 
 
+def _process_command_spec(pattern):
+    """An explicitly executed command under a named process, never a list of tools."""
+    quote = pattern["quoted_paragraph"]
+    for process in WINDOWS_EXE.finditer(quote):
+        if not _actor_before(quote, process):
+            continue
+        command = COMMAND_TOKEN.search(quote, process.end(), min(len(quote), process.end() + 140))
+        if not command:
+            continue
+        between = quote[process.end():command.start()]
+        if re.search(r"[.!?;]", between) or not re.search(r"\b(?:command(?:\s+line)?|with|to\s+(?:execute|run|invoke))\b", between, re.I):
+            continue
+        return {"event_family": "process_creation", "platform": "windows", "predicates": [
+            {"field": "Image", "operator": "endswith", "value": process.group()},
+            {"field": "CommandLine", "operator": "contains", "value": command.group()}]}
+    return None
+
+
 def _image_load_spec(pattern):
     """Require a literal process loading a literal DLL, not a generic sideloading claim."""
     if (pattern.get("observable") or {}).get("lexical_behavior") != "dll_sideloading":
@@ -88,9 +127,12 @@ def _image_load_spec(pattern):
             suffix = re.split(r"[.!?;]", quote[module.end():module.end() + 120], maxsplit=1)[0]
             if (DLL_LOAD.search(between) and not re.search(r"[.!?;]", between)
                     and (_actor_before(quote, process) or EXECUTION_ACTOR.search(suffix))):
-                return {"event_family": "image_load", "platform": "windows", "predicates": [
+                spec = {"event_family": "image_load", "platform": "windows", "predicates": [
                     {"field": "Image", "operator": "endswith", "value": process.group()},
                     {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}]}
+                if re.search(r"\b(?:not\s+in|outside(?:\s+of)?)\s+System32\b", quote, re.I):
+                    spec["exclude"] = [{"field": "ImageLoaded", "operator": "contains", "value": "System32"}]
+                return spec
     return None
 
 
@@ -127,7 +169,7 @@ def _linux_reverse_shell_spec(pattern):
 
 def behavior_spec(pattern):
     """A bounded behavioral selection from one paragraph; no source verification implied."""
-    return (_process_spec(pattern) or _encoded_powershell_spec(pattern)
+    return (_process_spec(pattern) or _encoded_powershell_spec(pattern) or _process_command_spec(pattern)
             or _image_load_spec(pattern) or _c2_process_spec(pattern)
             or _linux_reverse_shell_spec(pattern))
 
@@ -141,7 +183,8 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                                 "needed before drafting." if analysis["status"] == "no_readable_source" else
                                 "Stored research contains no bounded cited pattern for a draft.")})
     for pattern in analysis["patterns"]:
-        spec = ((pattern.get("draftable") or {}).get("suggested_spec") or behavior_spec(pattern))
+        spec = ((pattern.get("draftable") or {}).get("suggested_spec") or
+                (None if pattern.get("publisher_query") else behavior_spec(pattern)))
         quote = pattern["quoted_paragraph"]
         if not spec:
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
@@ -154,12 +197,21 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                          "reason": "Secondary news source: inspect its original technical publication first."})
             continue
         if (not pattern["quote_is_full_text"] or behavior_leads.NEGATION.search(quote)
-                or not behavior_leads.ACTOR.search(quote)):
+                or (not pattern.get("publisher_query") and not behavior_leads.ACTOR.search(quote))):
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                          "reason": "The inspected paragraph does not tie the file to attacker activity."})
             continue
-        if any(p["field"] == "ParentImage" for p in spec["predicates"]):
-            parent, child = (p["value"] for p in spec["predicates"])
+        if pattern.get("publisher_query"):
+            title = f"Publisher KQL event selector ({analysis['threat_id']}, query {pattern['paragraph']})"[:150]
+            rationale = ("The publisher's inspected KQL query contains exactly these bounded comparisons. "
+                         "This draft translates only the supported event selector; check its scope, intent, "
+                         "false positives and event fields against the original query before approval. "
+                         "The publisher query itself was not executed.")
+            false_positives = ("A publisher hunting query can match normal administration or benign software. "
+                               "Replay labeled benign and malicious events in your own telemetry before approval.")
+        elif any(p["field"] == "ParentImage" for p in spec["predicates"]):
+            parent = next(p["value"] for p in spec["predicates"] if p["field"] == "ParentImage")
+            child = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
             title = f"Reported {parent} spawning {child} ({analysis['threat_id']})"[:150]
             rationale = (f"Paragraph {pattern['paragraph']} reports {parent} spawning {child} during attacker "
                          "activity. This is a behavior hypothesis from the publisher; check the process fields "
@@ -179,9 +231,9 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
             flag = next(p["value"] for p in spec["predicates"] if p["field"] == "CommandLine")
             title = f"Reported {process} {flag} execution ({analysis['threat_id']})"[:150]
             rationale = (f"Paragraph {pattern['paragraph']} reports attacker execution of {process} with the "
-                         f"{flag} switch. This detects a command-line pattern, not the payload or a local sighting; "
+                         f"{flag} command term. This detects a command-line pattern, not the payload or a local sighting; "
                          "verify the publisher's description and event fields before approval.")
-            false_positives = ("Administrative scripts can use encoded PowerShell commands. Review process ancestry, "
+            false_positives = ("Administrative scripts can use the same command terms. Review process ancestry, "
                                "script content and account against benign events before approval.")
         elif spec["event_family"] == "image_load":
             process = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
@@ -202,16 +254,18 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
             false_positives = ("Hostname attribution and process names can be incomplete or shared. Check DNS, "
                                "connection context and benign events before approval.")
         else:
-            name = next(p["value"] for p in spec["predicates"] if p["field"] == "TargetFilename")
-            title = (f"Reported {name} SHA-256 ({analysis['threat_id']})")[:150]
-            rationale = (f"Paragraph {pattern['paragraph']} of the cited publisher report names {name} with an exact "
-                         "SHA-256 in malicious activity. This proposal identifies only that reported sample, "
-                         "not every variant or an event observed in the local environment.")
-            false_positives = (f"A legitimate {name} may exist; require the reported SHA-256. "
-                               "Check file-hash telemetry and benign look-alikes before approval.")
+            name = next((p["value"] for p in spec["predicates"] if p["field"] == "TargetFilename"), None)
+            title = (f"Reported {name or 'file'} SHA-256 ({analysis['threat_id']})")[:150]
+            rationale = (f"Paragraph {pattern['paragraph']} of the cited publisher report identifies a file by "
+                         "SHA-256 in malicious activity. This is an exact sample hunt, not a behavioral detection "
+                         "or evidence of activity in the local environment.")
+            false_positives = ("Check file-hash telemetry and benign context before approval; "
+                               "a hash match identifies the reported sample only.")
         try:
             result = drafting.propose(analysis["threat_id"], pattern["source_url"], pattern["paragraph"], spec,
-                                      title, rationale, false_positives, path, proposed_by="bounded_research_pass")
+                                      title, rationale, false_positives, path, proposed_by="bounded_research_pass",
+                                      publisher_query=pattern.get("publisher_query", False),
+                                      browser_capture_id=pattern.get("browser_capture_id"))
         except ValueError as exc:
             gaps.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                          "reason": f"Candidate refused: {exc}"})
@@ -229,6 +283,20 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
     return {"threat_id": analysis["threat_id"], "research_status": analysis["status"],
             "patterns_reviewed": len(analysis["patterns"]), "proposals": proposals, "gaps": gaps,
             "note": "No source was analyst-verified, no rule was approved or deployed, and no local risk was scored."}
+
+
+def proposal_gaps(threat_id: str, path: Path | None = None, offset: int = 0, limit: int = 20):
+    """Page all gaps on one lead; also deduplicate any source-linked candidates."""
+    if offset < 0 or limit < 1:
+        raise ValueError("offset must be non-negative and limit positive")
+    result = propose_from_stored(threat_id, path)
+    gaps = result["gaps"]
+    limit = min(limit, 40)
+    end = offset + limit
+    return {"threat_id": result["threat_id"], "total": len(gaps), "offset": offset,
+            "gaps": gaps[offset:end], "next_offset": end if end < len(gaps) else None,
+            "proposals": [{"rule_id": p["rule_id"], "status": p["status"]} for p in result["proposals"]],
+            "note": "Draft proposals may be created from stored cited text; no source was verified or rule approved."}
 
 
 def propose_stored_batch(path: Path | None = None, limit: int = 20, after_id: str = ""):
@@ -254,26 +322,32 @@ def propose_stored_batch(path: Path | None = None, limit: int = 20, after_id: st
             results.append({"threat_id": ident, "research_status": outcome["research_status"],
                             "patterns_reviewed": outcome["patterns_reviewed"],
                             "drafts_created": sum(p["status"] == "draft_unverified" for p in proposals),
+                            "existing_drafts": sum(p["status"] == "existing_draft" for p in proposals),
                             "existing_rule_matches": sum(p["status"] == "existing_coverage" for p in proposals),
                             "proposals": [{"rule_id": p["rule_id"], "status": p["status"],
                                            "source_url": p["source_url"], "paragraph": p["paragraph"]}
                                           for p in proposals],
-                            "gap_count": len(outcome["gaps"]), "gaps": outcome["gaps"][:5]})
+                            "gap_count": len(outcome["gaps"]), "gaps": outcome["gaps"][:5],
+                            "gaps_remaining": max(0, len(outcome["gaps"]) - 5),
+                            "gaps_next_offset": 5 if len(outcome["gaps"]) > 5 else None})
         except ValueError as exc:
             results.append({"threat_id": ident, "status": "error", "reason": str(exc)[:300],
-                            "patterns_reviewed": 0, "drafts_created": 0, "existing_rule_matches": 0,
+                            "patterns_reviewed": 0, "drafts_created": 0, "existing_drafts": 0,
+                            "existing_rule_matches": 0,
                             "proposals": [], "gap_count": 0, "gaps": []})
     cursor = ids[-1] if ids else after_id.upper()
     with store.connection(path) as db:
         remaining = db.execute("SELECT COUNT(*) FROM research_outcomes WHERE threat_id>?", (cursor,)).fetchone()[0]
     return {"leads_processed": len(results), "patterns_reviewed": sum(r["patterns_reviewed"] for r in results),
             "drafts_created": sum(r["drafts_created"] for r in results),
+            "existing_drafts": sum(r["existing_drafts"] for r in results),
             "existing_rule_matches": sum(r["existing_rule_matches"] for r in results),
             "gaps_total": sum(r["gap_count"] for r in results), "results": results,
             "next_cursor": cursor if remaining else None, "remaining_researched_leads": remaining,
             "note": ("Stored research only: no source fetch, analyst verification, approval, deployment, local "
                      "telemetry claim or environment risk score. Each draft cites an inspected paragraph; "
-                     "unreadable sources cannot yield a source-linked draft.")}
+                     "unreadable sources need a cited browser capture before they can yield a source-linked draft. "
+                     "Use propose_stored_draft_gaps for every gap beyond this batch preview.")}
 
 
 def advance_stored_backfill(path: Path | None = None, limit: int = 20):
@@ -293,7 +367,8 @@ def advance_stored_backfill(path: Path | None = None, limit: int = 20):
         db.execute("UPDATE proposal_backfill_state SET cursor=?,last_run_at=? WHERE id=1",
                    (next_cursor, now()))
     return {"leads_processed": result["leads_processed"], "patterns_reviewed": result["patterns_reviewed"],
-            "drafts_created": result["drafts_created"], "existing_rule_matches": result["existing_rule_matches"],
+            "drafts_created": result["drafts_created"], "existing_drafts": result["existing_drafts"],
+            "existing_rule_matches": result["existing_rule_matches"],
             "gaps_total": result["gaps_total"],
             "errors": sum(r.get("status") == "error" for r in result["results"]),
             "remaining_researched_leads": result["remaining_researched_leads"],

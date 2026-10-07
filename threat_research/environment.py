@@ -60,7 +60,8 @@ def validate_profile(profile):
     if not isinstance(telemetry, dict) or not telemetry:
         raise ValueError("provide at least one telemetry family")
     for family, config in telemetry.items():
-        if family not in ("process_creation", "network_connection", "file_event", "image_load", "mcp_audit") or not isinstance(config, dict):
+        if family not in ("process_creation", "network_connection", "file_event", "image_load",
+                          "web_access", "proxy", "mcp_audit") or not isinstance(config, dict):
             raise ValueError("unsupported telemetry family")
         if profile["siem"] == "generic":
             mapping = config.get("field_map")
@@ -84,6 +85,8 @@ def validate_profile(profile):
                 if not isinstance(config.get(key), str) or not SAFE_TOKEN.fullmatch(config[key]):
                     raise ValueError(f"{family}: Splunk {key} is required")
         else:
+            if family in ("web_access", "proxy"):
+                raise ValueError(f"{family}: Defender has no built-in table for this family; use generic field mapping or Splunk")
             expected = {"process_creation": "DeviceProcessEvents", "network_connection": "DeviceNetworkEvents",
                         "file_event": "DeviceFileEvents", "image_load": "DeviceImageLoadEvents",
                         "mcp_audit": "MCPAudit_CL"}[family]

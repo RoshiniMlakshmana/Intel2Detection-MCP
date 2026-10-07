@@ -108,7 +108,7 @@ def _publisher_hunts(blocks, url):
                           else "kql", "text": block, "sha256": hashlib.sha256(block.encode()).hexdigest(),
                           "status": "publisher_query_unverified",
                           "note": "Publisher-provided hunt; review scope, fields and false positives before use."})
-    return found[:8]
+    return found[:30]
 
 
 class _SameHostRedirectOnly(urllib.request.HTTPRedirectHandler):
@@ -267,13 +267,18 @@ def _extract_paragraphs(threat_id, source_url, paragraphs, digest, hunts):
     cited = sorted({d["paragraph"] for d in details} | {lead["paragraph"] for lead in leads}
                    | {p["paragraph"] for p in patterns})
     cited = cited[:90] + [e["paragraph"] for e in selected[:10] if e["paragraph"] not in cited[:90]]
+    paragraph_text = {n: html.unescape(paragraphs[n - 1]) for n in cited[:100]}
+    for index, hunt in enumerate(hunts, 1):
+        hunt["paragraph"] = len(paragraphs) + index
+        if len(hunt["text"]) <= 5000:
+            paragraph_text[hunt["paragraph"]] = hunt["text"]
     return {"threat_id": threat_id.upper(), "source": source_url,
             "sha256": digest, "paragraphs_scanned": len(paragraphs),
             "relevant_paragraphs": len(selected), "excerpts": selected[:10],
             "behavior_leads": leads,
             "behavior_patterns": patterns,
             "specific_details": details,
-            "paragraph_text": {n: html.unescape(paragraphs[n - 1]) for n in cited[:100]},
+            "paragraph_text": paragraph_text,
             "publisher_hunts": hunts,
             "status": "research_leads_only",
             "next_step": "Read the linked full report, verify behavior and telemetry, then record a cited analyst observation."}

@@ -8,6 +8,7 @@ import hashlib
 import json
 import sys
 import time
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
@@ -16,7 +17,8 @@ from .core import now
 from .rules import TEMPLATES
 
 MAX_EVENT_BYTES = 64_000
-EVENT_TYPES = {"process_creation", "network_connection", "file_event", "image_load", "tool_invocation"}
+EVENT_TYPES = {"process_creation", "network_connection", "file_event", "image_load", "web_access",
+               "proxy", "tool_invocation"}
 
 
 def local_rules(path=None, include_drafts=False):
@@ -61,15 +63,21 @@ def _matches(rule, event):
         kind = "tool_invocation" if spec["event_family"] == "mcp_audit" else spec["event_family"]
         if event.get("event_type") != kind:
             return False
-        for predicate in spec["predicates"]:
+        if "sequence" in spec:
+            return False  # Single events never satisfy a correlation.
+        def matches_predicate(predicate):
             raw = event.get(predicate["field"])
-            if raw is None or isinstance(raw, (bool, list, dict)) or not isinstance(raw, (str, int)):
+            if raw is None or isinstance(raw, (list, dict)) or (isinstance(raw, bool) and predicate["field"] != "Signed") \
+                    or not isinstance(raw, (str, int, bool)):
                 return False
-            observed, expected = str(raw).casefold(), predicate["value"].casefold()
-            if not {"equals": observed == expected, "contains": expected in observed,
-                    "endswith": observed.endswith(expected)}[predicate["operator"]]:
-                return False
-        return True
+            observed, expected = str(raw), predicate["value"]
+            if not predicate.get("case_sensitive"):
+                observed, expected = observed.casefold(), expected.casefold()
+            return {"equals": observed == expected, "contains": expected in observed,
+                    "endswith": observed.endswith(expected)}[predicate["operator"]]
+        return (all(matches_predicate(p) for p in spec["predicates"])
+                and (not spec.get("any_of") or any(matches_predicate(p) for p in spec["any_of"]))
+                and not any(matches_predicate(p) for p in spec.get("exclude", [])))
     if behavior == "ioc_network":
         if event.get("event_type") != "network_connection":
             return False
@@ -111,6 +119,8 @@ def read_jsonl(file):
 
 def replay(events, rules):
     """Binary event-level confusion matrix with all false alerts and misses visible."""
+    events = list(events)
+    sequence_hits = _sequence_hits(events, rules)
     counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
     cases, seen = [], set()
     for event in events:
@@ -120,12 +130,13 @@ def replay(events, rules):
             raise ValueError("duplicate event_id in replay")
         seen.add(event["event_id"])
         hits = detect(event, rules)
+        hits.extend(sequence_hits.get(event["event_id"], []))
         bucket = ("tp" if hits else "fn") if event["expected_malicious"] else ("fp" if hits else "tn")
         counts[bucket] += 1
         cases.append({"event_id": event["event_id"], "scenario": event["scenario"],
                       "truth": "malicious" if event["expected_malicious"] else "benign",
                       "outcome": bucket, "rule_ids": [hit["rule_id"] for hit in hits],
-                      "behaviors": [hit["behavior"] for hit in hits]})
+                     "behaviors": [hit["behavior"] for hit in hits]})
     tp, fp, fn, tn = (counts[key] for key in ("tp", "fp", "fn", "tn"))
     return {"sample_size": len(cases), "counts": counts,
             "precision": round(tp / (tp + fp), 3) if tp + fp else None,
@@ -133,6 +144,44 @@ def replay(events, rules):
             "false_positive_rate": round(fp / (fp + tn), 3) if fp + tn else None,
             "cases": cases,
             "scope": "Synthetic labeled event fixtures; local reference matching, not production SIEM accuracy."}
+
+
+def _sequence_hits(events, rules):
+    """Evaluate ordered pairs by event time; emit on the second event only."""
+    hits = {}
+    for rule in rules:
+        spec = json.loads(rule["custom_spec"]) if rule.get("custom_spec") else {}
+        if "sequence" not in spec:
+            continue
+        seq = spec["sequence"]
+        steps = []
+        for predicates in seq["steps"]:
+            single = {"event_family": spec["event_family"], "platform": spec["platform"], "predicates": predicates}
+            steps.append({**rule, "custom_spec": json.dumps(single)})
+        ordered = []
+        for event in events:
+            if event.get("event_type") != spec["event_family"]:
+                continue
+            group = event.get(seq["group_by"])
+            if not isinstance(group, (str, int)) or isinstance(group, bool) or not str(group):
+                continue
+            try:
+                timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                if timestamp.tzinfo is None:
+                    raise ValueError("sequence timestamps require a timezone")
+            except (KeyError, TypeError, AttributeError, ValueError) as exc:
+                raise ValueError("sequence events need valid timezone-aware timestamps") from exc
+            ordered.append((timestamp, str(group), event))
+        ordered.sort(key=lambda x: x[0])
+        history = {}
+        for timestamp, group, event in ordered:
+            recent = [t for t in history.get(group, []) if (timestamp - t).total_seconds() <= seq["within_seconds"]]
+            if _matches(steps[1], event) and any(t < timestamp for t in recent):
+                hits.setdefault(event["event_id"], []).append({"rule_id": rule["id"], "behavior": rule["behavior"]})
+            if _matches(steps[0], event):
+                recent.append(timestamp)
+            history[group] = recent
+    return hits
 
 
 def rule_content_hash(rule):
@@ -196,6 +245,21 @@ def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=Tr
     return {**result, "rule_id": rule_id, "rule_hash": rule_hash, "sample_provenance": provenance,
             "scope": "Local reference matching against analyst-labeled samples, not production SIEM accuracy; "
                      "native Splunk/Defender validation remains pending until a customer connects its SIEM."}
+
+
+def screen_benign_baseline(rule_id, path=None):
+    """Read-only sanity screen, never an approval check or a recall measurement."""
+    candidates = [r for r in local_rules(path, include_drafts=True) if r["id"] == rule_id]
+    if not candidates:
+        raise ValueError("unknown or unavailable draft rule")
+    file = resources.files("threat_research") / "lab_fixtures" / "benign_baseline.jsonl"
+    events = list(read_jsonl(file))
+    correlation = _sequence_hits(events, candidates)
+    matches = [e["event_id"] for e in events if _matches(candidates[0], e) or e["event_id"] in correlation]
+    return {"rule_id": rule_id, "fixture_events": len(events), "benign_matches": len(matches),
+            "matching_event_ids": matches, "provenance": "bundled_synthetic_fixture",
+            "approval_gate": "does not count", "native_siem_test": "not run",
+            "note": "Small fictional benign examples only. Zero matches does not establish a low false-positive rate."}
 
 
 def watch_jsonl(file, path=None, include_drafts=False, poll_seconds=1.0, from_end=False):

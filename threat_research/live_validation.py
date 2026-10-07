@@ -205,7 +205,7 @@ def compare_splunk_inventory(rule_id, path=None, fetch=None):
             if signals is None:
                 from . import custom_rules
                 spec = custom_rules.get_spec(rule_id, path)
-                signals = tuple(item["value"].lower() for item in spec["predicates"])
+                signals = tuple(item["value"].lower() for item in custom_rules.all_predicates(spec))
             hits = [s for s in signals if s in haystack]
             if rule["behavior"] == "ioc_network":
                 threat_id = rule["threat_id"]
@@ -216,7 +216,7 @@ def compare_splunk_inventory(rule_id, path=None, fetch=None):
                     hits = ["endpoint_terms"] if ip.lower() in haystack and port in haystack else []
                 else:
                     hits = []
-            if len(hits) >= (1 if rule["behavior"] == "ioc_network" else 2):
+            if len(hits) >= (1 if rule["behavior"] == "ioc_network" or len(set(signals)) == 1 else 2):
                 candidates.append({"name": title[:160], "matching_terms": hits,
                                    "disabled": str(content.get("disabled", "0")).lower() in ("1", "true"),
                                    "query_sha256": hashlib.sha256(search.encode()).hexdigest(),

@@ -13,8 +13,8 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import (behavior_leads, corroboration, custom_rules, drafting, environment, research_feeds, research_pass,
-               rules, sources, store, workflow)
+from . import (behavior_leads, browser_research, corroboration, custom_rules, drafting, environment,
+               report_inspection, research_feeds, research_pass, rules, sources, store, workflow)
 from .core import get_threat, now
 
 HASH_KIND = {64: "sha256", 40: "sha1", 32: "md5"}
@@ -48,18 +48,24 @@ def _artifact(value):
 
 
 def _suggested_spec(text, artifacts):
-    """A file name paired with the hash the source prints right after it; not verified evidence."""
+    """An explicitly labeled SHA-256 and, when the same clause has one, its file name."""
     hashes = [a for a in artifacts if a["kind"] == "sha256"]
-    names = [a for a in artifacts if a["kind"] == "filename"]
-    for name in names:
-        start = text.find(name["value"])
-        after = [(text.find(h["value"], start), h) for h in hashes if text.find(h["value"], start) > start]
-        after = [(pos, h) for pos, h in after if pos - start <= 160]
-        if after:
-            digest = min(after, key=lambda item: item[0])[1]["value"]
-            return {"event_family": "file_event", "platform": "windows",
-                    "predicates": [{"field": "SHA256", "operator": "equals", "value": digest},
-                                   {"field": "TargetFilename", "operator": "endswith", "value": name["value"]}]}
+    names = [a for a in artifacts if a["kind"] == "filename" and re.search(r"\.[A-Za-z0-9]{2,5}$", a["value"])]
+    for digest in hashes:
+        pos = text.casefold().find(digest["value"].casefold())
+        if pos < 0:
+            continue
+        # Keep a name/hash pair in the same short clause; a list of many
+        # samples must not pair a hash with the next unrelated filename.
+        nearby = [(abs(text.casefold().find(name["value"].casefold()) - pos), name) for name in names
+                  if abs(text.casefold().find(name["value"].casefold()) - pos) <= 160]
+        predicates = [{"field": "SHA256", "operator": "equals", "value": digest["value"]}]
+        if nearby:
+            name = min(nearby, key=lambda item: item[0])[1]
+            predicates.append({"field": "TargetFilename", "operator": "endswith", "value": name["value"]})
+        elif not re.search(r"\bSHA[ -]?256\s*[:=]?\s*" + re.escape(digest["value"]), text, re.I):
+            continue
+        return {"event_family": "file_event", "platform": "windows", "predicates": predicates}
     return None
 
 
@@ -95,7 +101,7 @@ def _predicate_support(spec, quote):
     if not spec or not quote:
         return []
     result = []
-    for item in spec["predicates"]:
+    for item in custom_rules.all_predicates(spec):
         match = re.search(re.escape(item["value"]), quote, re.I)
         result.append({"predicate": item, "source_value": quote[match.start():match.end()] if match else None,
                        "value_in_paragraph": bool(match),
@@ -138,24 +144,50 @@ def pattern_analysis(threat_id, path: Path | None = None):
               "behavior_description": True} for p in research.get("behavior_patterns_to_verify") or []] + list(
         research.get("specific_details_to_verify") or []) + [
         {**o, "artifacts_as_written": [], "lexical_behavior": o.get("behavior")}
-        for o in research.get("observables_found") or []]
+        for o in research.get("observables_found") or []] + [
+        {**q, "url": q["source_url"], "excerpt": q["text"][:420], "artifacts_as_written": [],
+         "publisher_query": True} for q in research.get("publisher_hunting_queries") or []
+        if q.get("paragraph")]
+    # Browser captures are another untrusted source read. Reuse their stored
+    # text and the same numbering; the source-linked draft records provenance.
+    for capture in browser_research.list_captures(threat["id"], path):
+        original = browser_research.get_capture(capture["id"], path)
+        parsed = report_inspection.extract_report_text(threat["id"], capture["url"], original["page_text"])
+        for item in (parsed["behavior_patterns"] + parsed["specific_details"] + parsed["behavior_leads"]):
+            items.append({**item, "url": capture["url"],
+                          "artifacts_as_written": item.get("artifacts_as_written", []),
+                          "lexical_behavior": item.get("behavior"),
+                          "behavior_description": item in parsed["behavior_patterns"],
+                          "_capture": capture["id"], "_capture_page": parsed})
+        for query in parsed["publisher_hunts"]:
+            items.append({**query, "url": capture["url"], "excerpt": query["text"][:420],
+                          "artifacts_as_written": [], "publisher_query": True,
+                          "_capture": capture["id"], "_capture_page": parsed})
     patterns = []
     for item in items:
         url, number = item["url"], item["paragraph"]
-        page = pages.get(url, {})
+        page = item.get("_capture_page") or pages.get(url, {})
         with store.connection(path) as db:
             row = db.execute("SELECT text FROM inspected_paragraphs WHERE url=? AND paragraph=? AND page_sha256=?",
                              (url, number, page.get("sha256") or "")).fetchone()
-        text = row["text"] if row else item["excerpt"]
+        text = (page.get("paragraph_text", {}).get(number) if item.get("_capture") else
+                row["text"] if row else item["excerpt"])
+        text = text or item["excerpt"]
         published, collected, title = _page_dates(url, threat, path)
         artifacts = [_artifact(a) for a in item.get("artifacts_as_written", [])]
         suggestion = _suggested_spec(text, artifacts)
+        if (row or item.get("_capture")) and item.get("publisher_query"):
+            from . import publisher_queries
+            suggestion = publisher_queries.bounded_spec(text)
         host = urlsplit(url).hostname or url
         is_cve = bool(sources.CVE.fullmatch(threat["id"]))
         pattern = {
-            "source_url": url, "paragraph": number, "page_role": item.get("role"),
+            "source_url": url, "paragraph": number,
+            "page_role": "browser_capture" if item.get("_capture") else item.get("role"),
+            "browser_capture_id": item.get("_capture"),
             "published": published, "collected": collected, "inspected_at": page.get("inspected_at"),
-            "page_sha256": page.get("sha256"), "quoted_paragraph": text, "quote_is_full_text": bool(row),
+            "page_sha256": page.get("sha256"), "quoted_paragraph": text,
+            "quote_is_full_text": bool(row or (item.get("_capture") and number in page.get("paragraph_text", {}))),
             "observable": ({"lexical_behavior": item["lexical_behavior"]} if item.get("lexical_behavior") else
                            {"artifacts": artifacts}),
             "why_malicious_per_source": _why_malicious(text, title, host),
@@ -165,9 +197,10 @@ def pattern_analysis(threat_id, path: Path | None = None):
                             + ("no local event context is recorded for this lead."
                                if not context else f"your recorded local context says observed="
                                f"{'yes' if context['observed'] else 'no'} ({context['detail'][:120]}).")),
-            "status": "unverified_quoted_claim",
+            "status": "publisher_query_unverified" if item.get("publisher_query") else "unverified_quoted_claim",
+            "publisher_query": bool(item.get("publisher_query")),
         }
-        if row and not suggestion:
+        if (row or item.get("_capture")) and not suggestion:
             # This is the same bounded selector the automatic proposal pass
             # uses, so the workup cannot claim the behavior is undraftable
             # while showing its rule in the draft list.
@@ -178,7 +211,10 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                    "original paragraph and real telemetry before approval."}
                           if suggestion else
                           {"suggested_spec": None,
-                           "reason": ("Behavior described, but no bounded telemetry predicates are confirmed; "
+                           "reason": ("Publisher query uses a complex or unsupported expression; preserve it for "
+                                      "analyst adaptation, without dropping filters."
+                                      if item.get("publisher_query") else
+                                      "Behavior described, but no bounded telemetry predicates are confirmed; "
                                       "review the publisher's query and propose a custom detection after verification."
                                       if item.get("behavior_description") else
                                       "Only file names or paths here: a name alone is not an attack pattern."
@@ -407,7 +443,7 @@ def _draft_view(rule_id, path):
                                  "scope": "Cited publisher text; analyst verification still required."}
                                 if link else None),
             "sigma": rule["sigma"],
-            "required_fields": sorted({p["field"] for p in spec["predicates"]}) if spec else None,
+            "required_fields": custom_rules.required_fields(spec) if spec else None,
             "telemetry_requirements": drafting.TELEMETRY.get(spec["event_family"]) if spec else rule.get("telemetry"),
             "queries": drafting.query_status(rule_id, path),
             "labeled_checks": workflow.latest_check(rule_id, path) or {"status": "not run",
@@ -429,6 +465,16 @@ def lead_workup(threat_id, path: Path | None = None):
     from . import browser_research
     browser_captures = browser_research.capture_summaries(ident, path)
     patterns = pattern_analysis(ident, path)
+    shared = []
+    page_urls = sorted({p["url"] for p in research.get("pages", []) if p.get("status") == "inspected"})
+    with store.connection(path) as db:
+        for url in page_urls:
+            ids = [r["threat_id"] for r in db.execute(
+                "SELECT DISTINCT threat_id FROM research_page_inspections WHERE url=? AND status='inspected' "
+                "ORDER BY threat_id LIMIT 30", (url,)).fetchall()]
+            if len(ids) > 1:
+                shared.append({"source_url": url, "lead_ids": ids, "review_hint":
+                               "These leads cite the same inspected page; review its claims once, then check each lead's scope."})
     inventory = rules.inventory_status(ident, path)
     drafts = [_draft_view(r["id"], path) for r in threat["rules"]]
     rule_ids = {r["id"] for r in threat["rules"]}
@@ -441,8 +487,9 @@ def lead_workup(threat_id, path: Path | None = None):
         blocker = f"Not researched yet: research_lead('{ident}') reads the cited pages (read-only)."
     elif suggestions:
         first = suggestions[0]
-        blocker = (f"No draft yet. Paragraph {first['paragraph']} of {first['source_url']} pairs a file name with "
-                   "its hash; Claude may propose it with propose_detection_from_paragraph (stored unverified).")
+        blocker = (f"No draft yet. The inspected source at paragraph {first['paragraph']} of "
+                   f"{first['source_url']} has a bounded candidate. Run propose_stored_drafts or have Claude "
+                   "review its exact predicates with propose_detection_from_paragraph; it remains unverified.")
     elif patterns["patterns"]:
         blocker = ("Not draftable from the inspected text: " +
                    "; ".join(sorted({p["draftable"].get("reason", "") for p in patterns["patterns"]
@@ -479,6 +526,7 @@ def lead_workup(threat_id, path: Path | None = None):
     else:
         decision = progression.get("next_action")
     return {"threat_id": ident, "title": threat["title"], "kind": threat["kind"],
+            "shared_source_groups": shared,
             "source": {"name": source.get("source_name") if source else None,
                        "url": source["source_url"] if source else None},
             "published": threat.get("published"), "collected": threat.get("first_seen"),
