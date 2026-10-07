@@ -86,7 +86,8 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
         adapters = {
             "CISA KEV": lambda: sources.collect_kev(source_since.get("CISA KEV", since)),
             "NVD": lambda: sources.collect_nvd(source_since.get("NVD", since), until),
-            "GitHub advisories": lambda: sources.collect_ghsa(source_since.get("GitHub advisories", since)),
+            "GitHub advisories": lambda: sources.collect_ghsa(source_since.get("GitHub advisories", since),
+                                                            until=until, database=path or store.db_path()),
         }
         if os.environ.get("THREATFOX_AUTH_KEY"):
             adapters["ThreatFox C2"] = lambda: sources.collect_threatfox(source_since.get("ThreatFox C2", since))
@@ -101,6 +102,7 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
     ids = set()
     for name, collect in adapters.items():
         try:
+            resume_state = None
             try:
                 records = list(collect())
             except sources.PartialCollection as partial:
@@ -109,9 +111,17 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
                 records = partial.records
                 result["errors"][name] = str(partial)[:300]
                 result["partial"][name] = partial.complete_through.isoformat().replace("+00:00", "Z")
+                resume_state = partial.resume_state
             for record in records:
                 record.setdefault("reported_by", name)
             inserted, fresh, changed = ingest(records, path, return_new_ids=True)
+            if name == "GitHub advisories":
+                with store.connection(path) as db:
+                    if resume_state is not None:
+                        db.execute("INSERT OR REPLACE INTO collection_cursors(source,state) VALUES (?,?)",
+                                   (name, json.dumps(resume_state)))
+                    elif name not in result["partial"]:
+                        db.execute("DELETE FROM collection_cursors WHERE source=?", (name,))
             if records and records[0].get("bootstrap_repo"):
                 with store.connection(path) as db:
                     db.execute("INSERT OR REPLACE INTO repo_bootstraps(repo,snapshot_sha,completed_at) VALUES (?,?,?)",

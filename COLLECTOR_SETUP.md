@@ -68,6 +68,18 @@ polling also follows `Solutions/`. These are **external rule pointers**, not imp
 rule bodies or proof of deployed local coverage; inspect the linked rule to compare
 behavior and license.
 
+The Sentinel recursive tree can exceed the default 8 MB JSON response limit.
+Version 0.12.1 allows up to 32 MB only for curated repository tree fetches, still
+refuses a truncated tree, and checkpoints only after ingesting the complete index.
+A live check returned 42,285 tree entries and 2,766 in-scope rule pointers.
+
+GitHub advisories use the endpoint's `Link` cursors, rather than unsupported page
+numbers. The five-page per-run budget retains fetched records and saves the next
+cursor only after successful ingestion. Interrupted fetches retain that page for
+retry; completed snapshots clear the cursor before advancing toward the current
+poll window. `GITHUB_TOKEN` is honored for advisory requests as well as repositories.
+An incomplete catch-up remains `partial`/`degraded`; it is never reported as complete.
+
 New/unpopulated RSS sources start with a 365-day window. A source that has never
 produced a usable record reports `empty_feed`; an already populated source may
 legitimately return zero during a quiet poll. Empty feeds make the poll degraded.
@@ -126,6 +138,12 @@ batch. Resume with `--after-id NEXT_CURSOR` until `next_cursor` is null, or ask
 Claude to page `propose_stored_drafts`. Refresh outdated/unreadable research first.
 Existing analyst drafts report `existing_draft`; they are not new automatic rules
 or evidence of deployed coverage.
+
+Draft backfill excludes CVE-only exposure/patch reviews from its bounded batch,
+so those records cannot consume all slots before report behavior is considered.
+The zero-draft catch-up batch on the user's host consisted of CVE-only records;
+it did not test the five reports. Process the report batches and inspect cited
+predicates before interpreting their results as automatic drafting coverage.
 
 After this check, fully **quit Claude from the tray**, reopen it, start a new chat,
 and confirm `propose_stored_draft_gaps` and `screen_benign_baseline` are available.

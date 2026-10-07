@@ -112,7 +112,8 @@ def collect_catalog(repo, path, kind, since, until=None, database=None, source_n
     sha = commit.get("sha") if isinstance(commit, dict) else None
     if not isinstance(sha, str) or not SHA.fullmatch(sha):
         raise ValueError("invalid GitHub snapshot commit")
-    tree = fetch(api + "/git/trees/" + sha + "?recursive=1", headers=headers)
+    tree_options = {"max_bytes": 32_000_000} if fetch is fetch_json else {}
+    tree = fetch(api + "/git/trees/" + sha + "?recursive=1", headers=headers, **tree_options)
     if not isinstance(tree, dict) or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
         raise ValueError("GitHub tree missing or truncated; bootstrap was not checkpointed")
     at = (until or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z")

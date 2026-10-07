@@ -14,6 +14,18 @@ from test_workup_drafting import Base, REPORT_URL, REPORT_HTML
 
 
 class ExtractionFixes(Base):
+    def test_report_backfill_does_not_spend_its_budget_on_cve_patch_reviews(self):
+        ident = self.report()
+        core.ingest([{'id': 'CVE-2099-99999', 'title': 'Fictional patch advisory',
+                      'source': REPORT_URL, 'summary': 'fixture'}], self.path)
+        with store.connection(self.path) as db:
+            db.execute("INSERT INTO research_outcomes VALUES (?, 'completed_insufficient_detail', ?, '{}')",
+                       ('CVE-2099-99999', core.now()))
+        result = proposal_pass.propose_stored_batch(self.path, limit=1)
+        self.assertEqual(result['results'][0]['threat_id'], ident)
+        self.assertEqual(result['drafts_created'], 1)
+        self.assertIsNone(result['next_cursor'])
+
     def test_rmm_chain_without_actor_word_creates_own_draft(self):
         html = b'<html><article><p>RMM.Agent.exe launched PowerShell with Invoke-WebRequest, then executed msiexec.exe with /qn to install the package.</p></article></html>'
         ident = self.report(html=html)

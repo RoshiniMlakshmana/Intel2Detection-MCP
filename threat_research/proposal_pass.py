@@ -330,7 +330,7 @@ def propose_stored_batch(path: Path | None = None, limit: int = 20, after_id: st
     count = max(1, min(int(limit), 40))
     with store.connection(path) as db:
         ids = [row["threat_id"] for row in db.execute(
-            "SELECT threat_id FROM research_outcomes WHERE threat_id>? ORDER BY threat_id LIMIT ?",
+            "SELECT threat_id FROM research_outcomes WHERE threat_id>? AND threat_id NOT GLOB 'CVE-*' ORDER BY threat_id LIMIT ?",
             (after_id.upper(), count)).fetchall()]
     results = []
     for ident in ids:
@@ -355,7 +355,7 @@ def propose_stored_batch(path: Path | None = None, limit: int = 20, after_id: st
                             "proposals": [], "gap_count": 0, "gaps": []})
     cursor = ids[-1] if ids else after_id.upper()
     with store.connection(path) as db:
-        remaining = db.execute("SELECT COUNT(*) FROM research_outcomes WHERE threat_id>?", (cursor,)).fetchone()[0]
+        remaining = db.execute("SELECT COUNT(*) FROM research_outcomes WHERE threat_id>? AND threat_id NOT GLOB 'CVE-*'", (cursor,)).fetchone()[0]
     return {"leads_processed": len(results), "patterns_reviewed": sum(r["patterns_reviewed"] for r in results),
             "drafts_created": sum(r["drafts_created"] for r in results),
             "existing_drafts": sum(r["existing_drafts"] for r in results),

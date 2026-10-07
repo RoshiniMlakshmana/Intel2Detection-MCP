@@ -150,6 +150,9 @@ def initialize(path: Path | None = None):
             CREATE TABLE IF NOT EXISTS repo_bootstraps (
                 repo TEXT PRIMARY KEY, snapshot_sha TEXT NOT NULL, completed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS collection_cursors (
+                source TEXT PRIMARY KEY, state TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS research_page_inspections (
                 threat_id TEXT NOT NULL REFERENCES threats(id), url TEXT NOT NULL,
                 role TEXT NOT NULL, via TEXT,
