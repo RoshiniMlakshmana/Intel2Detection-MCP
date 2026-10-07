@@ -39,6 +39,27 @@ class SocLabTest(unittest.TestCase):
         self.assertEqual(len(soc_replay.local_rules(self.directory / "lab.sqlite3")), 0)
         self.assertEqual(len(soc_replay.local_rules(self.directory / "lab.sqlite3", include_drafts=True)), 3)
 
+    def test_automatic_text_and_query_drafts_have_independent_positive_and_negative_checks(self):
+        automatic = self.report['automatic_drafting']
+        self.assertEqual(automatic['status'], 'passed')
+        self.assertEqual(automatic['reports_tested'], 5)
+        self.assertEqual(automatic['automatic_drafts'], 11)
+        self.assertEqual(automatic['publisher_queries_translated'], 7)
+        self.assertEqual(automatic['checks_passed'], 23)
+        self.assertTrue(automatic['sigma_ids_unique'] and automatic['dedup_passed'])
+        self.assertTrue(any(c['name'] == 'rmm negative' and not c['actual_match'] for c in automatic['checks']))
+        self.assertTrue(any(c['name'] == 'sideload negative' and not c['actual_match'] for c in automatic['checks']))
+        self.assertEqual(len(soc_replay.local_rules(self.directory / 'automatic' / 'lab.sqlite3')), 0)
+
+    def test_lab_repository_cannot_write_to_inherited_production_root(self):
+        elsewhere = Path(self.tmp.name) / 'real-repository'
+        with patch.dict('os.environ', {'RULE_REPOSITORY_DIR': str(elsewhere)}):
+            output = Path(self.tmp.name) / 'isolated'
+            soc_lab.run(output)
+        self.assertFalse(elsewhere.exists())
+        self.assertEqual(len(list((output / 'rule-repository' / 'draft').glob('*.json'))), 3)
+        self.assertEqual(len(list((output / 'automatic' / 'rule-repository' / 'draft').glob('*.json'))), 11)
+
     def test_local_appended_event_stream_and_partial_line(self):
         target = self.directory / "live_events.jsonl"
         events = list(soc_replay.read_jsonl(self.directory / "events.jsonl"))

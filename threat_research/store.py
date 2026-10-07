@@ -93,7 +93,7 @@ def initialize(path: Path | None = None):
             );
             CREATE TABLE IF NOT EXISTS source_attempts (
                 name TEXT PRIMARY KEY, attempted_at TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('ok','partial','error')),
+                status TEXT NOT NULL CHECK(status IN ('ok','partial','error','empty_feed')),
                 records INTEGER NOT NULL DEFAULT 0, detail TEXT
             );
             CREATE TABLE IF NOT EXISTS alert_queue (
@@ -146,6 +146,12 @@ def initialize(path: Path | None = None):
                 status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
                 decided_at TEXT, decided_reason TEXT, evidence_id INTEGER,
                 UNIQUE(rule_kind,rule_id,threat_id,source_url,paragraph,behavior)
+            );
+            CREATE TABLE IF NOT EXISTS repo_bootstraps (
+                repo TEXT PRIMARY KEY, snapshot_sha TEXT NOT NULL, completed_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS collection_cursors (
+                source TEXT PRIMARY KEY, state TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS research_page_inspections (
                 threat_id TEXT NOT NULL REFERENCES threats(id), url TEXT NOT NULL,
@@ -204,12 +210,19 @@ def initialize(path: Path | None = None):
             );
         """)
         # Existing local stores from the first release remain usable.
+        attempts_schema = db.execute("SELECT sql FROM sqlite_master WHERE name='source_attempts'").fetchone()[0]
+        if "empty_feed" not in attempts_schema:
+            db.execute("ALTER TABLE source_attempts RENAME TO source_attempts_legacy")
+            db.execute("CREATE TABLE source_attempts (name TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('ok','partial','error','empty_feed')), records INTEGER NOT NULL DEFAULT 0, detail TEXT)")
+            db.execute("INSERT INTO source_attempts SELECT * FROM source_attempts_legacy")
+            db.execute("DROP TABLE source_attempts_legacy")
         for table, columns in {
             "threats": {"kind": "TEXT NOT NULL DEFAULT 'advisory'", "indicator": "TEXT",
                         "indicator_type": "TEXT", "confidence": "INTEGER", "expires_at": "TEXT"},
             "rules": {"expires_at": "TEXT", "rejected_reason": "TEXT", "rejected_at": "TEXT"},
             "evidence": {"source_name": "TEXT"},
             "rule_tests": {"sample_provenance": "TEXT"},
+            "rule_source_links": {"verified_page_sha256": "TEXT"},
             "source_state": {"total_records": "INTEGER NOT NULL DEFAULT 0",
                               "last_error": "TEXT", "last_error_at": "TEXT"},
         }.items():

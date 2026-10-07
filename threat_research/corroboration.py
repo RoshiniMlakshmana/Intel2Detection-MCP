@@ -85,7 +85,8 @@ def queue_custom_matches(threat_id, source_url, page, path: Path | None = None):
                                 "WHERE r.status IN ('draft','approved')").fetchall()
     queued = []
     for row in candidates:
-        values = [p["value"].casefold() for p in json.loads(row["spec"])["predicates"]]
+        from . import custom_rules
+        values = [p["value"].casefold() for p in custom_rules.all_predicates(json.loads(row["spec"]))]
         if source_url in _existing_source_urls("local", row["id"], path):
             continue
         for number, text in sorted(texts.items(), key=lambda item: int(item[0])):

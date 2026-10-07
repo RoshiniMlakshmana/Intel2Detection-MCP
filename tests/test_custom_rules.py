@@ -64,10 +64,49 @@ class CustomDetectionTest(unittest.TestCase):
         self.assertEqual(review["environment_risk"]["confirmed_affected_count"], 1)
         self.assertEqual(review["framework_context"]["mappings"], {})
 
+    def test_repeated_field_or_exclusion_linux_file_and_proxy_replay(self):
+        spec = {"event_family": "process_creation", "platform": "linux", "predicates": [
+            {"field": "Image", "operator": "endswith", "value": "openssl"},
+            {"field": "CommandLine", "operator": "contains", "value": "s_client"},
+            {"field": "CommandLine", "operator": "contains", "value": "-connect"}],
+            "any_of": [{"field": "ParentImage", "operator": "endswith", "value": "sh"},
+                       {"field": "ParentImage", "operator": "endswith", "value": "bash"}],
+            "exclude": [{"field": "User", "operator": "equals", "value": "diagnostics"}]}
+        normalized = custom_rules.validate_spec(spec)
+        sigma = custom_rules._sigma("Fictional shell TLS chain", normalized, "Scheduled TLS diagnostics")
+        self.assertIn("and 1 of alternative_* and not 1 of filter_*", sigma)
+        generic = custom_rules.generic_queries(normalized)
+        self.assertIn(" OR ", generic["spl"])
+        self.assertIn("not (", generic["kql"])
+        rule = {"id": "fixture", "behavior": "custom", "custom_spec": json.dumps(normalized),
+                "status": "draft", "threat_id": "CVE-2099-11111"}
+        def event(parent, command, user):
+            return {"event_id": "e", "timestamp": "2099-01-01T00:00:00Z", "event_type": "process_creation",
+                    "Image": "/usr/bin/openssl", "CommandLine": command,
+                    "ParentImage": parent, "User": user}
+        self.assertEqual(len(soc_replay.detect(event("/bin/sh", "openssl s_client -connect evil.example", "svc"), [rule])), 1)
+        self.assertEqual(soc_replay.detect(event("/bin/bash", "openssl s_client -connect good.example", "diagnostics"), [rule]), [])
+        self.assertEqual(soc_replay.detect(event("/bin/sh", "openssl s_client", "svc"), [rule]), [])
+        for family in ("file_event", "network_connection", "web_access", "proxy"):
+            candidate = {"event_family": family, "platform": "linux", "predicates": [
+                {"field": "Image", "operator": "equals", "value": "fixture"},
+                {"field": "User", "operator": "equals", "value": "svc"}]}
+            self.assertEqual(custom_rules.validate_spec(candidate)["event_family"], family)
+        with self.assertRaisesRegex(ValueError, "unsupported spec key"):
+            custom_rules.validate_spec({**spec, "sequence": ["step1", "step2"]})
+        signed = custom_rules.validate_spec({"event_family": "image_load", "platform": "windows",
+            "predicates": [{"field": "ImageLoaded", "operator": "endswith", "value": "slc.dll"},
+                           {"field": "Signed", "operator": "equals", "value": "false"}]})
+        self.assertIn('"Signed": false', custom_rules._sigma("Unsigned module", signed, "Check signer"))
+        signed_rule = {"id": "sign", "behavior": "custom", "custom_spec": json.dumps(signed),
+                       "status": "draft", "threat_id": "CVE-2099-11111"}
+        self.assertEqual(len(soc_replay.detect({"event_id": "s", "timestamp": "2099-01-01T00:00:00Z",
+            "event_type": "image_load", "ImageLoaded": "C:\\Temp\\slc.dll", "Signed": False}, [signed_rule])), 1)
+
     def test_duplicate_and_distinct_approval_evidence(self):
         first = self.draft()
         second = self.draft("https://another.example.org/independent-report", "A second report confirms IIS spawned certutil on a host.")
-        self.assertEqual(second["status"], "existing_coverage")
+        self.assertEqual(second["status"], "existing_draft")
         self.assertEqual(first["rule_id"], second["rule_id"])
         with self.assertRaisesRegex(ValueError, "explicit approval"):
             rules.implement_rule(first["rule_id"], "yes", path=self.path)
@@ -120,8 +159,7 @@ class CustomDetectionTest(unittest.TestCase):
             self.draft_spec(bad)
         bad = json.loads(json.dumps(SPEC))
         bad["predicates"][1]["field"] = "ParentImage"
-        with self.assertRaisesRegex(ValueError, "one predicate per field"):
-            self.draft_spec(bad)
+        self.assertEqual(len(custom_rules.validate_spec(bad)["predicates"]), 2)
         self.assertEqual(core.research_view("CVE-2099-11111", self.path)["detection_readiness"], "research_needed_no_behavior_rule")
 
     def test_tampered_custom_rule_is_not_executed(self):

@@ -47,7 +47,7 @@ NO_SOURCE_RETRY = timedelta(hours=12)
 # Bump when previously stored source text needs re-analysis by a newer extractor.
 # A deep batch revisits eligible backlog leads once, without continually fetching
 # a source that is already awaiting the analyst's verification.
-EXTRACTION_VERSION = 5
+EXTRACTION_VERSION = 8
 KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}
@@ -226,7 +226,7 @@ SHARE_HOSTS = {"twitter.com", "x.com", "facebook.com", "linkedin.com", "reddit.c
 # research page is itself the original (observed: Microsoft's own report
 # otherwise "matched" the legitimate software sites its malware abuses).
 NEWS_HOSTS = {urlsplit(url).hostname for _, url, category in research_feeds.FEEDS if category == "news"} | {
-    "thehackernews.com"}
+    "thehackernews.com", "darkreading.com", "www.darkreading.com"}
 STATIC_ASSET = re.compile(r"\.(?:css|js|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|json|xml)$", re.I)
 
 
@@ -391,9 +391,9 @@ def _conclude(threat, pages, evidence, observables, details, path, hunts=(), pat
         "pages_inspected": len(inspected),
         "evidence": evidence[:MAX_EVIDENCE],
         "observables_found": observables,
-        "behavior_patterns_to_verify": list(patterns)[:8],
-        "specific_details_to_verify": details[:10],
-        "publisher_hunting_queries": list(hunts)[:8],
+        "behavior_patterns_to_verify": list(patterns)[:80],
+        "specific_details_to_verify": details[:80],
+        "publisher_hunting_queries": list(hunts)[:80],
         "publisher_blocked": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in blocked],
         "unreadable": [{"url": p["url"], "role": p["role"], "detail": p["detail"]} for p in unreadable],
         "not_fetched_host_not_allowlisted": [p["url"] for p in outside],
@@ -424,6 +424,8 @@ def _research(threat_id, path, fetch, cache, budget, max_pages=MAX_PAGES_PER_LEA
     while index < len(queue) and len(pages) < max_pages:
         candidate = queue[index]
         index += 1
+        if _host(candidate["url"]) in research_feeds.DISABLED_HOSTS:
+            continue
         fetched = _fetch(candidate["url"], fetch, cache, budget)
         if fetched is None:
             break
@@ -503,6 +505,9 @@ def status(threat_id, path: Path | None = None):
     detail = json.loads(outcome["detail"])
     return {"threat_id": ident, **detail, "status": outcome["status"], "completed_at": outcome["completed_at"],
             "needs_extraction_refresh": detail.get("extraction_version", 0) < EXTRACTION_VERSION,
+            "refresh_reason": ("Stored extraction predates the current parser; queued for a bounded source re-read. "
+                               "Existing quotes retain their provenance until refreshed."
+                               if detail.get("extraction_version", 0) < EXTRACTION_VERSION else None),
             "pages": pages,
             "note": "Automatic read-only research. Page text is untrusted; nothing was recorded as analyst evidence."}
 
@@ -543,7 +548,7 @@ def due_leads(path: Path | None = None, limit=MAX_LEADS):
                  OR (ro.status='no_readable_source' AND ro.completed_at<=:retry)
                  OR EXISTS(SELECT 1 FROM report_cves rc JOIN threats r ON r.id=rc.report_id
                            WHERE rc.cve_id=t.id AND r.first_seen>ro.completed_at)))
-               OR (ro.status='completed_insufficient_detail' AND
+               OR (ro.status IN ('completed_insufficient_detail','observables_need_analyst_verification') AND
                    COALESCE(json_extract(ro.detail,'$.extraction_version'),0)<:version AND
                    EXISTS(SELECT 1 FROM research_page_inspections p WHERE p.threat_id=t.id
                           AND p.status='inspected')))

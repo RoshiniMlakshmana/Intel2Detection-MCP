@@ -7,7 +7,7 @@ from email.utils import format_datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import core, environment, report_inspection, research_feeds, rules, soc_replay, store
+from . import automatic_lab, core, environment, report_inspection, research_feeds, rule_repository, rules, soc_replay, store
 
 FIXTURES = Path(__file__).resolve().parent / "lab_fixtures"
 
@@ -24,6 +24,11 @@ def _feed(entries, published):
 
 
 def run(output_directory, fixtures=FIXTURES):
+    with rule_repository.isolated_repository(Path(output_directory) / "rule-repository"):
+        return _run(output_directory, fixtures)
+
+
+def _run(output_directory, fixtures):
     """Use a new isolated lab database and explicit fixture analyst annotations."""
     directory = Path(output_directory).expanduser().resolve()
     if directory.exists() and any(directory.iterdir()):
@@ -107,6 +112,7 @@ def run(output_directory, fixtures=FIXTURES):
               "rule_reviews": rule_reviews,
               "approval": "drafts remain unapproved in the isolated lab inventory",
               "measurement": measurement,
+              "automatic_drafting": automatic_lab.run(directory / "automatic", fixtures),
               "tuning_notes": [
                   "E02 and E04 need change-window, signer, ancestry, and decoded-command review; suppressing all such traffic could conceal malicious use.",
                   "E08 and E09 are deliberate misses. Investigate these telemetry variants as separately evidenced hypotheses; do not infer coverage from a title or one lab sample.",
@@ -118,4 +124,5 @@ def run(output_directory, fixtures=FIXTURES):
             "drafts": len(active), "sample_size": measurement["sample_size"],
             "counts": measurement["counts"], "precision": measurement["precision"],
             "recall": measurement["recall"], "false_positive_rate": measurement["false_positive_rate"],
-            "scope": measurement["scope"]}
+            "scope": measurement["scope"],
+            "automatic_drafting": {k: v for k, v in report["automatic_drafting"].items() if k != "checks"}}

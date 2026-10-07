@@ -20,15 +20,17 @@ from .core import get_threat, now
 VERIFY_PHRASE = "i verified this source paragraph"
 BARE_FILENAME = re.compile(r"^[\w.-]+\.[A-Za-z0-9]{1,5}$")
 TELEMETRY = {
-    "file_event": ("Windows file events carrying every predicate field. SHA256 needs a source that records file "
+    "file_event": ("File events carrying every predicate field. SHA256 needs a source that records file "
                    "hashes, e.g. Microsoft Defender DeviceFileEvents.SHA256; Sysmon Event ID 11 (FileCreate) "
                    "records no hash."),
-    "process_creation": "Windows process-creation events (Sysmon Event ID 1 / Defender DeviceProcessEvents).",
+    "process_creation": "Process creation events with process, parent, and command line fields when used.",
     "network_connection": ("Network events carrying the destination hostname and initiating process, for example "
                            "Defender DeviceNetworkEvents.RemoteUrl and InitiatingProcessFileName. Sysmon Event ID 3 "
                            "alone does not guarantee a destination hostname."),
     "image_load": ("Windows DLL load events with both process and loaded module, for example Sysmon Event ID 7 "
                    "or Defender DeviceImageLoadEvents. Check that image-load collection is enabled."),
+    "web_access": "Web access events containing the selected HTTP method, URL, and client fields.",
+    "proxy": "Proxy events containing the selected URL, host, action, and client fields.",
     "mcp_audit": "MCP audit events with the predicate fields.",
 }
 UNVERIFIED_DESCRIPTION = ("Unverified: proposed from a cited source paragraph; analyst source verification and "
@@ -141,13 +143,13 @@ def manual_reviews(threat_id, path: Path | None = None):
 
 def _overlaps(normalized, fp, db):
     """Other local custom rules sharing a literal predicate (same field and value): related, not identical."""
-    wanted = {(p["field"], p["value"].casefold()) for p in normalized["predicates"]}
+    wanted = {(p["field"], p["value"].casefold()) for p in custom_rules.all_predicates(normalized)}
     out = []
     for row in db.execute("SELECT c.rule_id,c.spec,r.title,r.status,r.fingerprint FROM custom_rule_specs c "
                           "JOIN rules r ON r.id=c.rule_id"):
         if row["fingerprint"] == fp:
             continue
-        shared = [p for p in json.loads(row["spec"])["predicates"] if (p["field"], p["value"].casefold()) in wanted]
+        shared = [p for p in custom_rules.all_predicates(json.loads(row["spec"])) if (p["field"], p["value"].casefold()) in wanted]
         if shared:
             out.append({"rule_id": row["rule_id"], "title": row["title"], "status": row["status"],
                         "shared_predicates": shared})
@@ -171,14 +173,16 @@ def _browser_source(threat_id, source_url, capture_id, paragraph, path):
     if not capture or capture["threat_id"] != threat_id.upper() or capture["url"] != source_url:
         raise ValueError("browser capture not found for this lead and cited URL")
     paragraphs = report_inspection.browser_paragraphs(capture["page_text"])
-    if not 1 <= int(paragraph) <= len(paragraphs):
+    parsed = report_inspection.extract_report_text(threat_id, source_url, capture["page_text"])
+    query_text = parsed["paragraph_text"].get(int(paragraph)) if int(paragraph) > len(paragraphs) else None
+    if not query_text and not 1 <= int(paragraph) <= len(paragraphs):
         raise ValueError("paragraph number is not in the browser capture")
-    return {"text": paragraphs[int(paragraph) - 1], "page_sha256": "browser:" + capture["text_sha256"],
+    return {"text": query_text or paragraphs[int(paragraph) - 1], "page_sha256": "browser:" + capture["text_sha256"],
             "inspected_at": capture["captured_at"], "provenance": "assistant_browser_capture_unverified"}
 
 
 def propose(threat_id, source_url, paragraph, spec, title, rationale, false_positives, path: Path | None = None,
-            manual_review_id=None, browser_capture_id=None, proposed_by="claude_proposal"):
+            manual_review_id=None, browser_capture_id=None, proposed_by="claude_proposal", publisher_query=False):
     """Create an unverified, source-linked draft after an inventory comparison; never approves.
 
     The source is either a stored paragraph of an automatically inspected page, or (manual_review_id)
@@ -199,15 +203,32 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
               {**inspected_paragraph(threat_id, source_url, paragraph, path), "provenance": "automated_inspection"})
     quoted = source["text"]
     folded = quoted.casefold()
-    absent = [p["value"] for p in normalized["predicates"] if p["value"].casefold() not in folded]
+    from .proposal_pass import SYSTEM32_EXCLUSION
+    absent = [p["value"] for p in custom_rules.all_predicates(normalized)
+              if p["value"].casefold() not in folded and not (normalized["event_family"] == "image_load"
+              and p in normalized.get("exclude", []) and p == SYSTEM32_EXCLUSION)]
+    if SYSTEM32_EXCLUSION in normalized.get("exclude", []):
+        rationale = rationale[:850] + " Default analyst tuning excludes C:\\Windows\\System32\\ loads; this exclusion is not a publisher claim."
     if absent:
         raise ValueError(f"predicate value(s) not found in the cited paragraph: {absent}; every value must be "
                          "quoted from the source, never inferred")
     if normalized["event_family"] == "file_event" and all(
-            BARE_FILENAME.fullmatch(p["value"]) for p in normalized["predicates"]):
+            BARE_FILENAME.fullmatch(p["value"]) for p in custom_rules.all_predicates(normalized)):
         raise ValueError("a file name alone is not an attack pattern; add a value the paragraph ties to the "
                          "activity (a hash, command line, path or address)")
-    if not (behavior_leads.ACTOR.search(quoted) or behavior_leads.HASH.search(quoted)):
+    if publisher_query:
+        from . import research_pass
+        import hashlib
+        hunts = research_pass.status(threat_id, path).get("publisher_hunting_queries") or []
+        if browser_capture_id:
+            from . import browser_research, report_inspection
+            capture = browser_research.get_capture(browser_capture_id, path)
+            hunts = report_inspection.extract_report_text(threat_id, source_url, capture["page_text"])["publisher_hunts"]
+        if not any(q.get("paragraph") == paragraph and q.get("source_url") == source_url
+                   and q.get("sha256") == hashlib.sha256(quoted.encode()).hexdigest() for q in hunts):
+            raise ValueError("publisher query is not an exact stored query for the inspected page")
+        source["provenance"] = "publisher_query_unverified"
+    if not publisher_query and not (behavior_leads.has_behavior_context(quoted) or behavior_leads.HASH.search(quoted)):
         raise ValueError("the cited paragraph does not describe malicious activity or a malicious artifact")
     fp = custom_rules.fingerprint(normalized)
     title, rationale, false_positives = title.strip(), rationale.strip(), false_positives.strip()
@@ -221,9 +242,10 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
              "scope": "Exact predicate-set fingerprint against local and analyst-imported rules; overlaps share a "
                       "literal predicate but are different logic."}
     if local or external:
-        return {"status": "existing_coverage" if local else "existing_external_coverage",
+        return {"status": ("existing_draft" if local and local["status"] == "draft" else
+                           "existing_coverage" if local else "existing_external_coverage"),
                 "rule_id": (local or external)["id"], "inventory_check": check,
-                "note": "No duplicate was created. Compare the existing rule's logic before relying on it."}
+                "note": "No duplicate was created. A draft is not deployment or inventory coverage."}
     rule_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "threat-research:" + fp))
     sigma = custom_rules._sigma(title, normalized, false_positives, UNVERIFIED_DESCRIPTION, (source_url,))
     templates = custom_rules.generic_queries(normalized)
@@ -248,12 +270,9 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
                     json.dumps({"source": source_url, "paragraph": int(paragraph)})))
     rule_repository.export_rule(rule_id, path)
     return {"status": "draft_unverified", "rule_id": rule_id, "sigma": sigma,
-            "required_fields": sorted({p["field"] for p in normalized["predicates"]}),
-            "telemetry_requirements": ("Linux process creation with executable and command line fields, for "
-                                       "example Defender DeviceProcessEvents on a Linux endpoint. Verify "
-                                       "collection and actual field mapping before running a query."
-                                       if normalized["platform"] == "linux" else
-                                       TELEMETRY[normalized["event_family"]]),
+            "required_fields": custom_rules.required_fields(normalized),
+            "telemetry_requirements": TELEMETRY[normalized["event_family"]] +
+                                      (" Correlation also requires Timestamp and the nonempty group field; order and window must be validated." if "sequence" in normalized else ""),
             "source": {"url": source_url, "paragraph": int(paragraph), "provenance": source["provenance"],
                        "page_sha256": source["page_sha256"],
                        "inspected_at": source["inspected_at"], "quoted_text": quoted},
@@ -268,15 +287,18 @@ def verify(rule_id, confirmation, note="", path: Path | None = None):
     """The analyst's explicit source verification: records the analyst observation; never approves."""
     if not isinstance(confirmation, str) or confirmation.strip().lower() != VERIFY_PHRASE:
         raise ValueError("explicit confirmation 'I verified this source paragraph' is required")
+    current = source_link(rule_id, path)
+    if current and not current["cited_values_still_present"]:
+        raise ValueError("source changed or is unavailable: cited values no longer occur together; refresh the draft before verification")
     with store.connection(path) as db:
         link = db.execute("SELECT * FROM rule_source_links WHERE rule_id=?", (rule_id,)).fetchone()
         if not link:
             raise ValueError("this rule has no source-linked proposal to verify")
-        if link["status"] == "verified":
+        if current["source_verification_current"]:
             return {"status": "already_verified", "rule_id": rule_id, "verified_at": link["verified_at"]}
         fp = db.execute("SELECT fingerprint FROM rules WHERE id=?", (rule_id,)).fetchone()[0]
-        claim = (f"Analyst verified paragraph {link['paragraph']} of the cited source for rule {rule_id[:8]}: "
-                 f"{link['quoted_text'][:700]}")
+        claim = (f"Analyst verified paragraph {current['current_citation']['paragraph']} of the cited source for rule {rule_id[:8]}: "
+                 f"{current['current_citation']['text'][:700]}")
         db.execute("INSERT OR IGNORE INTO evidence (threat_id,source_url,claim,kind,behavior,observed_at) "
                    "VALUES (?,?,?,?,?,?)", (link["threat_id"], link["source_url"], claim, "analyst_observation",
                                             "custom", now()))
@@ -285,10 +307,10 @@ def verify(rule_id, confirmation, note="", path: Path | None = None):
                                                                      claim)).fetchone()[0]
         db.execute("INSERT OR IGNORE INTO custom_rule_observations VALUES (?,?)", (evidence_id, fp))
         db.execute("INSERT OR IGNORE INTO rule_evidence VALUES (?,?)", (rule_id, evidence_id))
-        db.execute("UPDATE rule_source_links SET status='verified',verified_at=?,verified_note=? WHERE rule_id=?",
-                   (now(), (note or "")[:500], rule_id))
+        db.execute("UPDATE rule_source_links SET status='verified',verified_at=?,verified_note=?,verified_page_sha256=? WHERE rule_id=?",
+                   (now(), (note or "")[:500], current["current_page_sha256"], rule_id))
         db.execute("INSERT INTO audit(at,action,target,detail) VALUES (?,?,?,?)",
-                   (now(), "draft_source_verified", rule_id, json.dumps({"evidence_id": evidence_id})))
+                   (now(), "draft_source_verified", rule_id, json.dumps({"evidence_id": evidence_id, "page_sha256": current["current_page_sha256"], "paragraph": current["current_citation"]["paragraph"]})))
     rule_repository.export_rule(rule_id, path)
     return {"status": "source_verified", "rule_id": rule_id, "evidence_id": evidence_id,
             "rule_status": "draft", "pattern_score_changed": False,
@@ -296,9 +318,38 @@ def verify(rule_id, confirmation, note="", path: Path | None = None):
 
 
 def source_link(rule_id, path: Path | None = None):
+    """Keep original provenance immutable; compare it with the latest cited page."""
+    from .proposal_pass import SYSTEM32_EXCLUSION
     with store.connection(path) as db:
         row = db.execute("SELECT * FROM rule_source_links WHERE rule_id=?", (rule_id,)).fetchone()
-    return dict(row) if row else None
+        if not row:
+            return None
+        link = dict(row)
+        original = link["page_sha256"]
+        if original.startswith("manual:"):
+            current_sha, paragraphs = original, [(link["paragraph"], link["quoted_text"])]
+        elif original.startswith("browser:"):
+            from . import report_inspection
+            capture = db.execute("SELECT page_text,text_sha256 FROM browser_source_captures WHERE threat_id=? AND url=? ORDER BY id DESC LIMIT 1",
+                                 (link["threat_id"], link["source_url"])).fetchone()
+            current_sha = "browser:" + capture["text_sha256"] if capture else None
+            parsed = report_inspection.extract_report_text(link["threat_id"], link["source_url"], capture["page_text"]) if capture else {}
+            paragraphs = list(parsed.get("paragraph_text", {}).items())
+        else:
+            page = db.execute("SELECT sha256,status FROM research_page_inspections WHERE threat_id=? AND url=?",
+                              (link["threat_id"], link["source_url"])).fetchone()
+            current_sha = page["sha256"] if page and page["status"] == "inspected" else None
+            paragraphs = [(r["paragraph"], r["text"]) for r in db.execute("SELECT paragraph,text FROM inspected_paragraphs WHERE url=? AND page_sha256=?",
+                                                                       (link["source_url"], current_sha))]
+    spec = custom_rules.get_spec(rule_id, path)
+    values = [p["value"].casefold() for p in custom_rules.all_predicates(spec) if p != SYSTEM32_EXCLUSION] if spec else []
+    cited = next(((n, text) for n, text in paragraphs if values and all(v in text.casefold() for v in values)), None)
+    reviewed = link.get("verified_page_sha256") or original
+    link.update({"current_page_sha256": current_sha, "source_changed_since_draft": current_sha != original,
+                 "cited_values_still_present": bool(cited), "source_verification_current": bool(
+                     link["status"] == "verified" and current_sha == reviewed and cited),
+                 "current_citation": {"paragraph": cited[0], "text": cited[1]} if cited else None})
+    return link
 
 
 def query_status(rule_id, path: Path | None = None):

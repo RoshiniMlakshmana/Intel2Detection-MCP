@@ -59,6 +59,84 @@ class Base(unittest.TestCase):
 
 
 class AutomaticProposalTest(Base):
+    def test_process_relationship_hash_labels_and_publisher_query_are_review_only_drafts(self):
+        ident = "REPORT-FICTRELATIONSHIP"
+        url = FRESH_URL
+        core.ingest([{"id": ident, "title": "Fictional intrusion research", "kind": "campaign",
+                      "summary": "fixture", "source": url, "claim": "publisher report"}], self.path)
+        hash_value = "a" * 64
+        html = ("<html><body><article>"
+                "<p>The attacker used RMM.Agent.exe to launch PowerShell with Invoke-WebRequest during the intrusion.</p>"
+                "<p>The malicious downloader had SHA256: " + hash_value + " Example Filename: sample.exe.</p>"
+                "<pre>DeviceProcessEvents\n| where FileName == 'mshta.exe' and "
+                "ProcessCommandLine contains 'pages.dev'\n| project FileName, ProcessCommandLine</pre>"
+                "</article></body></html>").encode()
+        outcome = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda _: html)
+        self.assertEqual(outcome["drafts_created"], 3, outcome["results"])
+        drafted = [rules.get_rule(p["rule_id"], self.path) for p in
+                   outcome["results"][0]["rule_proposals"]["proposals"]]
+        specs = [r["custom_spec"] for r in drafted]
+        self.assertTrue(any({p["field"] for p in s["predicates"]} ==
+                            {"ParentImage", "Image", "CommandLine"} for s in specs))
+        chain_rule = next(r for r in drafted if {p["field"] for p in r["custom_spec"]["predicates"]} ==
+                          {"ParentImage", "Image", "CommandLine"})
+        self.assertEqual(soc_replay.screen_benign_baseline(chain_rule["id"], self.path)["matching_event_ids"],
+                         ["BEN-01"])
+        self.assertTrue(any({p["field"] for p in s["predicates"]} ==
+                            {"TargetFilename", "SHA256"} for s in specs))
+        query_rule = next(r for r in drafted if "Publisher KQL" in r["title"])
+        link = drafting.source_link(query_rule["id"], self.path)
+        self.assertIn("publisher_query_unverified", link["proposed_by"])
+        self.assertEqual(link["status"], "unverified")
+        self.assertEqual({r["status"] for r in drafted}, {"draft"})
+        self.assertEqual(proposal_pass.propose_from_stored(ident, self.path)["proposals"][0]["status"],
+                         "existing_draft")
+
+    def test_complex_publisher_query_is_preserved_without_partial_rule(self):
+        ident = "REPORT-FICTCOMPLEXQUERY"
+        core.ingest([{"id": ident, "title": "Fictional threat hunt", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        html = ("<html><body><article><p>Our fictional analysts investigated a threat campaign.</p>"
+                "<pre>DeviceProcessEvents\n| where FileName == 'mshta.exe' or "
+                "ProcessCommandLine contains 'pages.dev'\n| project FileName</pre>"
+                "</article></body></html>").encode()
+        research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda _: html)
+        result = proposal_pass.propose_from_stored(ident, self.path)
+        self.assertEqual(result["proposals"], [])
+        self.assertTrue(any("unsupported expression" in gap["reason"] for gap in result["gaps"]))
+
+    def test_hash_before_filename_and_hash_only_are_distinct_candidates(self):
+        digest = "a" * 64
+        paired = workup._suggested_spec("The malicious sample SHA256: " + digest +
+                                        " Example Filename: sample.exe", [
+            {"kind": "sha256", "value": digest}, {"kind": "filename", "value": "sample.exe"}])
+        self.assertEqual({p["field"] for p in paired["predicates"]}, {"SHA256", "TargetFilename"})
+        only = workup._suggested_spec("The malicious MSP360 sample SHA256: " + digest,
+                                     [{"kind": "sha256", "value": digest}])
+        self.assertEqual([p["field"] for p in only["predicates"]], ["SHA256"])
+        self.assertEqual(custom_rules.validate_spec(only)["predicates"][0]["value"], digest)
+
+    def test_shared_source_is_grouped_across_leads(self):
+        first = self.report("REPORT-FICTSHARED0001", FRESH_URL, FRESH_HTML)
+        second = self.report("REPORT-FICTSHARED0002", FRESH_URL, FRESH_HTML)
+        groups = workup.lead_workup(first, self.path)["shared_source_groups"]
+        self.assertEqual(groups[0]["source_url"], FRESH_URL)
+        self.assertEqual(set(groups[0]["lead_ids"]), {first, second})
+
+    def test_blocked_page_with_saved_browser_capture_can_propose_unverified_draft(self):
+        ident = "REPORT-FICTBROWSER001"
+        core.ingest([{"id": ident, "title": "Fictional blocked report", "kind": "campaign",
+                      "summary": "fixture", "source": FRESH_URL, "claim": "publisher report"}], self.path)
+        research_pass.research_lead(ident, self.path, fetch=lambda _: (_ for _ in ()).throw(ValueError("HTTP 403")))
+        quote = ("During the incident, the attacker used Poedit.exe to load WinSparkle.dll through DLL "
+                 "sideloading, which executed the malicious loader in a trusted application process.")
+        browser_research.capture(ident, FRESH_URL, quote, self.path)
+        result = proposal_pass.propose_from_stored(ident, self.path)
+        self.assertEqual(len(result["proposals"]), 1, result["gaps"])
+        link = drafting.source_link(result["proposals"][0]["rule_id"], self.path)
+        self.assertIn("assistant_browser_capture_unverified", link["proposed_by"])
+        self.assertEqual(link["status"], "unverified")
+
     def test_reported_sideloads_and_linux_reverse_shell_create_distinct_unverified_drafts(self):
         cases = [
             ("REPORT-FICTTALOS0001", FRESH_URL,
@@ -92,7 +170,7 @@ class AutomaticProposalTest(Base):
                 self.assertIn(value, workup.pattern_analysis(ident, self.path)["patterns"][0]
                               ["quoted_paragraph"])
                 again = proposal_pass.propose_from_stored(ident, self.path)
-                self.assertEqual(again["proposals"][0]["status"], "existing_coverage")
+                self.assertEqual(again["proposals"][0]["status"], "existing_draft")
         with store.connection(self.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
                              .fetchone()[0], 0)
@@ -162,12 +240,12 @@ class AutomaticProposalTest(Base):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE kind='analyst_observation'")
                              .fetchone()[0], 0)
         again = proposal_pass.propose_from_stored(ident, self.path)
-        self.assertEqual({p["status"] for p in again["proposals"]}, {"existing_coverage"})
+        self.assertEqual({p["status"] for p in again["proposals"]}, {"existing_draft"})
         image = next(r for r in drafted if r["custom_spec"]["event_family"] == "image_load")
         self.assertIn('"ImageLoaded|endswith": "WinSparkle.dll"', image["sigma"])
         profile = {"name": "Fixture Defender", "siem": "defender", "telemetry": {
             "image_load": {"table": "DeviceImageLoadEvents",
-                           "fields": ["InitiatingProcessFileName", "FileName"]}}}
+                           "fields": ["InitiatingProcessFileName", "FileName", "FolderPath"]}}}
         environment.onboard(profile, [{"asset_id": "fixture-1", "hostname": "fixture-1",
                                       "product": "Fixture", "version": "1", "confirmed_cves": [],
                                       "internet_exposed": False, "criticality": "low",
@@ -219,6 +297,19 @@ class AutomaticProposalTest(Base):
         self.assertEqual(result["proposals"], [])
         self.assertIn("No full cited page is readable", result["gaps"][0]["reason"])
 
+    def test_paged_gap_details_do_not_hide_sixth_or_later_gap(self):
+        ident = "REPORT-FICTGAPS0001"
+        patterns = [{"source_url": FRESH_URL, "paragraph": n,
+                     "quoted_paragraph": f"The attacker mentioned file{n}.exe without an action.",
+                     "quote_is_full_text": True, "draftable": {"suggested_spec": None,
+                                                                   "reason": f"gap {n}"}}
+                    for n in range(1, 17)]
+        with patch("threat_research.workup.pattern_analysis", return_value={
+                "threat_id": ident, "status": "observables_need_analyst_verification", "patterns": patterns}):
+            page = proposal_pass.proposal_gaps(ident, self.path, offset=5, limit=5)
+            self.assertEqual((page["total"], page["next_offset"]), (16, 10))
+            self.assertEqual([g["reason"] for g in page["gaps"]], [f"gap {n}" for n in range(6, 11)])
+
     def test_stored_research_backfill_is_bounded_resumable_and_deduplicated(self):
         for ident, html in (("REPORT-FICTBACKFILLA", FRESH_HTML),
                             ("REPORT-FICTBACKFILLB", b"<html><body><article><p>The malicious loader "
@@ -232,7 +323,7 @@ class AutomaticProposalTest(Base):
             self.assertEqual(first["remaining_researched_leads"], 1)
             self.assertTrue(first["next_cursor"])
             repeat = proposal_pass.propose_stored_batch(self.path, limit=1)
-            self.assertEqual((repeat["drafts_created"], repeat["existing_rule_matches"]), (0, 1))
+            self.assertEqual((repeat["drafts_created"], repeat["existing_drafts"]), (0, 1))
             second = proposal_pass.propose_stored_batch(self.path, limit=1,
                                                        after_id=first["next_cursor"])
         self.assertEqual(second["leads_processed"], 1)
@@ -258,10 +349,10 @@ class AutomaticProposalTest(Base):
                                  .fetchone()[0], first["cursor"])
             second = proposal_pass.advance_stored_backfill(self.path, limit=1)
             self.assertEqual(second["drafts_created"], 0)
-            self.assertEqual(second["existing_rule_matches"], 1)
+            self.assertEqual(second["existing_drafts"], 1)
             self.assertTrue(second["cycle_completed"])
             third = proposal_pass.advance_stored_backfill(self.path, limit=1)
-            self.assertEqual((third["drafts_created"], third["existing_rule_matches"]), (0, 1))
+            self.assertEqual((third["drafts_created"], third["existing_drafts"]), (0, 1))
         self.assertEqual(workflow.list_rules(self.path)["total"], 1)
 
     def test_attacker_encoded_powershell_execution_proposes_review_only_draft(self):
@@ -320,7 +411,7 @@ class AutomaticProposalTest(Base):
             rules.implement_rule(proposal["rule_id"], "implement this rule", path=self.path)
         second = research_pass.run_pass(self.path, threat_ids=[ident], fetch=lambda url: FRESH_HTML)
         self.assertEqual(second["drafts_created"], 0)
-        self.assertEqual(second["results"][0]["rule_proposals"]["proposals"][0]["status"], "existing_coverage")
+        self.assertEqual(second["results"][0]["rule_proposals"]["proposals"][0]["status"], "existing_draft")
 
     def test_filename_only_description_does_not_become_rule(self):
         ident = "REPORT-FICTNAMESONLY"
@@ -493,7 +584,7 @@ class ProposalTest(Base):
         ident = self.report()
         first = self.propose(ident)
         again = self.propose(ident)
-        self.assertEqual((again["status"], again["rule_id"]), ("existing_coverage", first["rule_id"]))
+        self.assertEqual((again["status"], again["rule_id"]), ("existing_draft", first["rule_id"]))
         overlap = self.propose(ident, {"event_family": "file_event", "platform": "windows", "predicates": [
             {"field": "SHA256", "operator": "equals", "value": HASH},
             {"field": "TargetFilename", "operator": "contains", "value": "FictLoader"}]})
