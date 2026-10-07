@@ -40,6 +40,21 @@ lease. Scheduled collection does not deliver queued notifications.
 
 ## Credentials and source health
 
+To resume a stopped collector using the existing database from Claude's config:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\resume_collection.ps1
+```
+
+This installs (or enables a matching) task, starts it immediately, and logs each
+run. It refuses an ambiguous configuration or an existing task pointed elsewhere;
+pass `-Database` explicitly if your MCP setup uses another config location. The
+machine must be on and the user logged in. Check `polling_status` after completion:
+look for a fresh `last_completed` and inspect every `source_attempts` entry. A
+scheduled task waiting between runs need not hold an active polling lease.
+The runner inherits Windows user environment credentials; if keys exist only in
+Claude's MCP config, configure them in the user environment for scheduled intake.
+
 Set `GITHUB_TOKEN` and `THREATFOX_AUTH_KEY` in the Windows user environment, then
 restart processes so they inherit them. Do not put credentials in Git or screenshots.
 GitHub credentials improve API rate limits; ThreatFox is optional until its abuse.ch
@@ -53,7 +68,7 @@ polling also follows `Solutions/`. These are **external rule pointers**, not imp
 rule bodies or proof of deployed local coverage; inspect the linked rule to compare
 behavior and license.
 
-New/unpopulated RSS sources start with a 90-day window. A source that has never
+New/unpopulated RSS sources start with a 365-day window. A source that has never
 produced a usable record reports `empty_feed`; an already populated source may
 legitimately return zero during a quiet poll. Empty feeds make the poll degraded.
 Dark Reading is disabled, including pending article retries. CVE-only leads are
@@ -64,6 +79,11 @@ Securelist, ESET, Datadog, Objective-See, ZDI and Project Zero with a wider wind
 Aqua's old `blog.aquasec.com/rss.xml` stopped at May 2025; it was replaced by
 `https://www.aquasec.com/feed/`, which returned October 2026 records. Publisher
 availability can change; these checks do not establish the laptop's current status.
+
+Rechecked on 2026-10-07 UTC with a 365-day window: DFIR 6, SentinelOne 10,
+ESET 100, Securelist 10, Datadog 30, Aqua 10, Objective-See 8, ZDI 20 and
+Project Zero 10 eligible feed entries, with no fetch/parser errors. These are
+counts from each published feed's available archive, not complete historical totals.
 
 ## Splunk Sysmon lab
 
@@ -77,7 +97,7 @@ First update/install the checkout as above, then run in PowerShell:
 
 This runs the unit suite (including the new Windows/Linux extraction, KQL,
 exclusion, ID and source-refresh regressions), an actual MCP stdio smoke check,
-and the existing synthetic source-to-draft lab. It creates a separate timestamped
+and the synthetic labs. It creates a separate timestamped
 `offline-lab-*` directory with a lab database, fictitious asset/telemetry profile,
 draft Sigma/KQL/SPL, labeled events and `report.json`. It temporarily isolates DB
 and rule-repository environment settings and restores them afterwards. A failed
@@ -87,6 +107,25 @@ intentional benign matches and evasion cases. Matching that baseline validates t
 demonstration's behavior; it does not mean all rules have perfect detection accuracy.
 The lab itself performs no live SIEM or publisher calls; the full unit suite may
 also exercise existing public-framework retrieval paths.
+
+The separate `automatic/` lab supplies five fictional report pages directly to
+the normal research pass, without client-provided predicates or behavior
+annotations. It requires 11 unverified server-written drafts: RMM/PowerShell,
+mshta/GatherOsState, Linux nginx/bash/curl, DLL sideloading, and seven KQL selectors.
+Its 23 positive/negative predicate checks cover case sensitivity, whole-term `has`,
+`has_any`, `has_all`, suffixes, and the enforced System32 path exclusion. It also
+requires unique Sigma IDs, repeat-pass deduplication and a visible gap for a complex
+query rather than silently dropping `summarize`. Single-line KQL code blocks are
+now retained along with multi-line blocks; extractor version 8 queues stale
+research for re-reading. All snapshots stay inside the lab even when a real rule
+repository is configured. This verifies bounded automation on synthetic text;
+it does not establish results on the user's five real reports or native SIEMs.
+
+For real stored research, `propose-stored --database PATH` processes one bounded
+batch. Resume with `--after-id NEXT_CURSOR` until `next_cursor` is null, or ask
+Claude to page `propose_stored_drafts`. Refresh outdated/unreadable research first.
+Existing analyst drafts report `existing_draft`; they are not new automatic rules
+or evidence of deployed coverage.
 
 After this check, fully **quit Claude from the tray**, reopen it, start a new chat,
 and confirm `propose_stored_draft_gaps` and `screen_benign_baseline` are available.

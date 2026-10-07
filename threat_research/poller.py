@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, digest, lead_queue, proposal_pass, research_pass, store
+from . import __version__, digest, lead_queue, proposal_pass, research_feeds, research_pass, store
 from .core import collect_daily, now
 
 
@@ -57,7 +57,7 @@ def _source_windows(path, at):
     with store.connection(path) as db:
         rows = db.execute("SELECT name,last_success,total_records FROM source_state").fetchall()
     floor = at - timedelta(days=7)
-    return {r["name"]: (at - timedelta(days=90) if r["name"].startswith("RSS: ") and not r["total_records"] else
+    return {r["name"]: (at - timedelta(days=research_feeds.INITIAL_LOOKBACK_DAYS) if r["name"].startswith("RSS: ") and not r["total_records"] else
             max(floor, datetime.fromisoformat(r["last_success"].replace("Z", "+00:00")) - timedelta(hours=1)))
             for r in rows}
 

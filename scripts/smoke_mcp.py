@@ -35,6 +35,9 @@ async def main():
                 report = json.loads(result.content[0].text)
                 assert report["measurement"]["counts"] == {"tp": 3, "fp": 2, "fn": 2, "tn": 5}
                 assert report["approval"] == "drafts remain unapproved in the isolated lab inventory"
+                auto = report['automatic_drafting']
+                assert auto['status'] == 'passed' and auto['automatic_drafts'] == 11
+                assert auto['publisher_queries_translated'] == 7 and auto['checks_passed'] == 23
                 source = "https://example.test/fictional-mcp-smoke-report"
 
                 async def call(name, arguments):

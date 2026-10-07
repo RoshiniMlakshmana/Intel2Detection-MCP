@@ -42,7 +42,14 @@ try {
             $Report.measurement.counts.fn -ne 2 -or $Report.measurement.counts.tn -ne 5) {
             throw 'Synthetic replay differs from the documented baseline; inspect report.json.'
         }
-        Write-Output 'PASS: unit tests, MCP stdio, and synthetic source-to-draft replay.'
+        $Automatic = $Report.automatic_drafting
+        if ($Automatic.status -ne 'passed' -or $Automatic.reports_tested -ne 5 -or
+            $Automatic.automatic_drafts -ne 11 -or $Automatic.publisher_queries_translated -ne 7 -or
+            $Automatic.checks_passed -ne 23 -or -not $Automatic.sigma_ids_unique -or -not $Automatic.dedup_passed) {
+            throw 'Automatic report/KQL drafting checks failed; inspect automatic/report.json.'
+        }
+        Write-Output 'PASS: unit tests, MCP stdio, template replay, and automatic report/KQL drafting.'
+        Write-Output 'Automatic drafting: 5 fictional reports, 11 server-written drafts, 7 KQL translations, 23 predicate checks; exclusions and IDs passed.'
         Write-Output "Lab results: $OutputDirectory"
         Write-Output 'Expected fixture counts: TP=3 FP=2 FN=2 TN=5. The misses and benign matches are intentional challenge cases.'
         Write-Output 'Rules remain drafts. Native SIEM validation was not run.'

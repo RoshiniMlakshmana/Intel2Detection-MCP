@@ -224,12 +224,12 @@ def inspect_cited_report(threat_id: str, source_url: str) -> dict:
 
 @mcp.tool()
 def evaluate_synthetic_soc_lab() -> dict:
-    """Run isolated fictional CVE/article-to-draft and 12-event replay; show TP/FP/FN/TN cases, never claim real SIEM accuracy."""
+    """Run template replay plus automatic text/KQL drafting checks in isolated fictional databases; never claim real SIEM accuracy."""
     with tempfile.TemporaryDirectory(prefix="threat-research-soc-lab-") as folder:
         soc_lab.run(Path(folder) / "output")
         report = json.loads((Path(folder) / "output" / "report.json").read_text(encoding="utf-8"))
         return {key: report[key] for key in ("lab_notice", "source_paths", "cve_asset_risk", "illustrative_environment_comparison", "inventory_duplicate_check",
-                                            "rule_reviews", "approval", "measurement", "tuning_notes")}
+                                            "rule_reviews", "approval", "measurement", "tuning_notes", "automatic_drafting")}
 
 
 @mcp.tool()

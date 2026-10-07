@@ -63,6 +63,7 @@ TAGS = re.compile(r"<[^>]{0,2000}>")
 SPACE = re.compile(r"\s+")
 
 DEFAULT_MAX_BYTES = 3_000_000
+INITIAL_LOOKBACK_DAYS = 365
 # A handful of publishers ship unusually large feeds (full-content entries,
 # large archives). These are read-size overrides, not a promise the feed
 # will otherwise succeed (WAF/bot-management blocks are separate failures).

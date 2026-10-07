@@ -131,7 +131,7 @@ def collect_daily(path: Path | None = None, since=None, until=None, adapters=Non
             feed_since = dict(source_since)
             for name, _, _ in research_feeds.FEEDS:
                 if "RSS: " + name not in populated:
-                    feed_since["RSS: " + name] = until - timedelta(days=90)
+                    feed_since["RSS: " + name] = until - timedelta(days=research_feeds.INITIAL_LOOKBACK_DAYS)
             if feed_since:
                 report_records, counts, errors = research_feeds.collect_research(since, until, since_by_name=feed_since, retries=1)
             else:

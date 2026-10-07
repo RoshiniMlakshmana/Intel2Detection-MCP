@@ -47,7 +47,7 @@ NO_SOURCE_RETRY = timedelta(hours=12)
 # Bump when previously stored source text needs re-analysis by a newer extractor.
 # A deep batch revisits eligible backlog leads once, without continually fetching
 # a source that is already awaiting the analyst's verification.
-EXTRACTION_VERSION = 7
+EXTRACTION_VERSION = 8
 KEV_CATALOG = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 # The collected record itself; its facts are already stored as source facts.
 RECORD_HOSTS = {"nvd.nist.gov", "www.cve.org", "cveawg.mitre.org"}

@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-from . import corroboration, dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
+from . import corroboration, dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, proposal_pass, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
 from .core import collect_daily, get_threat, list_threats
 from .digest import due_now, run_daily
 from .rules import import_inventory
@@ -17,7 +17,7 @@ def main():
                                             "onboard", "configure-telemetry", "environment-status", "assess-assets", "check-rule", "probe-splunk", "inspect-report",
                                             "test-siem", "compare-splunk-rules", "poll-once", "poll-status", "serve-live",
                                             "create-pack", "inspect-pack", "onboard-pack", "export-sigma",
-                                            "demo-soc", "watch-events", "review-leads", "review-queue", "doctor",
+                                            "demo-soc", "propose-stored", "watch-events", "review-leads", "review-queue", "doctor",
                                             "refresh-frameworks", "framework-status", "review-detection", "dashboard",
                                             "inventory-status", "declare-inventory", "reject-rule", "reopen-rule",
                                             "rule-repository-status", "test-rule",
@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--include-drafts", action="store_true", help="explicitly enable review-only drafts in the local watcher")
     parser.add_argument("--from-end", action="store_true", help="start watching after existing file contents")
     parser.add_argument("--no-notifications", action="store_true", help="poll-once: collect without sending queued notifications")
+    parser.add_argument("--after-id", default="", help="propose-stored: resume at the previous next_cursor")
     parser.add_argument("--profile", help="environment profile JSON file")
     parser.add_argument("--assets", help="asset inventory CSV file")
     parser.add_argument("--family", choices=["process_creation", "network_connection", "file_event", "image_load", "mcp_audit"], help="Splunk event family")
@@ -117,6 +118,8 @@ def main():
         result = poller.run_poll(notify=not args.no_notifications)
     elif args.command == "poll-status":
         result = poller.poll_status()
+    elif args.command == "propose-stored":
+        result = proposal_pass.propose_stored_batch(after_id=args.after_id)
     elif args.command == "review-leads":
         result = lead_queue.list_leads()
     elif args.command == "review-queue":

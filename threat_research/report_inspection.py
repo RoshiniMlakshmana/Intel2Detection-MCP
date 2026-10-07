@@ -96,7 +96,7 @@ class _Text(HTMLParser):
 
 HUNT_SOURCE = re.compile(r"(?im)^\s*(?:Device[A-Za-z]+Events|CommonSecurityLog|SecurityEvent|"
                          r"search in\s*\(|index\s*=)")
-HUNT_PIPE = re.compile(r"(?im)^\s*\|\s*(?:where|search|project|extend|table|stats|eval)\b")
+HUNT_PIPE = re.compile(r"(?i)\|\s*(?:where|search|project|extend|table|stats|eval)\b")
 
 
 def _publisher_hunts(blocks, url):
