@@ -76,6 +76,7 @@ def _matches(rule, event):
                 observed, expected = observed.casefold(), expected.casefold()
             return {"equals": observed == expected, "contains": expected in observed,
                     "endswith": observed.endswith(expected), "startswith": observed.startswith(expected),
+                    "basename_equals": re.split(r"[\\/]",observed)[-1] == expected,
                     "has": bool(re.search(custom_rules.term_regex(expected), observed))}[predicate["operator"]]
         return (all(matches_predicate(p) for p in spec["predicates"])
                 and (not spec.get("any_of") or any(matches_predicate(p) for p in spec["any_of"]))
@@ -244,7 +245,10 @@ def test_rule_against_samples(rule_id, events_file, path=None, include_drafts=Tr
     provenance = sample_provenance(events_file, events)
     rule_repository.record_test_result(rule_id, result, rule_hash, sample_label or str(events_file), path, provenance)
     rule_repository.export_rule(rule_id, path)
+    spec = json.loads(candidates[0]["custom_spec"]) if candidates[0].get("custom_spec") else {}
     return {**result, "rule_id": rule_id, "rule_hash": rule_hash, "sample_provenance": provenance,
+            "publisher_query_scope": spec.get("query_scope"),
+            "query_scope_evaluated": False if spec.get("query_scope") else None,
             "scope": "Local reference matching against analyst-labeled samples, not production SIEM accuracy; "
                      "native Splunk/Defender validation remains pending until a customer connects its SIEM."}
 

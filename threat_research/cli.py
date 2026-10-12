@@ -20,7 +20,7 @@ def main():
                                             "demo-soc", "propose-stored", "watch-events", "review-leads", "review-queue", "doctor",
                                             "refresh-frameworks", "framework-status", "review-detection", "dashboard",
                                             "inventory-status", "declare-inventory", "reject-rule", "reopen-rule",
-                                            "rule-repository-status", "test-rule",
+                                            "rule-repository-status", "test-rule", "prepare-sysmon",
                                             "list-reviews", "approve-review", "reject-review"])
     parser.add_argument("--host", help="dashboard bind host (default 127.0.0.1)")
     parser.add_argument("--port", type=int, help="dashboard bind port (default 8765)")
@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--complete", action="store_true", help="declare-inventory: mark the declared scope as the complete current inventory")
     parser.add_argument("--reason", help="reject-rule: short rejection reason")
     parser.add_argument("--events-file", help="test-rule: local JSONL file of analyst-labeled positive/benign events")
+    parser.add_argument("--labels-file", help="prepare-sysmon: CSV of event_id and explicit expected_malicious true/false")
     parser.add_argument("--review-id", type=int, help="approve-review/reject-review: pending corroboration review ID")
     parser.add_argument("--approval-phrase", default="", help="approve-review: must be exactly 'implement this rule'")
     args = parser.parse_args()
@@ -150,6 +151,11 @@ def main():
         result = rules.reopen_rule(args.id)
     elif args.command == "rule-repository-status":
         result = rule_repository.list_repository()
+    elif args.command == "prepare-sysmon":
+        from . import sysmon_samples
+        if not args.file or not args.output_directory:
+            parser.error("prepare-sysmon requires --file export.xml --output-directory NEW-DIRECTORY")
+        result = sysmon_samples.prepare(args.file,args.output_directory,args.labels_file)
     elif args.command == "test-rule":
         if not args.id or not args.events_file:
             parser.error("test-rule requires --id RULE-ID and --events-file events.jsonl")

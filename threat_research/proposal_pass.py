@@ -191,6 +191,28 @@ def behavior_spec(pattern):
             or _linux_reverse_shell_spec(pattern))
 
 
+def behavior_specs(pattern):
+    """Independent cited stage hunts; do not invent lineage or a time window."""
+    first = behavior_spec(pattern)
+    specs = [first] if first else []
+    quote = pattern["quoted_paragraph"]
+    for match in re.finditer(r"\bmsiexec\.exe\b", quote, re.I):
+        before = re.split(r"[!?;]|\.(?:\s|$)", quote[:match.start()])[-1]
+        after = re.split(r"[!?;]|\.(?:\s|$)", quote[match.end():match.end()+140])[0]
+        flag = re.search(r"(?<!\w)/qn\b", after, re.I)
+        if not flag or not re.search(r"\b(?:install(?:ed|ation)?|executed)\b", before, re.I):
+            continue
+        predicates = [{"field":"Image", "operator":"endswith", "value":match.group()},
+                      {"field":"CommandLine", "operator":"contains", "value":flag.group()}]
+        packages = list(dict.fromkeys(re.findall(r"\b[\w.-]+\.msi\b", quote, re.I)))
+        if len(packages) == 1 and re.search(r"\b(?:downloaded|package)\b", before, re.I):
+            predicates.append({"field":"CommandLine", "operator":"contains", "value":packages[0]})
+        spec = {"event_family":"process_creation", "platform":"windows", "predicates":predicates}
+        if spec not in specs:
+            specs.append(spec)
+    return specs
+
+
 def propose_from_stored(threat_id: str, path: Path | None = None):
     from . import sources
     if sources.CVE.fullmatch(threat_id.upper()):
@@ -198,14 +220,19 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                 "patterns_reviewed": 0, "proposals": [], "gaps": [],
                 "note": "CVE-only leads go to exposure and patch review. Draft behavior from the original report lead."}
     analysis = workup.pattern_analysis(threat_id, path)
+    stages = []
+    for pattern in analysis["patterns"]:
+        specs = ([] if pattern.get("publisher_query") else behavior_specs(pattern))
+        for spec in specs or [None]:
+            stages.append({**pattern, "_stage_spec": spec})
     proposals, gaps = [], []
     if not analysis["patterns"]:
         gaps.append({"source_url": None, "paragraph": None,
                      "reason": ("No full cited page is readable in stored research. Browser or source review is "
                                 "needed before drafting." if analysis["status"] == "no_readable_source" else
                                 "Stored research contains no bounded cited pattern for a draft.")})
-    for pattern in analysis["patterns"]:
-        spec = ((pattern.get("draftable") or {}).get("suggested_spec") or
+    for pattern in stages:
+        spec = (pattern.get("_stage_spec") or (pattern.get("draftable") or {}).get("suggested_spec") or
                 (None if pattern.get("publisher_query") else behavior_spec(pattern)))
         quote = pattern["quoted_paragraph"]
         if not spec:
@@ -238,8 +265,11 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
             rationale = (f"Paragraph {pattern['paragraph']} reports {parent} spawning {child} in the cited "
                          "process chain. This is a behavior hypothesis from the publisher; check the process fields "
                          "and local context before approval.")
-            false_positives = ("Web administration and application maintenance can launch a shell. "
-                               "Review account, command line, host and change window against benign events.")
+            false_positives = ("Authorized RMM software deployment and maintenance can launch the same child process "
+                               "and download command. Review approved RMM tools, accounts, package origin and change window."
+                               if parent.lower().startswith("rmm.") else
+                               "Authorized administration and application maintenance can launch the same child process. "
+                               "Review parent process, account, command line, host and change window against benign events.")
         elif spec["platform"] == "linux" and spec["event_family"] == "process_creation":
             title = f"Reported OpenSSL reverse-shell client activity ({analysis['threat_id']})"[:150]
             rationale = (f"Paragraph {pattern['paragraph']} reports a named pipe connecting /bin/sh to "
@@ -257,6 +287,9 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
                          "verify the publisher's description and event fields before approval.")
             false_positives = ("Administrative scripts can use the same command terms. Review process ancestry, "
                                "script content and account against benign events before approval.")
+            if process.lower() == "msiexec.exe":
+                false_positives = ("Authorized software deployment commonly uses msiexec /qn. Check the package's "
+                                   "origin, deployment account, signatures and approved change window.")
         elif spec["event_family"] == "image_load":
             process = next(p["value"] for p in spec["predicates"] if p["field"] == "Image")
             module = next(p["value"] for p in spec["predicates"] if p["field"] == "ImageLoaded")
@@ -298,7 +331,9 @@ def propose_from_stored(threat_id: str, path: Path | None = None):
         proposals.append({"source_url": pattern["source_url"], "paragraph": pattern["paragraph"],
                           "status": result["status"], "rule_id": result["rule_id"],
                           "source_verification": ("unverified" if result["status"] == "draft_unverified" else
-                                                  "see existing rule"), "reason": rationale})
+                                                  "see existing rule"), "reason": rationale,
+                          "candidate_spec": spec, "inventory_check": result.get("inventory_check"),
+                          "queries": result.get("queries")})
     with store.connection(path) as db:
         existing = db.execute("SELECT l.source_url,l.paragraph,l.rule_id,r.status FROM rule_source_links l JOIN rules r ON r.id=l.rule_id WHERE l.threat_id=?", (analysis["threat_id"],)).fetchall()
     covered = {(p["source_url"], p["paragraph"]) for p in proposals}
@@ -328,7 +363,9 @@ def proposal_gaps(threat_id: str, path: Path | None = None, offset: int = 0, lim
     end = offset + limit
     return {"threat_id": result["threat_id"], "total": len(gaps), "offset": offset,
             "gaps": gaps[offset:end], "next_offset": end if end < len(gaps) else None,
-            "proposals": [{"rule_id": p["rule_id"], "status": p["status"]} for p in result["proposals"]],
+            "proposals": [{"rule_id": p["rule_id"], "status": p["status"], "paragraph": p["paragraph"],
+                           "candidate_spec": p.get("candidate_spec"), "inventory_check": p.get("inventory_check")}
+                          for p in result["proposals"]],
             "note": "Draft proposals may be created from stored cited text; no source was verified or rule approved."}
 
 

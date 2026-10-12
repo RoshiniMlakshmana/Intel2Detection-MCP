@@ -1,0 +1,13 @@
+{
+  "name": "Declared offline Sysmon lab",
+  "siem": "splunk",
+  "telemetry": {
+    "process_creation": {
+      "index": "sysmon_lab",
+      "sourcetype": "sysmon",
+      "event_code": 1,
+      "fields": ["Image", "ParentImage", "CommandLine", "User", "_time"],
+      "field_map": {"Timestamp": "_time"}
+    }
+  }
+}

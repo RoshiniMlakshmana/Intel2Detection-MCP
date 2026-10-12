@@ -64,8 +64,13 @@ class SequenceRegressionTest(unittest.TestCase):
         self.assertEqual(len(soc_replay.detect(event, [rule])), 1)
         event["Image"] = "MSHTA.EXE"
         self.assertEqual(soc_replay.detect(event, [rule]), [])
-        self.assertIn('"Image|cased"', custom_rules._sigma("Publisher hunt", spec, "Administration"))
-        self.assertIn("tostring(Image) == 'mshta.exe'", custom_rules.generic_queries(spec)["kql"])
+        sigma = custom_rules._sigma("Publisher hunt", spec, "Administration")
+        self.assertIn('"Image|re"', sigma)
+        self.assertNotIn('(?i)', sigma)
+        self.assertTrue(soc_replay._matches(rule, {**event, "Image": r"C:\Windows\System32\mshta.exe"}))
+        kql = custom_rules.generic_queries(spec)["kql"]
+        self.assertIn("tostring(Image) matches regex", kql)
+        self.assertNotIn("tolower(tostring(Image))", kql)
         self.assertIsNone(publisher_queries.bounded_spec(text.replace("project FileName", "project FileName=tolower(FileName)")))
 
     def test_process_command_requires_a_relationship(self):

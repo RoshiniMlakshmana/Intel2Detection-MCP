@@ -94,7 +94,7 @@ class _Text(HTMLParser):
         self.current = []
 
 
-HUNT_SOURCE = re.compile(r"(?im)^\s*(?:Device[A-Za-z]+Events|CommonSecurityLog|SecurityEvent|"
+HUNT_SOURCE = re.compile(r"(?im)(?:^\s*|;\s*)(?:Device[A-Za-z]+Events|CommonSecurityLog|SecurityEvent|"
                          r"search in\s*\(|index\s*=)")
 HUNT_PIPE = re.compile(r"(?i)\|\s*(?:where|search|project|extend|table|stats|eval)\b")
 
@@ -266,7 +266,14 @@ def _extract_paragraphs(threat_id, source_url, paragraphs, digest, hunts):
     # Reserve room for technical paragraphs before general keyword excerpts.
     cited = sorted({d["paragraph"] for d in details} | {lead["paragraph"] for lead in leads}
                    | {p["paragraph"] for p in patterns})
-    cited = cited[:90] + [e["paragraph"] for e in selected[:10] if e["paragraph"] not in cited[:90]]
+    platform_context = []
+    for platform in ("Windows", "Linux"):
+        first = next((index+1 for index,paragraph in enumerate(paragraphs)
+                      if re.search(r'\b'+platform+r'\b',paragraph,re.I)),None)
+        if first is not None and first not in cited[:90]:
+            platform_context.append(first)
+    cited = cited[:90] + platform_context + [e["paragraph"] for e in selected[:10]
+                                            if e["paragraph"] not in cited[:90] + platform_context]
     paragraph_text = {n: html.unescape(paragraphs[n - 1]) for n in cited[:100]}
     for index, hunt in enumerate(hunts, 1):
         hunt["paragraph"] = len(paragraphs) + index

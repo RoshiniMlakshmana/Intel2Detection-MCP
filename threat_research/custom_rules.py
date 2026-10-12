@@ -17,12 +17,15 @@ from .core import get_threat, now
 
 FAMILIES = {"process_creation", "network_connection", "file_event", "image_load",
             "web_access", "proxy", "mcp_audit"}
-FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-VALUE = re.compile(r"^[A-Za-z0-9 .:/_\\-]{1,100}$")
-OPERATORS = {"equals", "contains", "endswith", "startswith", "has"}
+FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+VALUE = re.compile(r"^[A-Za-z0-9 .:/_\\\"'-]{1,100}$")
+OPERATORS = {"equals", "contains", "endswith", "startswith", "has", "basename_equals"}
 DEFENDER_FIELDS = {
     "process_creation": {"Image": "FileName", "ParentImage": "InitiatingProcessFileName",
-                         "CommandLine": "ProcessCommandLine", "User": "AccountName"},
+                         "CommandLine": "ProcessCommandLine", "User": "AccountName",
+                         "ParentCommandLine": "InitiatingProcessCommandLine",
+                         "GrandparentImage": "InitiatingProcessParentFileName",
+                         "ParentCompany": "InitiatingProcessVersionInfoCompanyName"},
     "network_connection": {"DestinationIp": "RemoteIP", "DestinationPort": "RemotePort",
                            "DestinationHostname": "RemoteUrl", "Image": "InitiatingProcessFileName"},
     "image_load": {"Image": "InitiatingProcessFileName", "ImageLoaded": "FolderPath"},
@@ -41,6 +44,10 @@ def term_regex(value):
     return r"(?<![^\W_])" + re.escape(value) + r"(?![^\W_])"
 
 
+def basename_regex(value):
+    return r"(?:^|[\\/])" + re.escape(value) + "$"
+
+
 def _predicates(items, label, minimum, maximum):
     if not isinstance(items, list) or not minimum <= len(items) <= maximum:
         raise ValueError(f"{label} needs {minimum}-{maximum} bounded literal predicates")
@@ -56,6 +63,8 @@ def _predicates(items, label, minimum, maximum):
             raise ValueError("field/operator/value must be bounded literal comparisons, never query syntax")
         if field == "Signed" and (op != "equals" or value.lower() not in ("true", "false")):
             raise ValueError("Signed must be an exact true or false value")
+        if op == "basename_equals" and ("/" in value or "\\" in value):
+            raise ValueError("basename comparison needs a file name, not a path")
         key = (field, op, value if item.get("case_sensitive") else value.casefold(), item.get("case_sensitive", False))
         if key in seen:
             raise ValueError("duplicate predicate")
@@ -78,6 +87,8 @@ def required_fields(spec):
     fields = {p["field"] for p in all_predicates(spec)}
     if "sequence" in spec:
         fields.update((spec["sequence"]["group_by"], "Timestamp"))
+    if "query_scope" in spec:
+        fields.add("Timestamp")
     return sorted(fields)
 
 
@@ -103,13 +114,20 @@ def validate_spec(spec):
         normalized_steps = [_predicates(step, "sequence step", 2, 4) for step in steps]
         return {"event_family": spec["event_family"], "platform": spec["platform"],
                 "sequence": {"group_by": group, "within_seconds": seconds, "steps": normalized_steps}}
-    if set(spec) - {"event_family", "platform", "predicates", "any_of", "exclude"}:
+    if set(spec) - {"event_family", "platform", "predicates", "any_of", "exclude", "query_scope"}:
         raise ValueError("unsupported spec key; event sequence correlation needs a separate reviewed rule")
     normalized = {"event_family": spec["event_family"], "platform": spec["platform"],
                   "predicates": _predicates(spec.get("predicates"), "predicates", 1, 8)}
     for key in ("any_of", "exclude"):
         if key in spec:
             normalized[key] = _predicates(spec[key], key, 1, 8)
+    if "query_scope" in spec:
+        scope = spec["query_scope"]
+        seconds = scope.get("lookback_seconds") if isinstance(scope, dict) else None
+        if (not isinstance(scope, dict) or set(scope) != {"lookback_seconds"} or
+                not isinstance(seconds, int) or isinstance(seconds, bool) or not 1 <= seconds <= 7_776_000):
+            raise ValueError("query_scope needs a 1-second to 90-day lookback")
+        normalized["query_scope"] = {"lookback_seconds": seconds}
     if not 2 <= len(all_predicates(normalized)) <= 12:
         only = normalized["predicates"]
         if not (len(all_predicates(normalized)) == 1 and spec["event_family"] == "file_event"
@@ -142,6 +160,10 @@ def sigma_extras(sigma):
 
 
 def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, references=(), id_seed=None):
+    if "query_scope" in spec:
+        note = f" Publisher query scope: last {spec['query_scope']['lookback_seconds']} seconds; apply this search scope separately from the Sigma event selector."
+        if not description.endswith(note):
+            description += note
     # JSON strings/lists are legal YAML flow scalars.
     kind = spec["event_family"]
     category = {"process_creation": "process_creation", "network_connection": "network_connection",
@@ -181,12 +203,13 @@ def _sigma(title, spec, false_positives, description=DEFAULT_DESCRIPTION, refere
         lines.append("references:")
         lines.extend(f"  - {json.dumps(ref)}" for ref in references)
     lines += ["logsource:", f"  category: {category}", f"  product: {product}", "detection:"]
-    suffix = {"equals": "", "contains": "|contains", "endswith": "|endswith", "startswith": "|startswith", "has": "|re"}
+    suffix = {"equals": "", "contains": "|contains", "endswith": "|endswith", "startswith": "|startswith", "has": "|re", "basename_equals":"|re"}
     def key(item):
-        return item["field"] + suffix[item["operator"]] + ("|cased" if item.get("case_sensitive") and item["operator"] != "has" else "")
+        return item["field"] + suffix[item["operator"]] + ("|cased" if item.get("case_sensitive") and item["operator"] not in ("has", "basename_equals") else "")
     def scalar(item):
-        if item["operator"] == "has":
-            return json.dumps(("" if item.get("case_sensitive") else "(?i)") + term_regex(item["value"]))
+        if item["operator"] in ("has", "basename_equals"):
+            regex = term_regex(item["value"]) if item["operator"]=="has" else basename_regex(item["value"])
+            return json.dumps(("" if item.get("case_sensitive") else "(?i)") + regex)
         return item["value"].lower() if item["field"] == "Signed" else json.dumps(item["value"])
     if not spec.get("any_of") and not spec.get("exclude") and len({key(p)
                                                                       for p in spec["predicates"]}) == len(spec["predicates"]):
@@ -284,6 +307,10 @@ def _query(spec, config, siem):
     if siem == "defender":
         mapping = {**DEFENDER_FIELDS[spec["event_family"]], **mapping}
     fields = config["fields"]
+    window = spec.get("query_scope", {}).get("lookback_seconds")
+    time_field = mapping.get("Timestamp", "_time" if siem == "splunk" else "Timestamp")
+    if window and (time_field not in fields or (siem == "splunk" and time_field != "_time")):
+        return None, ["Timestamp"]
     resolved = []
     missing = []
     for item in all_predicates(spec):
@@ -303,8 +330,8 @@ def _query(spec, config, siem):
             field = field if cased else f"lower({field})"
             if op == "equals":
                 conditions.append(f'{field}={json.dumps(value)}')
-            elif op == "has" or "_" in value or "\\" in value:
-                regex = term_regex(value) if op == "has" else ("^" if op == "startswith" else "") + re.escape(value) + ("$" if op == "endswith" else "")
+            elif op in ("has", "basename_equals") or "_" in value or "\\" in value:
+                regex = term_regex(value) if op == "has" else basename_regex(value) if op == "basename_equals" else ("^" if op == "startswith" else "") + re.escape(value) + ("$" if op == "endswith" else "")
                 conditions.append(f'match({field},{json.dumps(regex)})')
             else:
                 pattern = ("" if op == "startswith" else "%") + value + ("%" if op in ("contains", "startswith") else "")
@@ -312,17 +339,22 @@ def _query(spec, config, siem):
         code = config.get("event_code")
         if code is not None and (not isinstance(code, int) or isinstance(code, bool) or code not in (1, 3, 7, 11)):
             raise ValueError("invalid Sysmon event_code")
-        prefix = f"index={config['index']} sourcetype={config['sourcetype']}" + (f" EventCode={code}" if code else "") + "\n| where "
+        prefix = f"index={config['index']} sourcetype={config['sourcetype']}" + (f" EventCode={code}" if code else "") + (f" earliest=-{window}s" if window else "") + "\n| where "
     else:
         conditions = []
         for field, op, value, cased in resolved:
+            if op == "basename_equals":
+                regex = basename_regex(value).replace("\\", "\\\\").replace("'", "\\'")
+                expr = f"tostring({field})" if cased else f"tolower(tostring({field}))"
+                conditions.append(f"{expr} matches regex '{regex}'")
+                continue
             escaped = value.replace("\\", "\\\\").replace("'", "\\'")
             operator = {"equals": "==", "contains": "contains", "endswith": "endswith", "startswith": "startswith", "has": "has"}[op]
             if cased and op != "equals":
                 operator += "_cs"
             expr = f"tostring({field})" if cased else f"tolower(tostring({field}))"
             conditions.append(f"{expr} {operator} '{escaped}'")
-        prefix = config["table"] + "\n| where "
+        prefix = config["table"] + (f"\n| where {time_field} >= ago({window}s)" if window else "") + "\n| where "
     required = conditions[:len(spec["predicates"])]
     alternatives = conditions[len(required):len(required) + len(spec.get("any_of", []))]
     exclusions = conditions[len(required) + len(alternatives):]
@@ -375,7 +407,7 @@ def generic_queries(spec):
     fields = required_fields(normalized)
     kql, _ = _query(normalized, {"table": "YOUR_EVENT_TABLE", "fields": fields, "field_map": {}}, "template")
     spl, _ = _query(normalized, {"index": "YOUR_INDEX", "sourcetype": "YOUR_SOURCETYPE",
-                                  "fields": fields, "field_map": {"Timestamp": "Timestamp"}}, "splunk")
+                                  "fields": fields + ["_time"], "field_map": {"Timestamp": "_time" if "query_scope" in normalized else "Timestamp"}}, "splunk")
     return {"kql": kql, "spl": spl, "field_names": fields,
             "requires_mapping": ["Replace the event table or index/sourcetype with the actual source.",
                                  "Map each canonical field to a field present in that source.",
@@ -384,6 +416,40 @@ def generic_queries(spec):
             "limitations": (["Splunk join subsearch limits can truncate correlation results; configure limits and validate native behavior.",
                               "Exactly two strictly ordered events in one family with the same nonempty grouping value."]
                              if "sequence" in normalized else [])}
+
+
+def mapped_examples(spec):
+    """Concrete known-schema examples, without declaring the user's SIEM exists."""
+    spec = validate_spec(spec)
+    family = spec["event_family"]
+    tables = {"process_creation":"DeviceProcessEvents", "file_event":"DeviceFileEvents",
+              "network_connection":"DeviceNetworkEvents", "image_load":"DeviceImageLoadEvents"}
+    examples = {}
+    if family in tables:
+        mapping = DEFENDER_FIELDS[family]
+        fields = [mapping.get(field,field) for field in required_fields(spec)]
+        query, missing = _query(spec, {"table":tables[family], "fields":fields, "field_map":mapping}, "defender")
+        examples["defender"] = {"query":query, "field_map":mapping, "missing_fields":missing,
+                                "scope":"Microsoft Defender schema example; not configured or executed on this host."}
+    if family == "process_creation" and spec["platform"] == "windows" and "sequence" not in spec:
+        fields = ["Image", "ParentImage", "CommandLine", "User", "_time"]
+        mapping = {"Timestamp":"_time"}
+        derivations = []
+        for field in ("Image", "ParentImage"):
+            values = [p["value"] for p in all_predicates(spec) if p["field"]==field]
+            if values and all("/" not in value and "\\" not in value for value in values):
+                name = field + "Name"
+                mapping[field] = name
+                fields.append(name)
+                derivations.append(name + '=replace(' + field + ',' + json.dumps(r'^.*[\\/]') + ',"")')
+        query, missing = _query(spec, {"index":"sysmon_lab", "sourcetype":"sysmon", "event_code":1,
+                                       "fields":fields, "field_map":mapping}, "splunk")
+        if query and derivations:
+            first, rest = query.split("\n",1)
+            query = first + "\n| eval " + ", ".join(derivations) + "\n" + rest
+        examples["sysmon_splunk_lab"] = {"query":query, "field_map":mapping, "missing_fields":missing,
+                                         "scope":"Sysmon Event 1, derived process basenames, index sysmon_lab and sourcetype sysmon. Lab assumption; not a live connection."}
+    return examples
 
 
 def fit(rule_id, path=None):

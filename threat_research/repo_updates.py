@@ -19,6 +19,7 @@ REPOSITORIES = (
 )
 CVE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.I)
 SHA = re.compile(r"^[0-9a-f]{40}$")
+INTEL_BOOTSTRAP_REPOS = {"facebook/threat-research", "PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information"}
 
 
 def collect_repo(repo, path, kind, since, until=None, fetch=fetch_json, max_pages=2):
@@ -91,15 +92,17 @@ def collect_catalog(repo, path, kind, since, until=None, database=None, source_n
     store.initialize(database)
     with store.connection(database) as db:
         state = db.execute("SELECT 1 FROM repo_bootstraps WHERE repo=?", (repo,)).fetchone()
-        if state and kind == "community_rule":
+        bootstrap = kind == "community_rule" or repo in INTEL_BOOTSTRAP_REPOS
+        if state and bootstrap:
             # A checkpoint is valid only while its indexed pointers still exist.
             # Recover incomplete/restored databases instead of watching commits
             # forever with an empty community index.
             state = db.execute("SELECT 1 FROM evidence e JOIN threats t ON t.id=e.threat_id "
-                               "WHERE e.kind='source_fact' AND t.kind='community_rule' "
-                               "AND t.id GLOB 'RULEPTR-*' AND e.source_url LIKE ? LIMIT 1",
-                               ("https://github.com/" + repo + "/blob/%",)).fetchone()
-    if kind != "community_rule" or state:
+                               "WHERE e.kind='source_fact' AND t.kind=? "
+                               "AND t.id GLOB ? AND e.source_url LIKE ? LIMIT 1",
+                               (kind, "RULEPTR-*" if kind == "community_rule" else "INTELPTR-*",
+                                "https://github.com/" + repo + "/blob/%")).fetchone()
+    if not bootstrap or state:
         records = collect_repo(repo, path, kind, since, until, fetch=fetch)
         if repo == "Azure/Azure-Sentinel":
             # Modern Sentinel analytic rules live under Solutions as well.
@@ -128,19 +131,23 @@ def collect_catalog(repo, path, kind, since, until=None, database=None, source_n
     records = []
     for item in tree["tree"]:
         file = item.get("path", "")
-        in_scope = file.startswith(path + "/") or (repo == "Azure/Azure-Sentinel" and
+        in_scope = not path or file.startswith(path + "/") or (repo == "Azure/Azure-Sentinel" and
                     file.startswith("Solutions/") and "/Analytic Rules/" in file)
-        if item.get("type") != "blob" or not in_scope or not file.lower().endswith((".yml", ".yaml")):
+        extensions = (".yml", ".yaml") if kind == "community_rule" else (".csv", ".tsv", ".txt", ".json", ".md")
+        if (item.get("type") != "blob" or not in_scope or not file.lower().endswith(extensions)
+                or (kind != "community_rule" and file.rsplit("/", 1)[-1].lower() in
+                    ("readme.md", "license.txt", "code_of_conduct.md", "contributing.md", "security.md"))):
             continue
-        ident = "RULEPTR-" + hashlib.sha256((repo + ":" + file + ":" + item["sha"]).encode()).hexdigest()[:16].upper()
+        ident = ("RULEPTR-" if kind == "community_rule" else "INTELPTR-") + hashlib.sha256((repo + ":" + file + ":" + item["sha"]).encode()).hexdigest()[:16].upper()
         records.append({"id": ident, "kind": kind, "title": (repo + ": " + file)[:300],
-                        "summary": "Initial pinned community-rule file index. Fetch and inspect this external rule before comparing predicates; local coverage is unknown.",
+                        "summary": ("Initial pinned community-rule file index. Fetch and inspect this external rule before comparing predicates; local coverage is unknown."
+                                    if kind == "community_rule" else "Initial pinned supporting-intelligence file index. CSV, text and JSON contents are source pointers, not imported or locally observed IOCs; inspect the linked file and original report."),
                         "published": at, "updated": at, "affected": [],
                         "source": "https://github.com/" + repo + "/blob/" + sha + "/" + urllib.parse.quote(file, safe="/"),
-                        "claim": "Community file pointer collected at snapshot time, not its publication date. No rule body was imported or validated.",
+                        "claim": "Repository file pointer collected at snapshot time, not its publication date. Contents were not imported, validated or observed locally.",
                         "reported_by": source_name or next("GitHub: " + name for name, r, _, _ in REPOSITORIES if r == repo),
                         "bootstrap_repo": repo, "bootstrap_sha": sha})
     if not records:
-        raise ValueError("community repository initial tree has no rules in configured folders")
+        raise ValueError("repository initial tree has no supported files in configured folders")
     # collect_daily checkpoints only after it durably ingests this whole list.
     return records

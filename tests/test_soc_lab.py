@@ -43,9 +43,9 @@ class SocLabTest(unittest.TestCase):
         automatic = self.report['automatic_drafting']
         self.assertEqual(automatic['status'], 'passed')
         self.assertEqual(automatic['reports_tested'], 5)
-        self.assertEqual(automatic['automatic_drafts'], 11)
+        self.assertEqual(automatic['automatic_drafts'], 12)
         self.assertEqual(automatic['publisher_queries_translated'], 7)
-        self.assertEqual(automatic['checks_passed'], 23)
+        self.assertEqual(automatic['checks_passed'], 26)
         self.assertTrue(automatic['sigma_ids_unique'] and automatic['dedup_passed'])
         self.assertTrue(any(c['name'] == 'rmm negative' and not c['actual_match'] for c in automatic['checks']))
         self.assertTrue(any(c['name'] == 'sideload negative' and not c['actual_match'] for c in automatic['checks']))
@@ -58,7 +58,7 @@ class SocLabTest(unittest.TestCase):
             soc_lab.run(output)
         self.assertFalse(elsewhere.exists())
         self.assertEqual(len(list((output / 'rule-repository' / 'draft').glob('*.json'))), 3)
-        self.assertEqual(len(list((output / 'automatic' / 'rule-repository' / 'draft').glob('*.json'))), 11)
+        self.assertEqual(len(list((output / 'automatic' / 'rule-repository' / 'draft').glob('*.json'))), 12)
 
     def test_local_appended_event_stream_and_partial_line(self):
         target = self.directory / "live_events.jsonl"

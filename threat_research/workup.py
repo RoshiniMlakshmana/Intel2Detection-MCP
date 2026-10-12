@@ -179,6 +179,14 @@ def pattern_analysis(threat_id, path: Path | None = None):
         if (row or item.get("_capture")) and item.get("publisher_query"):
             from . import publisher_queries
             suggestion = publisher_queries.bounded_spec(text)
+            if suggestion is None:
+                with store.connection(path) as db:
+                    publisher_context = " ".join(r['text'] for r in db.execute(
+                        "SELECT text FROM inspected_paragraphs WHERE url=? AND page_sha256=?",
+                        (url,page.get('sha256') or '')))
+                platforms = {word.lower() for word in re.findall(r'\b(?:Windows|Linux)\b',publisher_context,re.I)}
+                if len(platforms)==1:
+                    suggestion = publisher_queries.bounded_spec(text,platform_hint=next(iter(platforms)))
         host = urlsplit(url).hostname or url
         is_cve = bool(sources.CVE.fullmatch(threat["id"]))
         pattern = {
@@ -223,6 +231,9 @@ def pattern_analysis(threat_id, path: Path | None = None):
                                       "No file name paired with a hash in this paragraph; a spec needs a "
                                       "specific value the paragraph ties to the activity.")})
         patterns.append(pattern)
+        if not pattern.get("publisher_query") and pattern["quote_is_full_text"]:
+            from . import proposal_pass
+            pattern["draftable"]["stage_specs"] = proposal_pass.behavior_specs(pattern)
     return {"threat_id": threat["id"], "status": research["status"], "patterns": patterns,
             "never_inferred_from": "CVE titles, headlines or file names alone; only inspected paragraph text."}
 

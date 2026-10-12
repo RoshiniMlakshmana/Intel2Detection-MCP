@@ -143,16 +143,27 @@ def manual_reviews(threat_id, path: Path | None = None):
 
 def _overlaps(normalized, fp, db):
     """Other local custom rules sharing a literal predicate (same field and value): related, not identical."""
-    wanted = {(p["field"], p["value"].casefold()) for p in custom_rules.all_predicates(normalized)}
+    def key(p):
+        value = p["value"].casefold()
+        if p["field"] in ("Image", "ParentImage", "ImageLoaded"):
+            value = re.split(r"[\\/]", value)[-1]
+            if value.endswith(".exe"):
+                value = value[:-4]
+        return p["field"], value
+    wanted = {key(p) for p in custom_rules.all_predicates(normalized)}
     out = []
     for row in db.execute("SELECT c.rule_id,c.spec,r.title,r.status,r.fingerprint FROM custom_rule_specs c "
                           "JOIN rules r ON r.id=c.rule_id"):
         if row["fingerprint"] == fp:
             continue
-        shared = [p for p in custom_rules.all_predicates(json.loads(row["spec"])) if (p["field"], p["value"].casefold()) in wanted]
+        previous = json.loads(row["spec"])
+        if (previous["event_family"],previous["platform"]) != (normalized["event_family"],normalized["platform"]):
+            continue
+        shared = [p for p in custom_rules.all_predicates(previous) if key(p) in wanted]
         if shared:
             out.append({"rule_id": row["rule_id"], "title": row["title"], "status": row["status"],
-                        "shared_predicates": shared})
+                        "shared_predicates": shared, "relationship":"possible_near_duplicate" if len(shared)>=2 else "related_selector",
+                        "note":"Case, basename and .exe aliases are compared for review only. Operators, exclusions and scope can differ; no rule is merged or treated as coverage."})
     return out
 
 
@@ -203,13 +214,17 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
               {**inspected_paragraph(threat_id, source_url, paragraph, path), "provenance": "automated_inspection"})
     quoted = source["text"]
     folded = quoted.casefold()
+    if publisher_query:
+        from .publisher_queries import bounded_spec
+        if bounded_spec(quoted,platform_hint=normalized['platform']) != normalized:
+            raise ValueError("publisher translation must preserve the complete supported selector and query scope")
     from .proposal_pass import SYSTEM32_EXCLUSION
     absent = [p["value"] for p in custom_rules.all_predicates(normalized)
               if p["value"].casefold() not in folded and not (normalized["event_family"] == "image_load"
               and p in normalized.get("exclude", []) and p == SYSTEM32_EXCLUSION)]
     if SYSTEM32_EXCLUSION in normalized.get("exclude", []):
         rationale = rationale[:850] + " Default analyst tuning excludes C:\\Windows\\System32\\ loads; this exclusion is not a publisher claim."
-    if absent:
+    if absent and not publisher_query:
         raise ValueError(f"predicate value(s) not found in the cited paragraph: {absent}; every value must be "
                          "quoted from the source, never inferred")
     if normalized["event_family"] == "file_event" and all(
@@ -242,9 +257,19 @@ def propose(threat_id, source_url, paragraph, spec, title, rationale, false_posi
              "scope": "Exact predicate-set fingerprint against local and analyst-imported rules; overlaps share a "
                       "literal predicate but are different logic."}
     if local or external:
+        if local and local["status"] == "draft":
+            with store.connection(path) as db:
+                owned = db.execute("SELECT 1 FROM rule_source_links WHERE rule_id=? AND source_url=? AND paragraph=? "
+                                   "AND proposed_by LIKE 'bounded_research_pass%'", (local["id"],source_url,paragraph)).fetchone()
+                if owned:
+                    sigma = custom_rules._sigma(title, normalized, false_positives, UNVERIFIED_DESCRIPTION, (source_url,))
+                    db.execute("UPDATE rules SET title=?,sigma=?,rationale=? WHERE id=?", (title,sigma,rationale,local["id"]))
+            if owned:
+                rule_repository.export_rule(local["id"],path)
         return {"status": ("existing_draft" if local and local["status"] == "draft" else
                            "existing_coverage" if local else "existing_external_coverage"),
                 "rule_id": (local or external)["id"], "inventory_check": check,
+                "queries": query_status(local["id"],path) if local else None,
                 "note": "No duplicate was created. A draft is not deployment or inventory coverage."}
     rule_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "threat-research:" + fp))
     sigma = custom_rules._sigma(title, normalized, false_positives, UNVERIFIED_DESCRIPTION, (source_url,))
@@ -343,7 +368,11 @@ def source_link(rule_id, path: Path | None = None):
                                                                        (link["source_url"], current_sha))]
     spec = custom_rules.get_spec(rule_id, path)
     values = [p["value"].casefold() for p in custom_rules.all_predicates(spec) if p != SYSTEM32_EXCLUSION] if spec else []
-    cited = next(((n, text) for n, text in paragraphs if values and all(v in text.casefold() for v in values)), None)
+    if link["proposed_by"].endswith("_from_publisher_query_unverified"):
+        from .publisher_queries import bounded_spec
+        cited = next(((n,text) for n,text in paragraphs if bounded_spec(text,platform_hint=spec['platform'])==spec),None)
+    else:
+        cited = next(((n, text) for n, text in paragraphs if values and all(v in text.casefold() for v in values)), None)
     reviewed = link.get("verified_page_sha256") or original
     link.update({"current_page_sha256": current_sha, "source_changed_since_draft": current_sha != original,
                  "cited_values_still_present": bool(cited), "source_verification_current": bool(
@@ -357,10 +386,12 @@ def query_status(rule_id, path: Path | None = None):
     from . import environment
     spec = custom_rules.get_spec(rule_id, path)
     templates = custom_rules.generic_queries(spec) if spec else None
+    examples = custom_rules.mapped_examples(spec) if spec else {}
     fit = environment.check_rule_fit(rule_id, path)
     if fit.get("ready") and fit.get("mapped_query"):
         return {"siem": fit.get("siem"), "query": fit["mapped_query"], "status": "generated_from_mapping",
                 "mapped_query": fit["mapped_query"], "templates": templates,
+                "mapped_examples": examples,
                 "native_test": native_test_status(rule_id, path),
                 "validation": fit.get("validation")}
     reason = fit.get("reason") or (f"unmapped fields: {fit.get('missing_fields') or fit.get('missing_canonical_fields')}"
@@ -368,7 +399,7 @@ def query_status(rule_id, path: Path | None = None):
                                    fit.get("validation") or "no native query available")
     return {"siem": fit.get("siem"), "query": None, "mapped_query": None,
             "status": "generic_templates" if templates else "not_generated", "reason": reason,
-            "templates": templates, "native_test": native_test_status(rule_id, path)}
+            "templates": templates, "mapped_examples": examples, "native_test": native_test_status(rule_id, path)}
 
 
 def native_test_status(rule_id, path: Path | None = None):

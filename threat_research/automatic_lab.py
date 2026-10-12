@@ -58,6 +58,9 @@ def run(directory, fixtures):
             # A query's unique literal selects its own draft, never another rule.
             selected = [r for r in candidates if not check.get("query_literal") or
                         check["query_literal"] in drafting.source_link(r["id"], db)["quoted_text"]]
+            if check.get("stage_image"):
+                selected = [r for r in selected if any(p["field"]=="Image" and p["value"].lower()==check["stage_image"].lower()
+                            for p in (r["custom_spec"] if isinstance(r["custom_spec"],dict) else json.loads(r["custom_spec"]))["predicates"])]
             _require(len(selected) == 1, "ambiguous check target: " + check["name"])
             matched = bool(soc_replay.detect({"event_id": check["name"], "timestamp": "2099-01-01T00:00:00Z",
                                              **check["event"]}, [replay_rules[selected[0]["id"]]]))

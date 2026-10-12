@@ -30,8 +30,9 @@ class ExtractionFixes(Base):
         html = b'<html><article><p>RMM.Agent.exe launched PowerShell with Invoke-WebRequest, then executed msiexec.exe with /qn to install the package.</p></article></html>'
         ident = self.report(html=html)
         result = proposal_pass.propose_from_stored(ident, self.path)
-        self.assertEqual(len(result['proposals']), 1, result)
-        rule = rules.get_rule(result['proposals'][0]['rule_id'], self.path)
+        self.assertEqual(len(result['proposals']), 2)
+        parent_stage = next(p for p in result['proposals'] if any(x['field']=='ParentImage' for x in p['candidate_spec']['predicates']))
+        rule = rules.get_rule(parent_stage['rule_id'], self.path)
         self.assertEqual(rule['status'], 'draft')
         self.assertEqual({p['field'] for p in rule['custom_spec']['predicates']}, {'ParentImage', 'Image', 'CommandLine'})
         self.assertTrue(drafting.source_link(rule['id'], self.path)['proposed_by'].startswith('bounded_research_pass'))

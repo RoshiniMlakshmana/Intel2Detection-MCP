@@ -3,6 +3,69 @@
 The collector runs independently of Claude. Rules remain drafts until source
 verification, labeled checks and explicit approval. Collection does not require a SIEM.
 
+## Version 0.12.3: remaining intake and drafting gaps
+
+Meta and Unit 42 start with a pinned index of supporting CSV, TSV, text, JSON
+and Markdown files before watching recent commits. These are attributed file
+pointers, **not imported/validated IOCs or local detections**. The index is
+checkpointed only after ingestion. Live adapter checks found 169 Meta pointers,
+19 Unit 42 pointers and 20 Malpedia entries. Malpedia's addition-order feed omits
+item dates; its description publication day is retained when present, otherwise
+the publication date remains unknown. Snapshot entries are not dropped merely
+because their referenced report is older than the polling window.
+
+Automatic drafting now produces separate RMM/PowerShell and silent MSI-install
+stage hunts, including a uniquely named cited MSI package. It does not invent a
+parent for msiexec or an event-correlation window. RMM and installer drafts get
+their own benign deployment notes. Re-running repairs notes only on automatically
+authored drafts; analyst-owned and approved rules are preserved. Possible overlap
+is shown in proposal inventory checks, including process basename/.exe aliases;
+different rules are never silently merged or counted as deployed coverage.
+
+The bounded publisher KQL parser handles line comments, literal `let` constants,
+grouped AND filters, escaped literals and `Timestamp >= ago(...)`. It retains the
+lookback in KQL/SPL and documents it separately from Sigma's event selector.
+FileName equality preserves basename and case semantics across paths. A hash-only
+query requires explicit Windows/Linux report context. OR branches, joins,
+aggregates and dynamic expressions still remain full publisher hunts with gaps.
+
+`lead_workup`/draft proposal results include concrete Defender schema and
+Sysmon/Splunk lab examples. `sysmon_lab` and `sysmon` are declared lab index and
+sourcetype assumptions, **not a discovered SIEM**. Configured customer mappings
+remain separate; native query execution remains pending. Local reference replay
+tests the event selector, not a publisher's relative search-time window.
+
+For the deliberately declared offline lab, `examples/sysmon_splunk_lab_profile.json`
+can be passed to CLI `configure-telemetry --profile` with the actual database.
+It creates no assets, credentials or SIEM connection. Select it as a production
+mapping only if those index, sourcetype and fields match the actual collector.
+
+The expanded automatic lab expects 5 fictional reports, 12 server-authored drafts,
+7 translated queries and 26 checks, including MSI positive/benign cases.
+
+## Real local logs without a SIEM
+
+If this Windows host already records Sysmon Event 1, export recent process events
+without installing anything or generating activity:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\export_sysmon.ps1
+& .\.venv\Scripts\python.exe -m threat_research.cli prepare-sysmon --file .\sysmon-export.xml --output-directory .\sysmon-review
+```
+
+Review `sysmon-review/events.jsonl` and fill every `expected_malicious` cell in
+`sysmon-review/labels.csv` with `true` or `false` based on your own evidence.
+Unknown labels stay null and cannot produce a passing measurement. Re-import
+the same export with these labels into a **new** directory:
+
+```powershell
+& .\.venv\Scripts\python.exe -m threat_research.cli prepare-sysmon --file .\sysmon-export.xml --labels-file .\sysmon-review\labels.csv --output-directory .\sysmon-labeled
+```
+
+Then use `test_rule_against_samples` for each draft ID with the labeled JSONL path,
+or CLI `test-rule` with its ID, events file and the actual database. XML importing
+does not establish event origin, truth, production accuracy or native SIEM execution.
+
 ## Windows collector
 
 From the checked-out repository in PowerShell:
