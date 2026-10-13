@@ -1,194 +1,184 @@
-# ThreatResearch MCP
+# Intel2Detection-MCP
 
-An evidence-gated threat intelligence and detection workflow for Claude, built on the [Model Context Protocol](https://py.sdk.modelcontextprotocol.io/). Runs as an MCP server, an optional continuous poller, and a local analyst dashboard — no SIEM required to start. Each organization runs its own installation and database.
+**Turn cited threat research into detection rule drafts for analyst review.**
 
-## 1. What it does
+Intel2Detection-MCP collects threat intelligence, reads technical reports, extracts supported behaviors, and generates **Sigma, KQL and SPL drafts**. Use it through Claude's Model Context Protocol (MCP), the Python CLI, or the local analyst dashboard. A SIEM is optional for research and local testing.
 
-Collects newly published threats and researches *actual cited behavior* rather than guessing from a CVE title. A bounded paragraph may create an **unverified draft automatically**; every predicate must be backed by the source. Verification, labeled tests, approval, and any SIEM deployment remain separate. The dashboard has four main tabs: **Sources, Threat intel, Rules, Needs attention**. Rule inventory is **Unknown** until imported and declared complete; environment risk is unavailable without confirmed assets and local event context. A new source matching an existing rule queues a review; only approval adds exactly +1 corroboration.
+**Release 0.12.3:** automatic rule creation works for supported patterns; broad detection quality on real reports and production logs is still being evaluated. Rules begin as unverified drafts. Local approval saves a versioned rule; SIEM deployment is a separate analyst action.
 
-```mermaid
-flowchart TD
-    A[Source intake<br/>CVE/advisory, RSS, leak-site claims, GitHub commits] --> B[Automatic cited-page research]
-    B --> C{Inventory status}
-    C -->|Yes: reviewed matching rule| G[Local rule repository<br/>draft / approved, versioned]
-    C -->|Unknown or No| D[Check bounded predicates]
-    D -->|Supported source paragraph| E[Unverified Sigma / KQL / SPL draft]
-    D -->|Insufficient detail| B
-    E --> F{Analyst approves?}
-    F -->|Approve| G
-    F -->|Reject, kept for later review| B
+## What it can do
 
-    H[New independent lead<br/>matches an existing rule] --> I[Pending corroboration review<br/>nothing linked or scored yet]
-    I --> J{Analyst approves?}
-    J -->|Approve| K[pattern_score +1, exactly once]
-    J -->|Reject| L[Rule left unchanged]
-    K --> G
+| Capability | Current behavior |
+|---|---|
+| Collect intelligence | Poll CVE/advisory sources, RSS/Atom feeds and curated GitHub repositories. Show per-source failures, empty sources and stale results. |
+| Collect independently | Run a Windows scheduled collector against the same database while Claude is closed. The computer must be on and the configured account logged in. |
+| Research reports | Retain cited paragraphs, URLs and page hashes. Preserve blocked/unreadable pages as gaps. Route CVE-only leads to exposure/patch review. |
+| Write rules automatically | Draft supported parent/child process actions, command-line behaviors, named DLL loads, process-linked destinations and specific file/hash selectors. Includes bounded Windows and Linux patterns. |
+| Translate publisher KQL | Parse supported literal filters, grouped AND conditions, literal constants and bounded lookbacks. Preserve unsupported queries for manual review. |
+| Review rule logic | Enforce exclusions, generate distinct Sigma IDs, deduplicate exact specs, warn about possible overlap and flag changed source content. |
+| Map and test drafts | Show Defender and Sysmon/Splunk schema examples; use configured customer telemetry mappings. Replay labeled JSONL locally. Native query checks are implemented for Splunk and Defender hunting. |
+| Track decisions | Keep draft/approved snapshots separate. Approved independent corroboration adds +1 to the pattern score, separate from environment risk. |
 
-    R[Environment / asset risk<br/>scored separately from detection state]
+Community indexes contain **external file pointers**, not imported rule bodies, validated IOCs or deployed coverage. Environment risk requires confirmed assets and local event context; rule inventory remains Unknown until its scope is declared.
 
-    subgraph LIMITS[Current limitations]
-        N[Some feeds fail per source - shown, not hidden]
-        O[No onboarded assets - risk stays Unknown]
-        P[No native SIEM validation until one is connected]
-    end
+## How rule creation works
+
+1. Collect a lead and inspect its cited technical report.
+2. Extract supported behavior with values traceable to a paragraph or publisher query.
+3. Compare available inventory and create a draft, return an existing draft, or explain the gap.
+4. Generate Sigma, query templates and mapped examples or a configured native query.
+5. Review the source, test malicious and benign examples, tune and explicitly approve.
+6. Deploy the reviewed query in the target platform and monitor its results.
+
+The automatic writer uses bounded sentence patterns and query parsing. Claude can also submit proposals through MCP; these are distinct from server-authored automatic drafts.
+
+## Example: a report becomes two rules
+
+The [fictional automatic lab](threat_research/lab_fixtures/automatic_reports.json) describes an RMM agent launching PowerShell to download `ClientSetup.msi`, followed by a silent MSI installation. The server creates **two independent process hunts**:
+
+| Draft | Conditions | Meaning and false positives |
+|---|---|---|
+| RMM → PowerShell download | Parent ends with `RMM.Agent.exe`; child image contains `PowerShell`; command contains `Invoke-WebRequest` | Matches the reported download shape. Authorized RMM maintenance can match. |
+| Silent MSI installation | Image ends with `msiexec.exe`; command contains both `/qn` and `ClientSetup.msi` | Matches the named quiet installation. Authorized deployment can match. |
+
+These hunts do not establish that events belong to the same intrusion. The server does not invent an MSI parent, correlation key or time window.
+
+### Generated Sigma example
+
+The MSI draft below comes from the fictional lab, with metadata shortened for readability. It is experimental, not evidence of activity on a real host.
+
+```yaml
+title: Reported msiexec.exe /qn execution
+id: 980d5e7c-4d76-5d37-8a8c-293c7ed2fa0c
+status: experimental
+description: Fictional lab draft; source review and real labeled tests pending.
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_1:
+    CommandLine|contains: '/qn'
+  selection_2:
+    CommandLine|contains: 'ClientSetup.msi'
+  selection_3:
+    Image|endswith: 'msiexec.exe'
+  condition: selection_1 and selection_2 and selection_3
+falsepositives:
+  - Authorized deployment using the same package and quiet switch
+level: medium
 ```
 
-## 2. Impact
+**Required telemetry:** process creation with executable name/path and full command line. Sysmon Event ID 1 is one possible source; the RMM draft also needs the parent image. A renamed package or missing command line may evade the selector. Substring/suffix matching requires benign testing.
 
-It collects the feeds, reads allowlisted technical pages, and proposes a first draft where the cited details support one. It does not measure or claim a specific time saved — that depends on your feeds, team, and review process.
+### KQL: Microsoft Defender schema
 
-## 3. Sources
+This mapped event selector uses `DeviceProcessEvents`. Use it for hunting where the table and fields exist. It has not been executed against a customer tenant.
 
-- **CVE/advisories** — CISA KEV, NVD, GitHub Security Advisories, merged by CVE ID: **verified source facts**.
-- **Research and news** — 33 RSS/Atom feeds (government, vendor research, security news; listed in `threat_research/research_feeds.py`), plus on-demand full-article inspection.
-- **Ransomware leak-site claims** — RansomLook recent posts: **unverified claims**, never evidence.
-- **Community detections** — 5 curated GitHub repos (Unit 42, Volexity, Meta, SigmaHQ, Microsoft Sentinel): commit subjects only, as **research leads**, never imported as coverage.
+```kusto
+DeviceProcessEvents
+| where tolower(tostring(ProcessCommandLine)) contains '/qn'
+    and tolower(tostring(ProcessCommandLine)) contains 'clientsetup.msi'
+    and tolower(tostring(FileName)) endswith 'msiexec.exe'
+```
 
-Only an analyst-recorded observation tied to a specific cited claim becomes **evidence** for a rule; everything else stays a lead until reviewed.
+### SPL: declared Sysmon lab
 
-## 4. Install and connect to Claude Code
+This equivalent example assumes index `sysmon_lab`, sourcetype `sysmon`, and extracted `EventCode`, `Image` and `CommandLine` fields. Replace them with actual ingestion settings.
 
-Tested on Windows PowerShell (Python 3.11+), from the project folder:
+```spl
+index=sysmon_lab sourcetype=sysmon EventCode=1
+| where like(lower(CommandLine), "%/qn%")
+    AND like(lower(CommandLine), "%clientsetup.msi%")
+    AND like(lower(Image), "%msiexec.exe")
+```
+
+These select events. A scheduled alert additionally needs a search window, schedule, trigger settings and review of expected benign activity.
+
+## Where to implement the rules
+
+Rules run in the platform that searches your logs. Installing the MCP server alone does not create endpoint or SIEM alerts.
+
+| Destination | Output to use | Implementation |
+|---|---|---|
+| Splunk Enterprise / Cloud | SPL mapped to your index, sourcetype and fields | Test the search, then save it as a scheduled alert. |
+| Microsoft Defender XDR | Kusto KQL mapped to Defender tables | Hunt first; check event identifiers, output fields and custom-detection settings before creating a detection. |
+| Microsoft Sentinel | Kusto KQL mapped to actual workspace tables | Test in Logs, then create a scheduled analytics rule. Defender examples need adaptation if those tables are unavailable. |
+| Elastic Security | Sigma converted/adapted to its backend and ECS fields | Test the converted query and create a custom detection rule. No native Elastic executor is included. |
+| Other Sigma-compatible platforms | Sigma with the target backend and processing pipeline | Convert, map fields, test in the engine and configure alerts. |
+| No SIEM | Normalized JSONL and the local matcher | Test selectors against labeled events; no native query execution or alert deployment. |
+
+**Sigma is a portable format, not an alert engine.** Conversion requires a backend and field mappings: [Sigma conversion guide](https://sigmahq.io/docs/guide/getting-started.html). Microsoft's KQL is **Kusto Query Language**; Elastic's KQL is **Kibana Query Language**. They are different languages.
+
+### Splunk implementation
+
+1. Ingest telemetry and confirm required fields exist in real events.
+2. Configure actual index, sourcetype and mappings. The [offline profile](examples/sysmon_splunk_lab_profile.json) is a declared example; the [connected lab profile](examples/splunk-sysmon-lab.profile.json) is a separate starting point for native checks.
+3. Run the mapped SPL in Search & Reporting over known positive and benign samples. With credentials configured, `test_draft_in_siem` performs a bounded read-only query check.
+4. After review, select **Save As → Alert** and set schedule, time range, trigger and notifications. Tune for repeated alerts and ingestion delays.
+
+Syntax acceptance or zero results does not establish accuracy. See [Splunk's scheduled-alert instructions](https://help.splunk.com/en/splunk-enterprise/alert-and-respond/alerting-manual/10.2/create-alerts/create-scheduled-alerts).
+
+### Microsoft Sentinel / Defender implementation
+
+For **Sentinel**, identify actual workspace tables and fields, test adapted KQL in Logs, and return `TimeGenerated`. Select **Analytics → Create → Scheduled query rule**; configure logic, entity mappings, scheduling and incidents. See [Microsoft's analytics-rule guide](https://learn.microsoft.com/en-us/azure/sentinel/create-analytics-rules).
+
+For **Defender**, the example uses its process-event schema. Before creating a custom detection, confirm permissions and the recommended event identifiers/output fields (such as `Timestamp`, `DeviceId` and `ReportId` for endpoint events); follow the [Defender custom-detection guide](https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules). The project's Graph hunting check executes a bounded query; it does not publish a detection. Sentinel deployment is also manual.
+
+### Elastic / other Sigma targets
+
+Convert Sigma using the supported backend and processing pipeline. Check executable, parent and command-line mappings against real events; configure index, timestamp and alert settings. For Elastic, test the query and create a [custom query detection rule](https://www.elastic.co/docs/solutions/security/detect-and-alert/custom-query). This repository supplies neither a tested Elastic deployment package nor automatic Kusto-to-Kibana conversion.
+
+## Start locally
+
+Python **3.11+**. From the cloned project folder in Windows PowerShell:
 
 ```powershell
 py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m threat_research.cli doctor
-claude mcp add --scope user threat-research -- "C:\path\to\ThreatResearch-MCP\.venv\Scripts\python.exe" -m threat_research.server
+& .\.venv\Scripts\python.exe -m pip install -e .
+& .\.venv\Scripts\python.exe -m threat_research.cli doctor
 ```
 
-`doctor` should report `ready_for_research`. In Claude Code:
+Connect Claude Desktop using that virtual environment's absolute `python.exe` path and arguments `-m`, `threat_research.server`. See [QUICKSTART.md](QUICKSTART.md). Fully quit and reopen Claude after updating the server.
 
-> Use threat-research to collect fresh CVEs and emerging threats, check inventory status, and draft a rule only where cited evidence and required telemetry support it.
+Example Claude request:
 
-Full setup, the analyst dashboard, and keeping a poller + daily digest running on Windows: **[QUICKSTART.md](QUICKSTART.md)**, **[DASHBOARD.md](DASHBOARD.md)**.
+> Use threat-research to run research_and_propose_detection("REPORT-ID"), then lead_workup("REPORT-ID"). Show source paragraphs, server-authored or analyst-authored drafts, Sigma conditions, mapped examples, possible overlaps, missing telemetry and test status. Do not verify, approve or deploy.
 
-### Dashboard tabs and their MCP tools
+Replace `REPORT-ID` with a collected report ID. For stored research, page `propose_stored_drafts` until its cursor is null; fetch/refresh missing or outdated pages separately.
 
-`threat-research-dashboard` (http://127.0.0.1:8765) and Claude read the same database. Each tab shows a live count, and `/tools` lists every tool.
+For independent collection, see [COLLECTOR_SETUP.md](COLLECTOR_SETUP.md). Check `polling_status` and `list_sources`: a fresh completion matters more than a running process between scheduled jobs. A timed-out MCP call may leave collection running; check before starting another poll.
 
-| Dashboard tab | MCP tool |
-|---|---|
-| All leads: source dropdown, collection/publication sorting, queue/date/status/rule-state filters, 50 per page with total count | `list_leads(source, date_from, date_to, date_field, queue, status, rule_state, kind, page, sort)` |
-| Research backlog (actionable: KEV CVEs, reports citing them, reports with behavior leads) | `list_leads(queue='research_backlog')`; worked automatically by `run_research_pass()` or in bounded, resumable batches by `deep_research_batch()` |
-| Raw leads (untriaged collection, not a to-do list) | `list_leads(queue='raw_unreviewed')` |
-| Research completed (sources read, insufficient detection detail) | `list_leads(queue='research_completed')`, `research_lead(threat_id)` |
-| Draft rules / Approved rules (expand Sigma/KQL/SPL on each row) | `list_rules(state='draft' \| 'approved')` |
-| Pending reviews | `pending_corroboration_reviews()` |
-| Source errors | `source_errors()` (latest fetch status per source, partial fetches, blocked articles) |
-| Sources (exact source/type/status dropdowns, last poll summary, and per-source counts for researched leads, readable cited pages, patterns/artifacts and drafts) | `list_sources()`, `polling_status()` (flags a stale result or one from older collector code) |
-| Tab counts | `workflow_counts()` |
-| Lead detail progression | `lead_progression(threat_id)`: research needed → cited evidence → required telemetry → inventory Yes/No/Unknown → candidate Sigma/KQL/SPL → labeled checks → analyst decision → rule repository, naming the missing input at each blocked step |
-
-The 50-per-page limit is local display paging; upstream API paging (NVD, GitHub, feeds) is handled by the collectors.
-
-### Automatic research pass
-
-Reading a public page that a collected record already cites is read-only, so it runs without asking the analyst: each poll, `run_research_pass()` and `research_detection_plan()` research the highest-priority backlog leads (CISA KEV CVEs first). Within fixed limits (4 leads, 14 pages per lead, 40 fetches per pass) the pass opens:
-
-- primary vendor advisories from the CVE record;
-- the CISA KEV entry and CISA alerts;
-- vendor guidance linked from those pages;
-- reports that cite the CVE.
-
-Every page is recorded with its outcome and time. Publisher blocks and script-rendered (unreadable) pages are listed separately in `source_errors()`. Each lead ends as one of:
-
-- `completed_insufficient_detail`: no primary source names a specific observable. Evidence and missing telemetry are shown, and an exposure/patch review is offered with no numeric score.
-- `observables_need_analyst_verification`: untrusted text an analyst must verify. Specific artifacts quoted by secondary reports are listed verbatim for checking against the original publication.
-- `no_readable_source`: the lead stays in the backlog with the URLs to open in a browser.
-
-The pass may propose multiple unverified drafts from distinct, bounded paragraphs in one report. Supported patterns include an exact labeled SHA-256 (with an adjacent filename when present), explicit parent-to-child process actions and command terms, encoded PowerShell, named DLL loads, process-to-C2 links, and a narrow Linux OpenSSL client hunt. This last selector also matches benign TLS diagnostics; it does not establish the named pipe or reverse shell. Linux file/network and web/proxy event families, repeated field conditions, OR and exclusions are supported in bounded custom specs. Source text never verifies itself or proves a local sighting. A small subset of publisher KQL with fully translatable literal AND filters can become an unverified draft; complex blocks remain intact as review candidates. Each real poll reviews 20 older researched leads from a durable cursor. For a faster stored backfill, page `propose_stored_drafts(limit=20)` to the end. Each result gives draft IDs and a gap preview plus the remaining count; use `propose_stored_draft_gaps` for all reasons. Old extraction versions are reread in bounded research batches.
-
-`deep_research_batch(max_leads=20, max_fetches=120)` raises the **on-demand** research budget while retaining the per-lead page limit and source allowlist. Repeat it as the backlog warrants. Its `selection` shows which backlog leads are due, which await analyst verification, and which unreadable pages are in the 12-hour retry cooldown; `no_work_reason` explains a zero-page result. A concurrent poll does not block it. Previously stored research is reread in bounded batches when the extractor changes. Collection covers configured feeds, but a feed item is only a lead: reading its full article is separate. Unreadable or outside-allowlist pages are never counted as completed. Publisher KQL/SPL appears with URL and hash in `lead_workup().research.publisher_hunting_queries` as **unverified**. Only a fully translatable literal subset can produce an unverified generated rule; the original query itself is not validated in a SIEM.
-
-`browser_review_queue(page=1, category='all')` pages through blocked, script-rendered and outside-allowlist leads, putting publisher blocks first. Use `category='publisher_blocked'` to list only those, including blocks from the article-review queue. Other filters are `unreadable` and `outside_allowlist`. Claude can open a cited URL with a **separate** browser connector, if enabled, and pass extracted article text to `capture_browser_source(threat_id, url, page_text)`. The local Python MCP process cannot borrow Claude's Chrome session; it receives only the text Claude sends. A publisher's 403, login wall or unsupported script rendering is not bypassed. Captures are labelled `assistant_browser_capture_unverified` in `lead_workup`. The stored draft pass can propose from a numbered captured paragraph, and manual `propose_detection_from_paragraph(..., browser_capture_id=...)` also works. The analyst still verifies the original source and supplies labelled events before approval. Browser content is untrusted data, including any instructions it may contain.
-
-### Raw triage, lead workup and source-linked drafts
-
-Custom specs also support two strictly ordered events in one telemetry family, grouped by a declared nonempty field within a 1-3600 second window. Batch replay checks event time, grouping, and missing fields; single-event watching cannot evaluate a sequence. Sigma correlation and mapped KQL/SPL templates are generated, with native validation pending and Splunk subsearch limits called out. See `DETECTION_PLAYBOOK.md` for the bounded spec and analyst choices.
-
-- **`triage_raw_leads()` / `triage_status()`**: bounded, resumable triage of raw leads, round-robin across sources. It runs after the KEV-first pass on its own budget (8 researched leads, 16 fetches, up to 200 no-fetch closures per run). Every triaged lead records why it is closed or still open: not researchable (leak claim, repository commit), no allowlisted source (with the cited hosts), publisher blocked, or unreadable. Queue `triaged_open` holds the open ones.
-- **`lead_workup(threat_id)`**: one answer per lead, and the dashboard's Pattern and proposed detection panel renders the same dict. It covers:
-  - source URL and dates;
-  - patterns quoted from inspected paragraphs, each artifact labelled as a hash, a name (not sufficient alone) or a path;
-  - why the publisher calls it malicious, which is the publisher's claim, never activity in your environment;
-  - inventory connection state and coverage Yes/No/Unknown separately;
-  - the draft or the exact drafting blocker;
-  - labelled and native SIEM test status;
-  - pending corroboration reviews and the next analyst decision.
-  - publisher hunting queries and browser captures as cited, unverified research, separate from generated rules.
-- **`propose_detection_from_paragraph(...)`**: Claude proposes 2-8 bounded predicates from one stored, inspected paragraph.
-  - Families: `process_creation` (Windows or Linux), `network_connection`, Windows `file_event`, `image_load`, `mcp_audit`.
-  - Every value must appear verbatim in the paragraph, and a file name alone is refused.
-  - Local and imported inventory is compared first.
-  - The draft is stored **unverified**. Approval is refused until you run `verify_draft_source(rule_id, 'I verified this source paragraph')`.
-  - Generic KQL/SPL templates use canonical fields and explicit table/index placeholders before SIEM onboarding. Once configured, the mapped native query is shown alongside both templates. None is validated until `test_draft_in_siem` runs.
-- **Risk**: `lead_workup` keeps three measures apart.
-  - Environment risk is numeric only with a confirmed asset and `record_local_event_context`; otherwise it shows *score unavailable* and the missing inputs.
-  - Threat priority is qualitative factors only.
-  - `pattern_score` counts approved independent corroborations.
-  - `environment_risk()` stays a what-if calculator on typed inputs.
-- **Corroboration**: a fresh inspected paragraph that contains every literal value of an existing custom rule queues a pending review. Approval adds exactly +1.
-- **Review path** (`lead_workup` → `drafts[].review_path`, same on the dashboard). Every step shows its state and the exact input it needs from you:
-  1. source verification (`verify_draft_source`);
-  2. labelled-event check;
-  3. inventory comparison;
-  4. approval;
-  5. repository snapshot;
-  6. corroboration;
-  7. native SIEM test.
-  
-  A source-linked draft's local approval requires analyst source verification and a labeled check on the current rule version using events that are not marked synthetic. Synthetic fixtures demonstrate the matching logic but do not satisfy the approval gate. An arbitrary JSONL file is still `sample_origin_unverified`, never proof of production telemetry. Approval never deploys the rule or claims native SIEM accuracy.
-
-  **NeedyMantis synthetic replay:** `threat_research/lab_fixtures/needymantis_synthetic_file_events.jsonl` contains six invented Windows file events for the reported `WinSparkle.dll` hash. Every event is labeled `synthetic: true`; the timestamps, paths, and benign hashes are examples, not sightings. Two events match the existing hash-and-name draft, two malicious examples are missed (renamed file or missing hash telemetry), and two benign examples do not match. After pulling the repository and restarting Claude Desktop, ask: `Use threat-research to run test_rule_against_samples("8dc7fe74-7802-5001-be12-28e837353bf5", "bundled:needymantis"). Show each match and miss and its sample provenance. Do not approve or deploy.` The bundled fixture name avoids Windows path quoting. This records a **synthetic local logic check** for that draft; it neither supplies environment logs nor executes KQL/SPL in a SIEM. If a local file cannot be read, the tool returns a specific refusal instead of a generic error.
-- **Environment risk attribution**: a score uses only the asset named in the local event context. For a CVE, that asset must itself be confirmed affected. An event on one asset is never combined with another asset's confirmation, exposure or criticality.
-- **Manual source review** (`record_manual_source_review`) for blocked, script-rendered or non-allowlisted pages. It stores the URL (which must be one the lead cites or already tried), your quoted text, how you retrieved it and your decision, with provenance `analyst_manual_entry`. It is never treated as verified; a draft from it (`manual_review_id`) still needs `verify_draft_source`.
-- **`triage_status()`** groups open leads by need, based on each lead's current queue:
-  - no detection detail by kind (leak claims, repository commits);
-  - needs browser review (publisher-blocked, script-rendered, not an HTML article, fetch failed);
-  - needs your source decision: cited only on hosts outside the allowlist, with the most-cited hosts listed.
-  
-  Unread sources are never counted as researched.
-
-### Updating an existing Windows install
+## Test without a SIEM
 
 ```powershell
-cd C:\path\to\ThreatResearch-MCP
-git pull
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m threat_research.cli doctor
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_offline.ps1
 ```
 
-Then fully quit and reopen Claude Desktop (tray icon → Quit) so it restarts the MCP server, and run `poll_now`. A `polling_status` result marked `last_result_stale` describes an older run and may list errors that are already fixed.
+Release 0.12.3 validation recorded **298 passing unit tests**, an MCP stdio check with **66 tools**, and **12 automatic drafts from 5 fictional reports**, including **7 translated queries and 26 predicate checks**. Unique IDs and repeat-pass deduplication passed. The separate template challenge includes intentional false positives and misses; passing means matching its documented baseline.
 
-For the independent Windows collector, feed recovery, initial community sync and
-a concrete Splunk Sysmon lab profile, see [COLLECTOR_SETUP.md](COLLECTOR_SETUP.md).
-
-## 5. Deploy for a team
-
-Each organization gets an isolated database and rule repository:
+To test existing real Sysmon process logs locally:
 
 ```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli create-pack --directory C:\ThreatResearch\Acme --name "Acme SOC" --siem splunk
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\export_sysmon.ps1
+& .\.venv\Scripts\python.exe -m threat_research.cli prepare-sysmon --file .\sysmon-export.xml --output-directory .\sysmon-review
 ```
 
-`--siem` is `splunk`, `defender`, or `generic`. This writes `profile.json` (telemetry mapping), an empty `assets.csv` (only *confirmed* affected assets), and `inventory.json` (existing rules) — no credentials, no synthetic data. Fill those in, then:
+Sysmon Event 1 must already be recorded. Review events, label `sysmon-review/labels.csv` using your own evidence, and reimport into a new directory with `--labels-file`. Then use `test_rule_against_samples` or CLI `test-rule`. See [the full workflow](COLLECTOR_SETUP.md#real-local-logs-without-a-siem). Importing XML does not establish authenticity; unknown labels cannot establish accuracy.
 
-```powershell
-.\.venv\Scripts\python.exe -m threat_research.cli inspect-pack --directory C:\ThreatResearch\Acme
-.\.venv\Scripts\python.exe -m threat_research.cli onboard-pack --directory C:\ThreatResearch\Acme
-.\.venv\Scripts\python.exe -m threat_research.cli serve-live --directory C:\ThreatResearch\Acme
-```
+Source-linked approval requires analyst source verification and a labeled check on the current rule version using samples not marked synthetic. Arbitrary samples remain origin-unverified. Synthetic fixtures demonstrate logic and do not satisfy the approval gate. Approval saves a local snapshot; it does not deploy.
 
-`inspect-pack`/`onboard-pack` validate both files before anything is scored or drafted. `serve-live` is a **separate, always-on polling worker** — run it apart from Claude's MCP process, against the same database. Credentials (`SPLUNK_TOKEN`, `GRAPH_TOKEN`, `SMTP_*`, `NVD_API_KEY`, `GITHUB_TOKEN`) go only in that worker's process environment — never in `profile.json`, `claude-mcp.json`, or this repository. Details: **[QUICKSTART.md §5](QUICKSTART.md)**.
+## Limitations and remaining work
 
-## 6. Limitations
+- **Bounded extraction:** differently worded behaviors may be missed. Linux coverage is limited. This is not a general report-to-rule reasoning engine.
+- **Partial publisher-query support:** joins, aggregates, OR branches and dynamic expressions remain gaps; clauses are not silently dropped. Local replay checks selectors, not relative publisher lookback scope.
+- **Tuning is necessary:** authorized administration may match. Exact deduplication works; overlap warnings are heuristic, not proof of equivalent coverage.
+- **Telemetry determines coverage:** missing process, command, hash or module fields cause misses. Generic templates retain placeholders until mapping; concrete examples are assumptions, not discovered infrastructure.
+- **Upstream access varies:** feeds may be empty, blocked or rate-limited. Optional ThreatFox needs an authentication key. Collection stops while the host is off.
+- **Validation is limited:** synthetic tests and an isolated public-paragraph replay demonstrate supported behavior. Broad real-report coverage, labeled real-log accuracy and customer native SIEM execution remain to be demonstrated. Windows wrappers require verification on Windows.
+- **No automatic deployment or compromise claim:** a local approved rule is not a deployed alert; a match is not proof of intrusion; community pointers are not local coverage.
 
-- **Polling, not streaming** — latency is the poll interval (15 min default) plus each source's publish delay.
-- **No cited behavior, no rule** — missing evidence returns "research needed," never a guess from a title.
-- **Risk needs asset context** — without a confirmed inventory, priority stays `verify_*`/unknown, never a guessed score.
-- **Drafts need native testing** — generated Sigma/KQL/SPL require target-SIEM validation with your own credentials.
-- **Approval stays local** — it adds a rule to the local Git-ready repository only; nothing is deployed or pushed.
-- **Email is optional** — without `SMTP_HOST`/`DIGEST_TO` configured, the daily digest is saved to a local file, never claimed as sent.
+Next: measure extraction on representative real reports, address misses, and test resulting rules against labeled real logs and their target query engines.
 
-More detail and references: **[QUICKSTART.md](QUICKSTART.md)** · **[DASHBOARD.md](DASHBOARD.md)** · **[DETECTION_PLAYBOOK.md](DETECTION_PLAYBOOK.md)** · **[PUBLISHING.md](PUBLISHING.md)**.
+## Further documentation
+
+[Quickstart](QUICKSTART.md) · [Collector and telemetry setup](COLLECTOR_SETUP.md) · [Detection workflow](DETECTION_PLAYBOOK.md) · [Dashboard](DASHBOARD.md) · [Publishing](PUBLISHING.md)
