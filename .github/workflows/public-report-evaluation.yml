@@ -1,0 +1,61 @@
+name: Public Report Evaluation (Explicit Test)
+
+on:
+  push:
+    branches:
+      - feat/no-siem-demo-sprint
+    paths:
+      - .github/workflows/public-report-evaluation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install project without optional SIEM integrations
+        run: python -m pip install -e .
+      - name: Read three allowlisted public publisher reports
+        run: python scripts/benchmark_reports.py --live --output-directory public-report-results
+      - name: Display complete benchmark summary and case outcomes
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f public-report-results/SUMMARY.md ]]; then
+            cat public-report-results/SUMMARY.md
+          fi
+          if [[ -f public-report-results/results.json ]]; then
+            python - <<'PY'
+          import json
+          data = json.load(open("public-report-results/results.json", encoding="utf-8"))
+          for case in data["cases"]:
+              print("REPORT", case["id"], "status", case["page_status"],
+                    "paragraphs", case["paragraphs_scanned"], "drafts", case["draft_count"])
+              for reference in case["reference_behaviors"]:
+                  print("BEHAVIOR", reference["name"], "extracted", reference["extracted"],
+                        "matching_rules", reference["matching_rule_ids"])
+              for draft in case["generated_drafts"]:
+                  print("DRAFT", draft["rule_id"], draft["spec"])
+              print("GAPS", case["reported_gaps"][:8])
+          PY
+          fi
+      - name: Upload benchmark metadata only (no copied publisher HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-report-evaluation
+          path: |
+            public-report-results/SUMMARY.md
+            public-report-results/results.json
+          if-no-files-found: warn
