@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# Keep one auditable, original version of the locked holdout evaluation per branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   heldout-research:
     runs-on: ubuntu-latest
