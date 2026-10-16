@@ -150,6 +150,22 @@ def _image_load_spec(pattern):
                     {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}]}
                 spec["exclude"] = [dict(SYSTEM32_EXCLUSION)]
                 return spec
+    # Passive voice is common in technical reports: "malicious.dll is the
+    # malicious DLL which is loaded by clean.exe". Require one same-clause,
+    # explicitly malicious file-to-loader relationship; don't join separate
+    # sentences or a benign DLL with an unrelated attacker paragraph.
+    for module in WINDOWS_DLL.finditer(quote):
+        for process in WINDOWS_EXE.finditer(quote, module.end(), min(len(quote), module.end() + 180)):
+            between = quote[module.end():process.start()]
+            if (re.search(r"[!?;]|\.(?:\s|$)", between)
+                    or not re.search(r"\b(?:loaded|sideloaded)\s+by\s*[\u201c\u201d\u2018\u2019\"']*\s*$", between, re.I)
+                    or not re.search(r"\b(?:malicious|backdoor|implant|loader|payload)\b", between, re.I)):
+                continue
+            return {"event_family": "image_load", "platform": "windows",
+                    "predicates": [
+                        {"field": "Image", "operator": "endswith", "value": process.group()},
+                        {"field": "ImageLoaded", "operator": "endswith", "value": module.group()}],
+                    "exclude": [dict(SYSTEM32_EXCLUSION)]}
     return None
 
 
