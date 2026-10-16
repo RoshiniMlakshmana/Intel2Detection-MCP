@@ -1,0 +1,63 @@
+name: Locked Held-Out Public Report Evaluation
+
+on:
+  push:
+    branches: [feat/no-siem-demo-sprint]
+    paths:
+      - .github/workflows/heldout-report-evaluation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heldout-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout locked candidate version
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install offline research pipeline
+        run: python -m pip install -e .
+      - name: Verify held-out manifest was curated before scoring
+        run: python -m unittest discover -s tests -p test_heldout_corpus.py -v
+      - name: Read all seven held-out public publisher pages (no SOC or SIEM)
+        run: |
+          python scripts/benchmark_reports.py --manifest benchmarks/full_reports_holdout_v1.json --live --output-directory heldout-research-results
+      - name: Display observed failures and misses without suppressing them
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f heldout-research-results/SUMMARY.md ]]; then
+            cat heldout-research-results/SUMMARY.md
+          fi
+          if [[ -f heldout-research-results/results.json ]]; then
+            python - <<'PY'
+          import json
+          d=json.load(open("heldout-research-results/results.json",encoding="utf-8"))
+          for c in d["cases"]:
+              print("CASE",c["id"],"status",c["page_status"],"scored",c["scored"],
+                    "draft_count",c["draft_count"],"paragraphs",c["paragraphs_scanned"])
+              for b in c["reference_behaviors"]:
+                  print("  BEHAVIOR",b["name"],"FOUND",b["extracted"],
+                        "expected_predicates",b["required_predicates"])
+              for rule in c["generated_drafts"]:
+                  print("  DRAFT",rule["rule_id"],rule["spec"])
+              print("  GAPS",c["reported_gaps"][:5])
+          PY
+          fi
+      - name: Preserve immutable results metadata for audit, no article HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seven-heldout-public-report-results
+          path: |
+            heldout-research-results/SUMMARY.md
+            heldout-research-results/results.json
+          if-no-files-found: warn
