@@ -10,6 +10,7 @@ on:
       - threat_research/proposal_pass.py
       - scripts/benchmark_reports.py
       - scripts/replay_benchmark.py
+      - scripts/export_review_bundles.py
       - benchmarks/synthetic_challenges_v1.json
       - benchmarks/full_reports_v1.json
   workflow_dispatch:
@@ -43,6 +44,14 @@ jobs:
           if [[ -f public-synthetic-challenges/SUMMARY.md ]]; then
             cat public-synthetic-challenges/SUMMARY.md
           fi
+      - name: Export unverified detection engineering review packages
+        run: python scripts/export_review_bundles.py --source-directory public-report-results --challenge-directory public-synthetic-challenges --output-directory public-review-packages
+      - name: Display exported package index
+        if: always()
+        run: |
+          if [[ -f public-review-packages/INDEX.json ]]; then
+            cat public-review-packages/INDEX.json
+          fi
       - name: Display complete benchmark summary and case outcomes
         if: always()
         shell: bash
@@ -75,4 +84,5 @@ jobs:
             public-report-results/results.json
             public-synthetic-challenges/SUMMARY.md
             public-synthetic-challenges/results.json
+            public-review-packages/
           if-no-files-found: warn
