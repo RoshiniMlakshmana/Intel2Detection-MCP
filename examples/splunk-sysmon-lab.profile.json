@@ -1,0 +1,82 @@
+{
+  "name": "Local Splunk Sysmon lab",
+  "siem": "splunk",
+  "splunk_url": "https://localhost:8089",
+  "telemetry": {
+    "process_creation": {
+      "index": "sysmon",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": [
+        "_time",
+        "host",
+        "EventCode",
+        "ParentImage",
+        "Image",
+        "CommandLine",
+        "ParentCommandLine",
+        "User",
+        "ProcessGuid"
+      ],
+      "field_map": {
+        "Timestamp": "_time",
+        "DeviceId": "host"
+      },
+      "event_code": 1
+    },
+    "network_connection": {
+      "index": "sysmon",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": [
+        "_time",
+        "host",
+        "EventCode",
+        "Image",
+        "DestinationIp",
+        "DestinationHostname",
+        "DestinationPort",
+        "ProcessGuid"
+      ],
+      "field_map": {
+        "Timestamp": "_time",
+        "DeviceId": "host"
+      },
+      "event_code": 3
+    },
+    "file_event": {
+      "index": "sysmon",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": [
+        "_time",
+        "host",
+        "EventCode",
+        "Image",
+        "TargetFilename",
+        "ProcessGuid"
+      ],
+      "field_map": {
+        "Timestamp": "_time",
+        "DeviceId": "host"
+      },
+      "event_code": 11
+    },
+    "image_load": {
+      "index": "sysmon",
+      "sourcetype": "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational",
+      "fields": [
+        "_time",
+        "host",
+        "EventCode",
+        "Image",
+        "ImageLoaded",
+        "Signed",
+        "Signature",
+        "ProcessGuid"
+      ],
+      "field_map": {
+        "Timestamp": "_time",
+        "DeviceId": "host"
+      },
+      "event_code": 7
+    }
+  }
+}

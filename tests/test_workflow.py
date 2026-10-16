@@ -247,7 +247,7 @@ class WorkflowTest(unittest.TestCase):
               patch.object(sources, "collect_ghsa", return_value=iter([])),
               patch.object(sources, "enrich_epss", return_value={}),
               patch.object(leak_claims, "collect_ransomlook", return_value=[]),
-              patch.object(repo_updates, "collect_repo", return_value=[]),
+              patch.object(repo_updates, "collect_catalog", return_value=[]),
               patch.object(research_feeds, "collect_research", return_value=([report], {"Research A": 1}, {"Research B": "unavailable"})),
               patch.dict("os.environ", {"THREATFOX_AUTH_KEY": ""})):
             result = core.collect_daily(self.path)
@@ -400,14 +400,14 @@ class WorkflowTest(unittest.TestCase):
             rules.propose_rule(rows[0]["id"], evidence_id, self.path)
 
     def test_github_repo_error_is_isolated_in_daily_collection(self):
-        def failing_repo(*args):
+        def failing_repo(*args, **kwargs):
             raise ValueError("GitHub rate limited")
         with (patch.object(sources, "collect_kev", return_value=iter([record()])),
               patch.object(sources, "collect_nvd", return_value=iter([])),
               patch.object(sources, "collect_ghsa", return_value=iter([])),
               patch.object(sources, "enrich_epss", return_value={}),
               patch.object(leak_claims, "collect_ransomlook", return_value=[]),
-              patch.object(repo_updates, "collect_repo", side_effect=failing_repo),
+              patch.object(repo_updates, "collect_catalog", side_effect=failing_repo),
               patch.object(research_feeds, "collect_research", return_value=([], {}, {})),
               patch.dict("os.environ", {"THREATFOX_AUTH_KEY": ""})):
             result = core.collect_daily(self.path)

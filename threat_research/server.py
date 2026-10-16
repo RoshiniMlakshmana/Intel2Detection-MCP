@@ -122,6 +122,12 @@ def propose_stored_drafts(limit: int = 20, after_id: str = "") -> dict:
 
 
 @mcp.tool()
+def propose_stored_draft_gaps(threat_id: str, offset: int = 0, limit: int = 20) -> dict:
+    """Page every gap for one stored lead after bounded draft proposals; limit 1-40. May create an unverified draft from cited text, never verify, approve, deploy or score it."""
+    return _refused_as_data(proposal_pass.proposal_gaps, threat_id, None, offset, limit)
+
+
+@mcp.tool()
 def lead_progression(threat_id: str) -> dict:
     """Show one lead's progress: research needed -> cited evidence -> required telemetry -> inventory Yes/No/Unknown -> candidate Sigma/KQL/SPL -> labeled checks -> analyst decision -> rule repository, with the exact missing input at each blocked step. Read-only."""
     return workflow.lead_progression(threat_id)
@@ -149,7 +155,7 @@ def triage_status(limit: int = 50) -> dict:
 def propose_detection_from_paragraph(threat_id: str, source_url: str, paragraph: int, spec: dict, title: str,
                                      rationale: str, false_positives: str, manual_review_id: int = 0,
                                      browser_capture_id: int = 0) -> dict:
-    """Claude proposes 2-8 bounded predicates (event_family process_creation | network_connection | file_event | image_load | mcp_audit; platform windows, linux process_creation, or mcp) from ONE paragraph the research pass inspected and stored (see lead_workup pattern_analysis). Every value must appear verbatim in that paragraph; a file name alone is refused. Compares with local and imported inventory before creating anything; creates an UNVERIFIED source-linked draft (Sigma, generic KQL/SPL templates, required fields); approval is refused until verify_draft_source. Mapped native query requires a configured telemetry field mapping."""
+    """Claude proposes bounded literals from inspected text or a cited browser capture. Windows/Linux process, file, network, web/proxy and MCP; repeated fields, any_of, exclude, case_sensitive. A sequence has exactly two steps in one family, group_by and within_seconds (1-3600), requiring timestamps and grouping telemetry. Single events never satisfy a sequence. Every literal is cited. Creates UNVERIFIED Sigma/KQL/SPL drafts; mapping and native testing remain required."""
     return _refused_as_data(drafting.propose, threat_id, source_url, paragraph, spec, title, rationale,
                             false_positives, None, manual_review_id or None, browser_capture_id or None)
 
@@ -218,12 +224,18 @@ def inspect_cited_report(threat_id: str, source_url: str) -> dict:
 
 @mcp.tool()
 def evaluate_synthetic_soc_lab() -> dict:
-    """Run isolated fictional CVE/article-to-draft and 12-event replay; show TP/FP/FN/TN cases, never claim real SIEM accuracy."""
+    """Run template replay plus automatic text/KQL drafting checks in isolated fictional databases; never claim real SIEM accuracy."""
     with tempfile.TemporaryDirectory(prefix="threat-research-soc-lab-") as folder:
         soc_lab.run(Path(folder) / "output")
         report = json.loads((Path(folder) / "output" / "report.json").read_text(encoding="utf-8"))
         return {key: report[key] for key in ("lab_notice", "source_paths", "cve_asset_risk", "illustrative_environment_comparison", "inventory_duplicate_check",
-                                            "rule_reviews", "approval", "measurement", "tuning_notes")}
+                                            "rule_reviews", "approval", "measurement", "tuning_notes", "automatic_drafting")}
+
+
+@mcp.tool()
+def screen_benign_baseline(rule_id: str) -> dict:
+    """Replay a draft against a small bundled fictional benign corpus. Read-only; highlights obvious false alarms but cannot satisfy labeled-event approval or estimate production false-positive rates."""
+    return _refused_as_data(soc_replay.screen_benign_baseline, rule_id)
 
 
 @mcp.tool()

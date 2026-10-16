@@ -2,11 +2,18 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Avoid wasting CI capacity on superseded versions of this work.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   offline-workflow:
@@ -34,6 +41,8 @@ jobs:
         run: python scripts/smoke_mcp.py
       - name: Test source to event replay
         run: python -m threat_research.cli demo-soc --output-directory soc-lab-ci
+      - name: Offline public excerpt benchmark (not real-world accuracy)
+        run: python scripts/benchmark_excerpts.py --output-directory public-excerpt-ci
       - name: Build distributable wheel
         run: python -m pip wheel . --no-deps -w wheelhouse
       - name: Verify packaged lab fixtures

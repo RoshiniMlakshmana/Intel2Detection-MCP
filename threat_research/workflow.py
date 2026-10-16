@@ -182,7 +182,7 @@ def list_rules(path: Path | None = None, state="draft", page=1, per_page=PAGE_SI
 
 def source_errors(path: Path | None = None):
     """Sources whose latest fetch failed or was partial, plus blocked article fetches."""
-    items = [a for a in source_attempts(path).values() if a["status"] in ("error", "partial")]
+    items = [a for a in source_attempts(path).values() if a["status"] in ("error", "partial", "empty_feed")]
     with store.connection(path) as db:
         articles = [dict(r) for r in db.execute(
             "SELECT threat_id,source_url,status,attempts,last_error FROM article_inspection_queue "
@@ -395,7 +395,9 @@ def lead_progression(threat_id, path: Path | None = None):
         source_links = [dict(r) for r in db.execute(
             "SELECT rule_id,source_url,paragraph,status FROM rule_source_links WHERE threat_id=?",
             (ident,))]
-    unverified_links = [link for link in source_links if link["status"] == "unverified"]
+    from . import drafting
+    source_links = [drafting.source_link(link["rule_id"], path) for link in source_links]
+    unverified_links = [link for link in source_links if not link["source_verification_current"]]
     steps = []
 
     def step(key, title, state, summary, missing=None, **extra):

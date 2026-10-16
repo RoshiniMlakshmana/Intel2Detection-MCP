@@ -150,7 +150,8 @@ class AutomaticSourceReviewTest(Base):
         self.assertEqual(result["observables_found"], [])  # no false fixed-template match
         self.assertEqual(result["publisher_hunting_queries"][0]["status"], "publisher_query_unverified")
         view = workup.lead_workup(ident, self.path)
-        self.assertEqual([p["observable"]["lexical_behavior"] for p in view["pattern_analysis"]["patterns"]],
+        self.assertEqual([p["observable"]["lexical_behavior"] for p in view["pattern_analysis"]["patterns"]
+                         if not p["publisher_query"]],
                          ["dll_sideloading", "c2_communication"])
         self.assertTrue(all(not p["draftable"]["suggested_spec"] for p in view["pattern_analysis"]["patterns"]))
         self.assertEqual(len(view["research"]["publisher_hunting_queries"]), 1)

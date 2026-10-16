@@ -13,12 +13,26 @@ import hashlib
 import json
 import os
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import yaml
 
 from . import store
 from .core import get_threat, now
+
+_SCOPED_ROOT = ContextVar("rule_repository_root", default=None)
+
+
+@contextmanager
+def isolated_repository(root):
+    """Keep fictional lab snapshots local without changing process environment."""
+    token = _SCOPED_ROOT.set(Path(root).resolve())
+    try:
+        yield
+    finally:
+        _SCOPED_ROOT.reset(token)
 
 
 def repo_dir(path=None, override=None):
@@ -28,6 +42,8 @@ def repo_dir(path=None, override=None):
     caller passes an explicit override."""
     if override:
         return Path(override).expanduser().resolve()
+    if _SCOPED_ROOT.get() is not None:
+        return _SCOPED_ROOT.get()
     env = os.environ.get("RULE_REPOSITORY_DIR")
     if env:
         return Path(env).expanduser().resolve()

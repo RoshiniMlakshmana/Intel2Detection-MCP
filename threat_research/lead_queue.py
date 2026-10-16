@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import corroboration, report_inspection, store
 from .core import now
@@ -57,6 +58,11 @@ def inspect_due(path: Path | None = None, fetch=None, limit=None):
                           (now(), max(1, min(int(limit), 40)))).fetchall()
     result = {"attempted": 0, "inspected": 0, "leads": 0, "corroboration_reviews_queued": 0, "errors": {}}
     for row in rows:
+        from .research_feeds import DISABLED_HOSTS
+        if urlsplit(row["source_url"]).hostname in DISABLED_HOSTS:
+            with store.connection(path) as db:
+                db.execute("UPDATE article_inspection_queue SET status='failed',last_error='Source disabled: publisher blocks' WHERE threat_id=? AND source_url=?", (row["threat_id"], row["source_url"]))
+            continue
         result["attempted"] += 1
         try:
             kwargs = {"fetch": fetch} if fetch else {}

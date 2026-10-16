@@ -49,3 +49,4 @@ dist/
 .pytest_cache/
 .coverage
 *.zip
+offline-lab-*/

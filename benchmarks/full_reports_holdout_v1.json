@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "heldout-public-research-7-v1",
+  "selection_method": "Seven manually selected public Microsoft Security research reports published 2026, distinct from the 3 in the development corpus; selected before any extractor measurement. Not randomly sampled; not representative.",
+  "benchmark_partition": "locked_holdout_no_tuning",
+  "curated_at_utc": "2026-10-16T00:00:00Z",
+  "annotator": "initial manual review using publisher prose and cited hunting guidance; independent second reviewer not obtained",
+  "note": "One manually nominated detection hypothesis per report; these partial human labels are NOT verified full-report ground truth and several may be unsupported by this tool. Do not tune on this corpus and continue calling it held-out.",
+  "cases": [
+    {
+      "id": "photo-zip-csc-cvtres",
+      "title": "Photo ZIP hospitality campaign — PowerShell-triggered .NET compiler stage",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/06/25/photo-zip-campaign-targeting-hospitality-industry-delivers-node-js-implant-persistent-access/",
+      "reference_behaviors": [
+        {
+          "name": "C# compiler spawns resource converter",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentImage",
+              "value": "csc.exe"
+            },
+            {
+              "field": "Image",
+              "value": "cvtres.exe"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "counterfeit-installer-msi",
+      "title": "Counterfeit installers execute payloads through embedded Windows Installer",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/09/01/counterfeit-installers-system-compromise-tracking-deceptive-software-download-campaign/",
+      "reference_behaviors": [
+        {
+          "name": "MSI embedded execution mode",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "msiexec.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "-Embedding"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "impersonated-it-rundll",
+      "title": "Helpdesk impersonation runs actor DLL exports through rundll32",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/09/02/impersonating-it-support-threat-actors-turn-remote-session-into-enterprise-wide-access/",
+      "reference_behaviors": [
+        {
+          "name": "Rundll32 executes DLL export open",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "rundll32.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "open"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cryptojacking-defender-exclusion",
+      "title": "Search poisoning cryptojacking campaign makes PowerShell Defender exclusions",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/05/26/poisoned-search-results-gpu-mining-cryptojacking-campaign-abusing-screenconnect-microsoft-net-utilities/",
+      "reference_behaviors": [
+        {
+          "name": "PowerShell adds AV exclusion path",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "powershell.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "Add-MpPreference"
+            },
+            {
+              "field": "CommandLine",
+              "value": "-ExclusionPath"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workplace-rmm-installer",
+      "title": "Signed workplace-app impersonation deploys ScreenConnect through msiexec",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/03/03/signed-malware-impersonating-workplace-apps-deploys-rmm-backdoors/",
+      "reference_behaviors": [
+        {
+          "name": "Windows Installer runs ScreenConnect MSI",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "msiexec.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "ScreenConnect"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "acr-stealer-mshta",
+      "title": "ACR Stealer ClickFix campaign uses MSHTA remote web script",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/07/16/acr-stealer-two-observed-intrusion-chains-amid-increased-threat-activity/",
+      "reference_behaviors": [
+        {
+          "name": "MSHTA web-hosted payload execution",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "mshta.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "https://"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "autojack-agent-rce-hunt",
+      "title": "AutoJack AI-agent host RCE technical research and published hunt",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/06/18/autojack-single-page-rce-host-running-ai-agent/",
+      "reference_behaviors": [
+        {
+          "name": "Publisher hunt for AutoGen Studio host spawning command shell",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentCommandLine",
+              "value": "autogenstudio"
+            },
+            {
+              "field": "Image",
+              "value": "cmd.exe"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

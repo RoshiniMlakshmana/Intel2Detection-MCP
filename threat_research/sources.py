@@ -20,15 +20,19 @@ EPSS_URL = "https://api.first.org/data/v1/epss"
 CVE_URL = "https://cveawg.mitre.org/api/cve/"
 
 
-def fetch_json(url, headers=None, timeout=20):
+def fetch_json(url, headers=None, timeout=20, max_bytes=8_000_000, include_link=False):
+    if not isinstance(max_bytes, int) or not 1 <= max_bytes <= 32_000_000:
+        raise ValueError("invalid bounded JSON response limit")
     req = urllib.request.Request(url, headers={"User-Agent": "ThreatResearchMCP/0.1", "Accept": "application/json", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout, context=tls_context()) as response:
         if response.status != 200:
             raise ValueError(f"source returned HTTP {response.status}")
-        raw = response.read(8_000_001)
-        if len(raw) > 8_000_000:
+        raw = response.read(max_bytes + 1)
+        if len(raw) > max_bytes:
             raise ValueError("source response too large")
-    return json.loads(raw)
+        link = response.headers.get("Link") if include_link else None
+    data = json.loads(raw)
+    return (data, link) if include_link else data
 
 
 def post_json(url, body, headers=None, timeout=20):
@@ -71,10 +75,11 @@ class PartialCollection(RuntimeError):
     collection.
     """
 
-    def __init__(self, message, records, complete_through):
+    def __init__(self, message, records, complete_through, resume_state=None):
         super().__init__(message)
         self.records = records
         self.complete_through = complete_through
+        self.resume_state = resume_state
 
 
 def _nvd_record(item):
@@ -153,19 +158,66 @@ def collect_nvd(since, until, fetch=fetch_json, max_pages=25, page_size=500, rat
         chunk_start = chunk_end
 
 
-def collect_ghsa(since, fetch=fetch_json, max_pages=5):
-    # The API's modified filter covers newly published and revised advisories.
-    page = 1
-    for _ in range(max_pages):
-        params = urllib.parse.urlencode({"type": "reviewed", "modified": f">={since.date().isoformat()}", "per_page": 100, "page": page})
-        data = fetch(f"{GHSA_URL}?{params}")
+def _ghsa_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "https" or parsed.netloc != "api.github.com" or
+            parsed.path != "/advisories" or parsed.fragment):
+        raise ValueError("GitHub advisory cursor must stay on the official endpoint")
+    return url
+
+
+def collect_ghsa(since, fetch=fetch_json, max_pages=5, until=None, database=None):
+    """Follow GitHub's Link cursors; persist bounded progress after ingestion.
+
+    Injected fetches can return a list for one page, or (list, Link-header) to
+    simulate pagination. No unsupported page-number parameter is used.
+    """
+    from . import store
+    until = until or datetime.now(timezone.utc)
+    since = datetime.fromisoformat(_iso(since).replace("Z", "+00:00"))
+    until = datetime.fromisoformat(_iso(until).replace("Z", "+00:00"))
+    if max_pages < 1 or until < since:
+        raise ValueError("invalid GitHub advisory collection window or page budget")
+    pending = None
+    if database is not None:
+        store.initialize(database)
+        with store.connection(database) as db:
+            row = db.execute("SELECT state FROM collection_cursors WHERE source='GitHub advisories'").fetchone()
+        pending = json.loads(row["state"]) if row else None
+    window_since = datetime.fromisoformat(pending["since"].replace("Z", "+00:00")) if pending else since
+    window_until = datetime.fromisoformat(pending["until"].replace("Z", "+00:00")) if pending else until
+    url = _ghsa_url(pending["next_url"]) if pending else None
+    records, pages = [], 0
+    completed_through = min(since, window_since)
+    headers = {"Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    while True:
+        if not url:
+            params = urllib.parse.urlencode({"type": "reviewed", "modified": window_since.date().isoformat() + ".." + window_until.date().isoformat(),
+                                             "sort": "updated", "direction": "asc", "per_page": 100})
+            url = f"{GHSA_URL}?{params}"
+        state = {"since": _iso(window_since), "until": _iso(window_until), "next_url": url}
+        if pages >= max_pages:
+            raise PartialCollection("GitHub advisory page budget reached; saved cursor resumes after ingestion",
+                                    records, completed_through, resume_state=state)
+        try:
+            response = (fetch(url, headers=headers, include_link=True) if fetch is fetch_json else fetch(url))
+        except (OSError, ValueError) as exc:
+            raise PartialCollection(f"GitHub advisory fetch interrupted: {exc}; cursor retained",
+                                    records, completed_through, resume_state=state) from exc
+        pages += 1
+        data, link = response if isinstance(response, tuple) else (response, None)
         if not isinstance(data, list):
-            raise ValueError("unexpected GitHub advisories response")
+            raise PartialCollection("unexpected GitHub advisories response; cursor retained", records,
+                                    completed_through, resume_state=state)
         for item in data:
+            if not isinstance(item, dict):
+                continue
             ident = (item.get("cve_id") or item.get("ghsa_id") or "").upper()
             if not (CVE.fullmatch(ident) or ident.startswith("GHSA-")) or item.get("withdrawn_at"):
                 continue
-            yield {
+            records.append({
                 "id": ident, "title": item.get("summary") or ident,
                 "summary": item.get("description") or "", "published": item.get("published_at"),
                 "updated": item.get("updated_at"), "affected": [
@@ -174,12 +226,19 @@ def collect_ghsa(since, fetch=fetch_json, max_pages=5):
                 ],
                 "source": item.get("html_url") or f"https://github.com/advisories/{item.get('ghsa_id')}",
                 "claim": "GitHub reviewed security advisory includes this affected package/version range.",
-            }
-        if len(data) < 100:
-            break
-        page += 1
-    else:
-        raise RuntimeError("GitHub advisory page cap reached; narrow the collection window")
+            })
+        next_link = re.search(r'<([^>]+)>\s*;\s*rel="next"', link or "")
+        if next_link:
+            try:
+                url = _ghsa_url(next_link.group(1))
+            except ValueError as exc:
+                raise PartialCollection(str(exc), records, completed_through, resume_state=state) from exc
+            continue
+        completed_through = window_until
+        if window_until >= until:
+            return records
+        # Complete the older pending snapshot before moving toward this poll.
+        window_since, window_until, url = window_until, until, None
 
 
 def enrich_epss(ids, fetch=fetch_json):

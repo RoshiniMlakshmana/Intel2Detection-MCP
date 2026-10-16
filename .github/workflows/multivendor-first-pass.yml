@@ -1,0 +1,63 @@
+name: First-Pass Ten-Report Multi-Vendor Evaluation
+
+on:
+  push:
+    branches:
+      - feat/bounded-command-patterns
+    paths:
+      - .github/workflows/multivendor-first-pass.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout bounded candidate
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install project
+        run: python -m pip install -e .
+      - name: Assert source partition was recorded before first score
+        run: python -m unittest discover -s tests -p test_multivendor_holdout.py -v
+      - name: Score all ten allowlisted full HTML reports WITHOUT a SIEM
+        run: |
+          python scripts/benchmark_reports.py --live \
+            --manifest benchmarks/multivendor_holdout_v1.json \
+            --output-directory multivendor-results
+      - name: Expose both positive and negative results
+        if: always()
+        shell: bash
+        run: |
+          if [ -f multivendor-results/SUMMARY.md ]; then
+            cat multivendor-results/SUMMARY.md
+          fi
+          if [ -f multivendor-results/results.json ]; then
+            python - <<'PY'
+          import json
+          d=json.load(open("multivendor-results/results.json",encoding="utf-8"))
+          for r in d["cases"]:
+            print("REPORT",r["id"],"status",r["page_status"],"scored",r["scored"],"drafts",r["draft_count"])
+            for ref in r["reference_behaviors"]:
+              print("BEHAVIOR",ref["name"],"extracted",ref["extracted"],"matching_rules",ref["matching_rule_ids"])
+            for rule in r["generated_drafts"][:10]:
+              print("DRAFT",rule["rule_id"],rule["spec"])
+          PY
+          fi
+      - name: Upload observed outcome without publishing vendor article HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-vendor-ten-report-first-pass
+          path: |
+            multivendor-results/SUMMARY.md
+            multivendor-results/results.json
+          if-no-files-found: warn

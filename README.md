@@ -2,11 +2,104 @@
 
 **Collect threat intelligence → research behaviors → create Sigma, KQL and SPL drafts.**
 
-- **Documented version:** 0.12.3 on [`fix/detection-gaps-oct06`](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/tree/fix/detection-gaps-oct06).
-- **Main code:** currently 0.11.0. Switch to the development branch below to use the newer features and checks.
+- **Version:** 0.12.3.
 - **Use through:** Claude MCP, Python CLI or the local dashboard.
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
+
+## Try it without a SIEM (offline demo)
+
+Requires Python 3.11+; **no SOC, paid API, cloud account or production telemetry needed**. After cloning the repository, install and run:
+
+```powershell
+py -3 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -e .
+& .\.venv\Scripts\python.exe scripts/offline_demo.py
+```
+
+On macOS/Linux, replace the first command with `python3 -m venv .venv` and the Python executable with `./.venv/bin/python`. The command creates an isolated `offline-demo-<timestamp>/` directory and prints the path to its **DEMO_SUMMARY.md**. That summary links to the synthetic event samples, detailed report, generated draft rules and automatic lab output. Each run uses a fresh folder and will not overwrite existing output.
+
+This is an intentionally **fictional, reproducible lab**, not an assertion of production accuracy or native SIEM query execution. Its expected outcomes include false positives and missed malicious events. Rules are neither approved nor deployed. For advanced use and real-source evaluation steps, see [QUICKSTART.md](QUICKSTART.md).
+
+## Source-attributed research excerpt benchmark (offline)
+
+Run a small, repeatable check of **real publisher wording** with no SIEM, live access or model key:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_excerpts.py --output-directory public-excerpt-results
+```
+
+Its inputs are short, manually curated quotations and reference predicates in [benchmarks/public_excerpts_v1.json](benchmarks/public_excerpts_v1.json). It reports which **bounded behavior predicates** the existing extractor recognized and which unsupported descriptions were correctly withheld. Results go to `results.json` and `SUMMARY.md`. Using original publisher excerpts is a stronger smoke test than wholly fictional prose, but **it is not an evaluation of full articles, detection accuracy on real events, or native KQL/SPL execution**. The offline runner does not re-fetch or authenticate the excerpts. We will add wider, independent full-report evaluation separately.
+
+## Full technical-report benchmark (optional live fetch, no SIEM)
+
+A separate, more realistic evaluator processes **entire publisher HTML pages**, not merely excerpts. The initial manually annotated, partial reference set covers three Microsoft/Cisco Talos reports in [benchmarks/full_reports_v1.json](benchmarks/full_reports_v1.json). The run is **not** part of normal startup or CI because live publisher requests may be blocked or change content. To explicitly evaluate the published HTML:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --live --output-directory full-report-eval
+```
+
+Alternatively, use `--snapshots-dir MY_HTML` in place of `--live`, with files named `<case-id>.html` under that directory. Snapshots are **origin-unverified** and must not be claimed to be publisher-retrieved. Each report uses its own isolated SQLite database and reuses the existing evidence-gated research + draft proposal pipeline. Results are written to `results.json` and `SUMMARY.md` with retrieved page hashes, source readability, draft predicates, and missed annotated behaviors. A blocked or unreadable publisher page is **unscored**, not silently treated as a false negative. Only manually nominated patterns are measured: this is not comprehensive report recall, a measured false-positive rate, or evidence of production effectiveness. The rule engine does not execute native Sigma/KQL/SPL or deploy any alerts.
+
+**Actual research benchmark (2026-10-16):** Three live publisher reports were read and six unverified rules drafted; all three *manually nominated* relationships were found after fixing the passive DLL-load extraction gap. See [evidence, before/after logs and limitations](benchmarks/RESULTS_OCT16.md). These three labels do not establish real-world detection accuracy.
+
+## Challenge generated rules with fictional attack **and benign** events
+
+The real-report benchmark now has a second, **independently labeled fictional** stage. Once full-report evaluation succeeds, test its exact source-linked drafts against sample malicious-command variants, authorized administration with overlapping behavior, renamed modules and missing telemetry. There is still **no requirement for a SOC or a SIEM**:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --live --output-directory full-report-eval
+& .\.venv\Scripts\python.exe scripts/replay_benchmark.py --source-directory full-report-eval --output-directory fictional-event-eval
+```
+
+The versioned [synthetic challenge scenarios](benchmarks/synthetic_challenges_v1.json) define fictional malicious and benign event assumptions separately from the generated rules; the CLI loads the real-report run's local draft repository and calls the existing reference matcher on **only the qualifying source-linked draft**. It reports synthetic TP, FP, FN and TN, identifies each source-linked rule version by hash, and marks unavailable/missed source rules **unscored**. A benign match shows potential alert noise; attacker variations and missing fields expose evasion and visibility limitations. **These counts are not real SOC precision/recall, operational false-positive rates, or native KQL/SPL/Sigma query execution.** No generated rules are automatically approved or deployed. The same stages also run as a GitHub Actions demonstration and publish JSON/Markdown artifacts.
+
+## Export SOC-review packages without a SIEM
+
+After running the full-report evaluation and fictional-event challenges, you can bundle **the exact generated rules** as Sigma, KQL and SPL files, each accompanied by a source paragraph reference, page hash, required fields, evidence limitations and synthetic event outcomes:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/export_review_bundles.py --source-directory full-report-eval --challenge-directory fictional-event-eval --output-directory detection-review-packages
+```
+
+Read `detection-review-packages/README.md`, then open each rule's `REVIEW.md` and `metadata.json`. Rule text is copied from the source-linked draft repository, not regenerated, and checked against the recorded predicate fingerprint. Rules are never approved, published or deployed by this command. Generic example KQL and SPL **are not guaranteed to execute** against your SIEM tables or index configuration. No production environment is required to generate this review package.
+
+The [2026-10-16 evaluation](benchmarks/RESULTS_OCT16.md) records the actual three-publication retrieval, missed DLL relationship and successful extraction retest. Its associated fictional replay is a separate demonstration of intended matches, false alarms and missed variants—not a real-world performance measurement.
+
+## Independent held-out research corpus (no tuning on the results)
+
+The **seven-report locked hold-out** in [benchmarks/full_reports_holdout_v1.json](benchmarks/full_reports_holdout_v1.json) is separate from the three known development reports used above. Its seven publisher pages and partial human behavior references were selected and frozen **before the first scored run**. The separate [held-out GitHub Actions workflow](.github/workflows/heldout-report-evaluation.yml) evaluates the same code on these previously untested publications; keep misses, unsupported behavior types and publisher-blocked articles visible instead of rewriting the labels or changing detection logic to make the score look better. The selection is a convenience sample, not random or independently second-reviewed. In particular, 7/7 would not mean 100% extraction accuracy or production detection effectiveness.
+
+Run locally if desired:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --manifest benchmarks/full_reports_holdout_v1.json --live --output-directory heldout-report-results
+```
+
+The **development benchmark** evaluates 3 known reports. The **held-out benchmark** adds 7 distinct reports, bringing the attempted evaluation set to **10 reports** when both are executed. Do not mix their scores into one impressive-looking metric or claim comprehensive ground truth. See [benchmarks/README.md](benchmarks/README.md) for scope and provenance limits.
+
+## Full 20-report evaluation: actual findings and limitations
+
+We evaluated **20 distinct public technical research articles** in three separate batches: 3 *iteratively tuned* development reports, 7 previously unmeasured Microsoft reports, and 10 new reports from Google/Mandiant, Palo Alto Unit 42 and Cisco Talos. All publisher pages were readable during their respective GitHub Actions runs. **Source-backed rule creation remains inconsistent:** the developer-tuned three references were found, while neither first-pass batch reproduced its human-selected exact behavior predicates (7/7 and 10/10 misses). The system produced other unverified rule drafts, but those are **not automatically correct detection rules**. These partial references lack independent adjudication, and the scores cannot be combined or interpreted as real-world SOC detection effectiveness.
+
+- [Auditable multi-vendor first-pass results, 10 reports](benchmarks/RESULTS_MULTIVENDOR_OCT16.md) — [successful GitHub Actions run](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/actions/runs/38957335204).
+- [Initial seven-report extraction failure analysis](benchmarks/RESULTS_HOLDOUT_OCT16.md).
+- [Known three-report development results and simulated rule test limitations](benchmarks/RESULTS_OCT16.md).
+- [Evaluation protocol and no-SIEM claims policy](benchmarks/README.md).
+
+**New narrowly supported drafting:** Synthetic tests now exercise explicit attacker-executed `powershell.exe` commands containing both `Add-MpPreference` and an exclusion switch, and exact `mshta.exe` HTTPS HTA URLs. Generic source descriptions, benign documentation, unrelated clauses and negated events remain unverified and must not generate these command drafts. These are **narrow selectors**, not general malware recognition, and have not been shown to improve the 10-report first-pass result. They cannot automatically be approved or deployed.
+
+## General Windows executable lineage + independent source review
+
+The development branch now recognizes **source-attributed, attacker-linked named .exe → .exe process relationships**, even if neither process is PowerShell or msiexec. For example, a fictional case in which a malicious loader launches a named resource converter can lead to a two-field ParentImage/Image draft. Generic documentation, separate benign activity and unsupported source claims must not automatically become detections. Source evidence, human approval, and local SIEM validation remain mandatory.
+
+The first-pass multi-vendor benchmark also exposed an important measurement limitation: the **manually selected behavior labels themselves have not been independently verified**. Rather than rewriting previously measured targets or pretending the result improved, produce a **blank independent review worksheet** from existing benchmark output:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/adjudicate_research.py --manifest benchmarks/multivendor_holdout_v1.json --source-directory multivendor-results --output-directory review-worksheet
+```
+
+Open the generated `INDEPENDENT_REVIEW.csv` and `README.md`. A second analyst must review original publisher wording, decide whether a behavior was observed or merely suggested as a hunt, and verify the proposed telemetry fields. The script makes **no network requests**, leaves frozen report labels and prior results unchanged, and labels **every entry as PENDING_INDEPENDENT_REVIEW**. It does not improve scores or certify rules. This review step works entirely without a SOC or SIEM.
 
 ## What it does
 
@@ -58,7 +151,7 @@
 
 ## Example rules created
 
-From the [fictional RMM report](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/threat_research/lab_fixtures/automatic_reports.json), the server creates two independent drafts:
+From the [fictional RMM report](threat_research/lab_fixtures/automatic_reports.json), the server creates two independent drafts:
 
 - **PowerShell download:** `RMM.Agent.exe` parent + image containing `PowerShell` + `Invoke-WebRequest` command.
 - **Silent MSI installation:** `msiexec.exe` image + `/qn` + `ClientSetup.msi`.
@@ -126,7 +219,7 @@ index=sysmon_lab sourcetype=sysmon EventCode=1
 - **No SIEM:** replay labeled JSONL locally; this checks selectors, not native queries.
 - **Native checks:** `test_draft_in_siem` supports bounded Splunk/Defender queries; it does not publish alerts.
 - **Important:** Microsoft Kusto KQL and Elastic Kibana KQL are different languages.
-- **Profiles:** [offline example](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/examples/sysmon_splunk_lab_profile.json) · [connected Splunk lab](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/examples/splunk-sysmon-lab.profile.json). Use only mappings that match actual ingestion.
+- **Profiles:** [offline example](examples/sysmon_splunk_lab_profile.json) · [connected Splunk lab](examples/splunk-sysmon-lab.profile.json). Use only mappings that match actual ingestion.
 
 ## Start and test
 
@@ -134,8 +227,6 @@ index=sysmon_lab sourcetype=sysmon EventCode=1
 - Run these commands from the cloned project folder in PowerShell:
 
 ```powershell
-git fetch origin
-git switch fix/detection-gaps-oct06
 py -3 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -e .
 & .\.venv\Scripts\python.exe -m threat_research.cli doctor
@@ -153,7 +244,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_offline.
 - **Automatic lab:** 5 fictional reports, 12 server-written drafts, 7 query translations and 26 predicate checks.
 - **Template challenge:** includes intentional false positives and misses.
 - **NeedyMantis fixture:** 2 matches, 2 malicious misses and 2 benign nonmatches; synthetic only.
-- **Real logs without SIEM:** export existing Sysmon Event 1, normalize, label and replay. [Instructions](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/COLLECTOR_SETUP.md#real-local-logs-without-a-siem).
+- **Real logs without SIEM:** export existing Sysmon Event 1, normalize, label and replay. [Instructions](COLLECTOR_SETUP.md#real-local-logs-without-a-siem).
 
 ## Limitations
 
@@ -178,4 +269,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_offline.
 - Fix missed behaviors and query-conversion gaps.
 - Test drafts against labeled real logs and target query engines.
 
-[Quickstart](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/QUICKSTART.md) · [Collector setup](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/COLLECTOR_SETUP.md) · [Detection guide](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/DETECTION_PLAYBOOK.md) · [Dashboard](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/DASHBOARD.md) · [Publishing](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/blob/fix/detection-gaps-oct06/PUBLISHING.md)
+[Quickstart](QUICKSTART.md) · [Collector setup](COLLECTOR_SETUP.md) · [Detection guide](DETECTION_PLAYBOOK.md) · [Dashboard](DASHBOARD.md) · [Publishing](PUBLISHING.md)

@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "multivendor-before-first-score-oct16-v1",
+  "benchmark_partition": "new_multivendor_challenge_before_first_score",
+  "selected_at_utc": "2026-10-16T19:44:00Z",
+  "selection_method": "Manually selected from published public technical research across Google/Mandiant, Palo Alto Unit 42 and Cisco Talos; URLs and broad behavior hypotheses recorded BEFORE first scoring this corpus. Not random and not independently reviewed.",
+  "reference_limitations": "One partial human-selected behavior hypothesis per article, sometimes from a published hunting suggestion rather than an observed attack. Second expert review pending. Do not change labels after observing extractor results.",
+  "cases": [
+    {
+      "id": "google-cornflake-node",
+      "publisher": "Google Mandiant",
+      "title": "CORNFLAKE.V3 PowerShell launching Node.js in AppData",
+      "source_url": "https://cloud.google.com/blog/topics/threat-intelligence/analyzing-cornflake-v3-backdoor",
+      "reference_behaviors": [
+        {
+          "name": "CORNFLAKE.V3 PowerShell launching Node.js in AppData",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentImage",
+              "value": "powershell.exe"
+            },
+            {
+              "field": "Image",
+              "value": "node.exe"
+            }
+          ],
+          "annotation_note": "Publisher Google SecOps hunt names this parent-child behavior; it is a hunting hypothesis, not necessarily an observed exact event."
+        }
+      ]
+    },
+    {
+      "id": "google-unc4990-powershell",
+      "publisher": "Google Mandiant",
+      "title": "UNC4990 explorer spawning PowerShell for shortcut execution",
+      "source_url": "https://cloud.google.com/blog/topics/threat-intelligence/unc4990-evolution-usb-malware/",
+      "reference_behaviors": [
+        {
+          "name": "UNC4990 explorer spawning PowerShell for shortcut execution",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentImage",
+              "value": "explorer.exe"
+            },
+            {
+              "field": "Image",
+              "value": "powershell.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "explorer.ps1"
+            }
+          ],
+          "annotation_note": "Publisher detection-opportunity table; command-line example, not customer telemetry."
+        }
+      ]
+    },
+    {
+      "id": "google-unc2165-defender-exclude",
+      "publisher": "Google Mandiant",
+      "title": "UNC2165 PowerShell Defender exclusion command",
+      "source_url": "https://cloud.google.com/blog/topics/threat-intelligence/unc2165-shifts-to-evade-sanctions",
+      "reference_behaviors": [
+        {
+          "name": "UNC2165 PowerShell Defender exclusion command",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "powershell.exe"
+            },
+            {
+              "field": "CommandLine",
+              "value": "Add-MpPreference"
+            },
+            {
+              "field": "CommandLine",
+              "value": "-ExclusionPath"
+            }
+          ],
+          "annotation_note": "Publisher script example; legitimate security administration can use the same command."
+        }
+      ]
+    },
+    {
+      "id": "google-netwire-wscript",
+      "publisher": "Google Mandiant",
+      "title": "NETWIRE malicious document browser-to-wscript execution chain",
+      "source_url": "https://cloud.google.com/blog/topics/threat-intelligence/dissecting-netwire-phishing-campaigns-usage-process-hollowing/",
+      "reference_behaviors": [
+        {
+          "name": "NETWIRE malicious document browser-to-wscript execution chain",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentImage",
+              "value": "iexplore"
+            },
+            {
+              "field": "Image",
+              "value": "wscript"
+            }
+          ],
+          "annotation_note": "Published phrase describes Wscript spawned by iexplore; exact .exe suffix is not asserted in article text."
+        }
+      ]
+    },
+    {
+      "id": "unit42-ivanti-vixdll",
+      "publisher": "Palo Alto Unit 42",
+      "title": "Ivanti DLL sideload through vmdisk.exe",
+      "source_url": "https://unit42.paloaltonetworks.com/threat-brief-ivanti-cve-2025-0282-cve-2025-0283/",
+      "reference_behaviors": [
+        {
+          "name": "Ivanti DLL sideload through vmdisk.exe",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "vmdisk.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "vixDiskLib.dll"
+            }
+          ],
+          "annotation_note": "Source reports loading of two named malicious DLLs by legitimate executables."
+        }
+      ]
+    },
+    {
+      "id": "unit42-blinder-blackwood",
+      "publisher": "Palo Alto Unit 42",
+      "title": "Blinder Tunnel vshost32 sideload of Blackwood DLL",
+      "source_url": "https://unit42.paloaltonetworks.com/blinder-tunnel-targets-critical-infrastructure/",
+      "reference_behaviors": [
+        {
+          "name": "Blinder Tunnel vshost32 sideload of Blackwood DLL",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "vshost32.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "Blackwood.dll"
+            }
+          ],
+          "annotation_note": "Source names a signed host and its sideloaded module; verify section wording and source."
+        }
+      ]
+    },
+    {
+      "id": "unit42-emissary-python33",
+      "publisher": "Palo Alto Unit 42",
+      "title": "Emissary Panda plugin_host hijacks python33 DLL",
+      "source_url": "https://unit42.paloaltonetworks.com/emissary-panda-attacks-middle-east-government-sharepoint-servers/",
+      "reference_behaviors": [
+        {
+          "name": "Emissary Panda plugin_host hijacks python33 DLL",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "plugin_host.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "PYTHON33.dll"
+            }
+          ],
+          "annotation_note": "Older article from 2019; preserves historical diversity but is not 2026 news."
+        }
+      ]
+    },
+    {
+      "id": "unit42-stately-smadav",
+      "publisher": "Palo Alto Unit 42",
+      "title": "Stately Taurus antivirus program sideload",
+      "source_url": "https://unit42.paloaltonetworks.com/stately-taurus-targets-philippines-government-cyberespionage/",
+      "reference_behaviors": [
+        {
+          "name": "Stately Taurus antivirus program sideload",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "SmadavProtect32.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "Smadhook32c.dll"
+            }
+          ],
+          "annotation_note": "Reports benign SmadAV executable loading malicious DLL; casing can vary in text."
+        }
+      ]
+    },
+    {
+      "id": "talos-clearfake-chrome-dll",
+      "publisher": "Cisco Talos",
+      "title": "ClearFake Chrome helper DLL sideload",
+      "source_url": "https://blog.talosintelligence.com/clearfake-webdav-infection-chain/",
+      "reference_behaviors": [
+        {
+          "name": "ClearFake Chrome helper DLL sideload",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "platform_experience_helper.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "Secur32.dll"
+            }
+          ],
+          "annotation_note": "Article describes benign Chrome executable and malicious DLL sideload; review exact clause for extraction."
+        }
+      ]
+    },
+    {
+      "id": "talos-uat9244-bugsplat",
+      "publisher": "Cisco Talos",
+      "title": "UAT-9244 WSPrint benign executable loads malicious DLL",
+      "source_url": "https://blog.talosintelligence.com/uat-9244/",
+      "reference_behaviors": [
+        {
+          "name": "UAT-9244 WSPrint benign executable loads malicious DLL",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "wsprint.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "BugSplatRc64.dll"
+            }
+          ],
+          "annotation_note": "Publisher defangs first mention wsprint[.]exe and BugSplatRc64[.]dll; exact lexical match may be absent."
+        }
+      ]
+    }
+  ]
+}

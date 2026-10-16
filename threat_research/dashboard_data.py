@@ -8,9 +8,10 @@ the MCP tool surface and the dashboard's view-model concerns apart.
 
 from pathlib import Path
 import json
+import os
 
 from . import environment, frameworks, lead_queue, poller, repo_updates, research_feeds, rules, store
-from .core import backfill_source_names, get_threat, now, research_view
+from .core import backfill_source_names, get_threat, now, research_view, stored_source_counts
 
 
 def source_catalog():
@@ -23,6 +24,7 @@ def source_catalog():
              ("ThreatFox C2", "community IOC feed (optional, needs THREATFOX_AUTH_KEY)")]
     names += [("GitHub: " + name, "curated GitHub repository") for name, _, _, _ in repo_updates.REPOSITORIES]
     names += [("RSS: " + name, f"{kind} RSS/Atom feed") for name, _, kind in research_feeds.FEEDS]
+    names.append(("RSS: Dark Reading", "disabled: publisher blocks most article fetches"))
     return names
 
 
@@ -92,9 +94,7 @@ def sources_overview(path: Path | None = None):
     source_errors = last_result.get("source_errors", {})
     with store.connection(path) as db:
         rows = {r["name"]: dict(r) for r in db.execute("SELECT * FROM source_state")}
-        counts = {r["source_name"]: r["n"] for r in db.execute(
-            "SELECT source_name, COUNT(DISTINCT threat_id) AS n FROM evidence "
-            "WHERE kind='source_fact' AND source_name IS NOT NULL GROUP BY source_name")}
+        counts = stored_source_counts(db)
         latest_pub = {r["source_name"]: r["latest"] for r in db.execute(
             "SELECT e.source_name, MAX(t.published) AS latest FROM evidence e "
             "JOIN threats t ON t.id=e.threat_id WHERE e.kind='source_fact' AND e.source_name IS NOT NULL "
@@ -107,15 +107,22 @@ def sources_overview(path: Path | None = None):
         row = rows.get(name)
         attempt = attempts.get(name)
         if attempt:
-            error = attempt["detail"] if attempt["status"] in ("error", "partial") else None
-            status = {"error": "error", "partial": "partial"}.get(attempt["status"], "ok")
+            error = attempt["detail"] if attempt["status"] in ("error", "partial", "empty_feed") else None
+            status = {"error": "error", "partial": "partial", "empty_feed": "empty_feed"}.get(attempt["status"], "ok")
         else:
             error = source_errors.get(name) or (row["last_error"] if row else None)
             status = "error" if error else "ok" if row else "never_collected"
+        if name == "RSS: Dark Reading":
+            status, error = "disabled", "Publisher blocks most article fetches; use original technical reports."
+        elif name == "ThreatFox C2" and not os.environ.get("THREATFOX_AUTH_KEY"):
+            status, error = "not_configured", "Set THREATFOX_AUTH_KEY locally."
+        elif name.startswith(("RSS: ", "GitHub: ")) and status == "ok" and not counts.get(name, 0):
+            status, error = "empty_feed", poller.EMPTY_SOURCE_DETAIL
         cards.append({
             "name": name, "category": category,
             "last_success": row["last_success"] if row else None,
             "record_count": counts.get(name, 0),
+            "records_fetched_total": row["total_records"] if row else 0,
             "research_counts": research_counts.get(name, {
                 "research_attempted": 0, "readable_page_leads": 0,
                 "blocked_page_leads": 0, "unreadable_page_leads": 0, "not_allowlisted_leads": 0,
@@ -162,7 +169,7 @@ def sources_overview(path: Path | None = None):
             "email_configured": state["email_configured"],
             "last_result_stale": state["last_result_stale"],
             "last_result_age_minutes": state["last_result_age_minutes"],
-            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "partial", "backlogged"), c["name"]))}
+            "sources": sorted(cards, key=lambda c: (c["status"] not in ("error", "partial", "empty_feed", "backlogged"), c["name"]))}
 
 
 def threats_for_source(name, path: Path | None = None, limit=50):

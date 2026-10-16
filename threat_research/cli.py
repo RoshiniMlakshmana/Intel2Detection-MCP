@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-from . import corroboration, dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
+from . import corroboration, dashboard, doctor, enterprise, environment, frameworks, lead_queue, live_validation, poller, proposal_pass, report_inspection, rule_repository, rules, soc_lab, soc_replay, store
 from .core import collect_daily, get_threat, list_threats
 from .digest import due_now, run_daily
 from .rules import import_inventory
@@ -14,13 +14,13 @@ from .rules import import_inventory
 def main():
     parser = argparse.ArgumentParser(prog="threat-research")
     parser.add_argument("command", choices=["init", "collect", "list", "show", "digest", "serve-scheduler", "import-inventory",
-                                            "onboard", "environment-status", "assess-assets", "check-rule", "probe-splunk", "inspect-report",
+                                            "onboard", "configure-telemetry", "environment-status", "assess-assets", "check-rule", "probe-splunk", "inspect-report",
                                             "test-siem", "compare-splunk-rules", "poll-once", "poll-status", "serve-live",
                                             "create-pack", "inspect-pack", "onboard-pack", "export-sigma",
-                                            "demo-soc", "watch-events", "review-leads", "review-queue", "doctor",
+                                            "demo-soc", "propose-stored", "watch-events", "review-leads", "review-queue", "doctor",
                                             "refresh-frameworks", "framework-status", "review-detection", "dashboard",
                                             "inventory-status", "declare-inventory", "reject-rule", "reopen-rule",
-                                            "rule-repository-status", "test-rule",
+                                            "rule-repository-status", "test-rule", "prepare-sysmon",
                                             "list-reviews", "approve-review", "reject-review"])
     parser.add_argument("--host", help="dashboard bind host (default 127.0.0.1)")
     parser.add_argument("--port", type=int, help="dashboard bind port (default 8765)")
@@ -31,9 +31,11 @@ def main():
     parser.add_argument("--output-directory", help="new or empty directory for the isolated SOC lab")
     parser.add_argument("--include-drafts", action="store_true", help="explicitly enable review-only drafts in the local watcher")
     parser.add_argument("--from-end", action="store_true", help="start watching after existing file contents")
+    parser.add_argument("--no-notifications", action="store_true", help="poll-once: collect without sending queued notifications")
+    parser.add_argument("--after-id", default="", help="propose-stored: resume at the previous next_cursor")
     parser.add_argument("--profile", help="environment profile JSON file")
     parser.add_argument("--assets", help="asset inventory CSV file")
-    parser.add_argument("--family", choices=["process_creation", "network_connection", "mcp_audit"], help="Splunk event family")
+    parser.add_argument("--family", choices=["process_creation", "network_connection", "file_event", "image_load", "mcp_audit"], help="Splunk event family")
     parser.add_argument("--source-url", help="already cited publisher URL for inspect-report")
     parser.add_argument("--directory", help="new or existing enterprise environment pack directory")
     parser.add_argument("--name", help="environment name for create-pack")
@@ -42,9 +44,12 @@ def main():
     parser.add_argument("--complete", action="store_true", help="declare-inventory: mark the declared scope as the complete current inventory")
     parser.add_argument("--reason", help="reject-rule: short rejection reason")
     parser.add_argument("--events-file", help="test-rule: local JSONL file of analyst-labeled positive/benign events")
+    parser.add_argument("--labels-file", help="prepare-sysmon: CSV of event_id and explicit expected_malicious true/false")
     parser.add_argument("--review-id", type=int, help="approve-review/reject-review: pending corroboration review ID")
     parser.add_argument("--approval-phrase", default="", help="approve-review: must be exactly 'implement this rule'")
     args = parser.parse_args()
+    if args.database and args.command != "watch-events":
+        os.environ["THREAT_RESEARCH_DB"] = args.database
     if args.directory and args.command not in ("create-pack", "inspect-pack", "onboard-pack"):
         os.environ["THREAT_RESEARCH_DB"] = str(enterprise.pack_database(args.directory))
     if args.command == "init":
@@ -71,6 +76,11 @@ def main():
         with open(args.assets, encoding="utf-8-sig", newline="") as handle:
             assets = environment.parse_assets(handle.read())
         result = environment.onboard(profile, assets)
+    elif args.command == "configure-telemetry":
+        if not args.profile:
+            parser.error("configure-telemetry requires --profile")
+        with open(args.profile, encoding="utf-8") as handle:
+            result = environment.configure_telemetry(json.load(handle))
     elif args.command == "environment-status":
         result = environment.status()
     elif args.command == "assess-assets":
@@ -106,9 +116,11 @@ def main():
             parser.error("compare-splunk-rules requires --id RULE-ID")
         result = live_validation.compare_splunk_inventory(args.id)
     elif args.command == "poll-once":
-        result = poller.run_poll()
+        result = poller.run_poll(notify=not args.no_notifications)
     elif args.command == "poll-status":
         result = poller.poll_status()
+    elif args.command == "propose-stored":
+        result = proposal_pass.propose_stored_batch(after_id=args.after_id)
     elif args.command == "review-leads":
         result = lead_queue.list_leads()
     elif args.command == "review-queue":
@@ -139,6 +151,11 @@ def main():
         result = rules.reopen_rule(args.id)
     elif args.command == "rule-repository-status":
         result = rule_repository.list_repository()
+    elif args.command == "prepare-sysmon":
+        from . import sysmon_samples
+        if not args.file or not args.output_directory:
+            parser.error("prepare-sysmon requires --file export.xml --output-directory NEW-DIRECTORY")
+        result = sysmon_samples.prepare(args.file,args.output_directory,args.labels_file)
     elif args.command == "test-rule":
         if not args.id or not args.events_file:
             parser.error("test-rule requires --id RULE-ID and --events-file events.jsonl")

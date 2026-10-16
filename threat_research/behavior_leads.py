@@ -5,7 +5,7 @@ import re
 NEGATION = re.compile(r"\b(?:no evidence|no signs|did not|was not|not observed|not detected|false positive)\b", re.I)
 WEB_PARENT = re.compile(r"\b(?:w3wp|httpd|nginx|apache2)(?:\.exe)?\b", re.I)
 SHELL = re.compile(r"\b(?:cmd|powershell|pwsh|sh|bash)(?:\.exe)?\b", re.I)
-CHILD_ACTION = re.compile(r"\b(?:spawned|launched|created a child process|started a shell|executed)\b", re.I)
+CHILD_ACTION = re.compile(r"\b(?:spawn(?:ed|s)?|launch(?:ed|es)?|created a child process|started a shell|execut(?:ed|es)|used)\b", re.I)
 POWERSHELL = re.compile(r"\b(?:powershell|pwsh)(?:\.exe)?\b", re.I)
 ENCODED = re.compile(r"(?:-encodedcommand\b|-enc\b|encoded command)", re.I)
 EXECUTE = re.compile(r"\b(?:executed|ran|launched|started)\b", re.I)
@@ -16,6 +16,25 @@ LOADER = re.compile(r"\b(?:malware|malicious|loader|downloader|backdoor|implant|
 C2 = re.compile(r"\b(?:C2|command[- ]and[- ]control)\b", re.I)
 BEACON = re.compile(r"\b(?:beacon|connect(?:ion|ivity|s|ed)?|communicat(?:ion|es)|request)\b", re.I)
 NETWORK = re.compile(r"\b(?:HTTPS?|WebSockets?|domain|host|URL|URI)\b", re.I)
+
+# A narrow *research lead*, not a rule: generic named executable -> executable
+# relationships matter even when neither process is PowerShell or msiexec.
+# Split at actual sentence punctuation rather than periods in ".exe" tokens,
+# and require an actor cue in that SAME clause. The downstream bounded rule
+# writer independently checks action direction and actual process predicates.
+NAMED_EXE_EDGE = re.compile(
+    r"\b[A-Za-z0-9_.-]+\.exe\b.{0,130}?"
+    r"\b(?:spawn(?:s|ned|ed)?|launch(?:es|ed)?|start(?:s|ed)?|execut(?:es|ed))\b"
+    r".{0,90}?\b[A-Za-z0-9_.-]+\.exe\b", re.I)
+
+
+def named_executable_chain(text):
+    """Find attacker-attributed two-executable chains within ONE clause."""
+    for clause in re.split(r"[!?;]|\.(?:\s|$)", text):
+        if LOADER.search(clause) and NAMED_EXE_EDGE.search(clause):
+            return True
+    return False
+
 
 
 def from_paragraphs(paragraphs, limit=30):
@@ -53,7 +72,30 @@ def behavior_patterns(paragraphs, limit=30):
         if NEGATION.search(paragraph):
             continue
         kinds = []
+        if has_behavior_context(paragraph) and CHILD_ACTION.search(paragraph) and re.search(r"\b(?:powershell|bash|sh|curl|wget|Invoke-WebRequest|msiexec)(?:\.exe)?\b", paragraph, re.I):
+            kinds.append("process_chain")
+        # A command-line recipe is useful only when the report actually
+        # describes an attacker executing it, not when the same tokens occur
+        # in a mitigation, detection recommendation or IOC table.
+        if (has_behavior_context(paragraph) and
+                re.search(r"\b(?:ran|used|executed|launched|invoked)\b", paragraph, re.I) and
+                ((re.search(r"\b(?:powershell|pwsh)\.exe\b", paragraph, re.I) and
+                  re.search(r"\bAdd-MpPreference\b", paragraph, re.I) and
+                  re.search(r"(?<!\w)-Exclusion(?:Path|Extension)\b", paragraph, re.I)) or
+                 (re.search(r"\bmshta\.exe\b", paragraph, re.I) and
+                  re.search(r"https?://[^\s\"'<>]+\.hta\b", paragraph, re.I)))):
+            kinds.append("bounded_command_execution")
+        if named_executable_chain(paragraph) and "process_chain" not in kinds:
+            kinds.append("process_chain")
         if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
+            kinds.append("dll_sideloading")
+        # A publisher may describe a malicious DLL *loaded by* a clean
+        # executable without using the word "sideload". Do not miss that
+        # passive relationship; the rule writer still requires the exact
+        # file pair and malicious context in the same clause.
+        elif (LOADER.search(paragraph) and re.search(
+                r"\b[\w.-]+\.dll\b.{0,120}\b(?:loaded|sideloaded)\s+by\s+"
+                r"[\"'“”‘’]*[\w.-]+\.exe\b", paragraph, re.I)):
             kinds.append("dll_sideloading")
         if C2.search(paragraph) and BEACON.search(paragraph) and NETWORK.search(paragraph):
             kinds.append("c2_communication")
@@ -100,7 +142,7 @@ def specific_details(paragraphs, limit=30):
         # A file hash in a threat report is itself a specific artifact; other
         # tokens (paths, file names, IPs) need actor or malware context.
         labeled = HASH.search(paragraph) and HASH_LABEL.search(paragraph)
-        if NEGATION.search(paragraph) or not (ACTOR.search(paragraph) or STRONG_HASH.search(paragraph) or labeled):
+        if NEGATION.search(paragraph) or not (has_behavior_context(paragraph) or STRONG_HASH.search(paragraph) or labeled):
             continue
         tokens = list(dict.fromkeys(m.group(0) for m in ARTIFACT.finditer(paragraph)))
         if tokens:
@@ -109,3 +151,12 @@ def specific_details(paragraphs, limit=30):
         if len(output) >= limit:
             break
     return output
+
+
+def execution_chain(text, anchored=False):
+    """Explicit parent launch plus a measurable command; still only a draft hypothesis."""
+    return bool((re.match if anchored else re.search)(r"\b[\w.-]+\.exe\b.{0,100}\b(?:launch(?:ed|es)?|spawn(?:ed|s)?|executed|used)\b.{0,60}\b(?:powershell(?:\.exe)?|cmd\.exe|msiexec\.exe)\b.{0,140}(?:Invoke-WebRequest|Invoke-RestMethod|/qn\b)", text, re.I))
+
+
+def has_behavior_context(text):
+    return bool(ACTOR.search(text) or execution_chain(text))
