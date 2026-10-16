@@ -55,6 +55,17 @@ def behavior_patterns(paragraphs, limit=30):
         kinds = []
         if has_behavior_context(paragraph) and CHILD_ACTION.search(paragraph) and re.search(r"\b(?:powershell|bash|sh|curl|wget|Invoke-WebRequest|msiexec)(?:\.exe)?\b", paragraph, re.I):
             kinds.append("process_chain")
+        # A command-line recipe is useful only when the report actually
+        # describes an attacker executing it, not when the same tokens occur
+        # in a mitigation, detection recommendation or IOC table.
+        if (has_behavior_context(paragraph) and
+                re.search(r"\b(?:ran|used|executed|launched|invoked)\b", paragraph, re.I) and
+                ((re.search(r"\b(?:powershell|pwsh)\.exe\b", paragraph, re.I) and
+                  re.search(r"\bAdd-MpPreference\b", paragraph, re.I) and
+                  re.search(r"(?<!\w)-Exclusion(?:Path|Extension)\b", paragraph, re.I)) or
+                 (re.search(r"\bmshta\.exe\b", paragraph, re.I) and
+                  re.search(r"https?://[^\s\"'<>]+\.hta\b", paragraph, re.I)))):
+            kinds.append("bounded_command_execution")
         if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
             kinds.append("dll_sideloading")
         # A publisher may describe a malicious DLL *loaded by* a clean
