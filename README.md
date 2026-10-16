@@ -41,6 +41,8 @@ A separate, more realistic evaluator processes **entire publisher HTML pages**, 
 
 Alternatively, use `--snapshots-dir MY_HTML` in place of `--live`, with files named `<case-id>.html` under that directory. Snapshots are **origin-unverified** and must not be claimed to be publisher-retrieved. Each report uses its own isolated SQLite database and reuses the existing evidence-gated research + draft proposal pipeline. Results are written to `results.json` and `SUMMARY.md` with retrieved page hashes, source readability, draft predicates, and missed annotated behaviors. A blocked or unreadable publisher page is **unscored**, not silently treated as a false negative. Only manually nominated patterns are measured: this is not comprehensive report recall, a measured false-positive rate, or evidence of production effectiveness. The rule engine does not execute native Sigma/KQL/SPL or deploy any alerts.
 
+**Actual research benchmark (2026-10-16):** Three live publisher reports were read and six unverified rules drafted; all three *manually nominated* relationships were found after fixing the passive DLL-load extraction gap. See [evidence, before/after logs and limitations](benchmarks/RESULTS_OCT16.md). These three labels do not establish real-world detection accuracy.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
