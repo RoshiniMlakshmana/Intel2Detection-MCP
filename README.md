@@ -7,6 +7,20 @@
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
 
+## Try it without a SIEM (offline demo)
+
+Requires Python 3.11+; **no SOC, paid API, cloud account or production telemetry needed**. After cloning the repository, install and run:
+
+```powershell
+py -3 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -e .
+& .\.venv\Scripts\python.exe scripts/offline_demo.py
+```
+
+On macOS/Linux, replace the first command with `python3 -m venv .venv` and the Python executable with `./.venv/bin/python`. The command creates an isolated `offline-demo-<timestamp>/` directory and prints the path to its **DEMO_SUMMARY.md**. That summary links to the synthetic event samples, detailed report, generated draft rules and automatic lab output. Each run uses a fresh folder and will not overwrite existing output.
+
+This is an intentionally **fictional, reproducible lab**, not an assertion of production accuracy or native SIEM query execution. Its expected outcomes include false positives and missed malicious events. Rules are neither approved nor deployed. For advanced use and real-source evaluation steps, see [QUICKSTART.md](QUICKSTART.md).
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
