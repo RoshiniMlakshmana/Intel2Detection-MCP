@@ -77,7 +77,10 @@ def _process_spec(pattern):
             if command:
                 predicates.append({"field": "CommandLine", "operator": "contains", "value": command.group()})
             return {"event_family": "process_creation",
-                    "platform": "windows" if parent.group().lower().endswith(".exe") or child.group().lower() in ("powershell", "pwsh") else "linux",
+                    "platform": "windows" if (parent.group().lower().endswith(".exe") or
+                              child.group().lower().endswith(".exe") or
+                              parent.group().lower() in ("powershell", "pwsh") or
+                              child.group().lower() in ("powershell", "pwsh")) else "linux",
                     "predicates": predicates}
     if (pattern.get("observable") or {}).get("lexical_behavior") != "web_server_shell":
         return None
