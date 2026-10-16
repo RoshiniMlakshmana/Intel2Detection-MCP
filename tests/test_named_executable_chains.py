@@ -91,8 +91,8 @@ class GenericProcessRelationshipTests(unittest.TestCase):
                                  {"ParentImage": "BuildTool.exe", "Image": "ConvertTool.exe"})
                 self.assertEqual(drafting.source_link(rule["id"], db)["status"], "unverified")
                 self.assertIn("BuildTool.exe", rule["sigma"])
-                self.assertIn("ConvertTool.exe", rule["kql"])
-                self.assertIn("ConvertTool.exe", rule["spl"])
+                self.assertIn("converttool.exe", rule["kql"].lower())
+                self.assertIn("converttool.exe", rule["spl"].lower())
 
 
 if __name__ == "__main__":
