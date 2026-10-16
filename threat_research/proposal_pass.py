@@ -46,6 +46,10 @@ def _actor_before(quote, process):
 def _process_spec(pattern):
     """Use exactly the process names in an explicit parent-spawns-child claim."""
     quote = pattern["quoted_paragraph"]
+    # Direct callers must not be able to turn an explicitly denied action
+    # into a rule candidate. The downstream source gate rejects this too.
+    if behavior_leads.NEGATION.search(quote):
+        return None
     for parent in PROCESS_TOKEN.finditer(quote):
         for child in PROCESS_TOKEN.finditer(quote, parent.end(), min(len(quote), parent.end() + 160)):
             between = quote[parent.end():child.start()]
