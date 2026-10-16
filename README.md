@@ -269,4 +269,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_offline.
 - Fix missed behaviors and query-conversion gaps.
 - Test drafts against labeled real logs and target query engines.
 
-[Quickstart](QUICKSTART.md) · [Collector setup](COLLECTOR_SETUP.md) · [Detection guide](DETECTION_PLAYBOOK.md) · [Dashboard](DASHBOARD.md) · [Publishing](PUBLISHING.md)
+[Quickstart](QUICKSTART.md) · [Collector setup](COLLECTOR_SETUP.md) · [Detection guide](DETECTION_PLAYBOOK.md) · [Dashboard](DASHBOARD.md) · [Release notes](RELEASE_NOTES_v0.12.3.md)
