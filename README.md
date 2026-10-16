@@ -78,6 +78,17 @@ Run locally if desired:
 
 The **development benchmark** evaluates 3 known reports. The **held-out benchmark** adds 7 distinct reports, bringing the attempted evaluation set to **10 reports** when both are executed. Do not mix their scores into one impressive-looking metric or claim comprehensive ground truth. See [benchmarks/README.md](benchmarks/README.md) for scope and provenance limits.
 
+## Full 20-report evaluation: actual findings and limitations
+
+We evaluated **20 distinct public technical research articles** in three separate batches: 3 *iteratively tuned* development reports, 7 previously unmeasured Microsoft reports, and 10 new reports from Google/Mandiant, Palo Alto Unit 42 and Cisco Talos. All publisher pages were readable during their respective GitHub Actions runs. **Source-backed rule creation remains inconsistent:** the developer-tuned three references were found, while neither first-pass batch reproduced its human-selected exact behavior predicates (7/7 and 10/10 misses). The system produced other unverified rule drafts, but those are **not automatically correct detection rules**. These partial references lack independent adjudication, and the scores cannot be combined or interpreted as real-world SOC detection effectiveness.
+
+- [Auditable multi-vendor first-pass results, 10 reports](benchmarks/RESULTS_MULTIVENDOR_OCT16.md) — [successful GitHub Actions run](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/actions/runs/38957335204).
+- [Initial seven-report extraction failure analysis](benchmarks/RESULTS_HOLDOUT_OCT16.md).
+- [Known three-report development results and simulated rule test limitations](benchmarks/RESULTS_OCT16.md).
+- [Evaluation protocol and no-SIEM claims policy](benchmarks/README.md).
+
+**New narrowly supported drafting:** Synthetic tests now exercise explicit attacker-executed `powershell.exe` commands containing both `Add-MpPreference` and an exclusion switch, and exact `mshta.exe` HTTPS HTA URLs. Generic source descriptions, benign documentation, unrelated clauses and negated events remain unverified and must not generate these command drafts. These are **narrow selectors**, not general malware recognition, and have not been shown to improve the 10-report first-pass result. They cannot automatically be approved or deployed.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
