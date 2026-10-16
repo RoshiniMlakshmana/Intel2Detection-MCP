@@ -53,7 +53,7 @@ class ExcerptBenchmarkTests(unittest.TestCase):
             result = benchmark_excerpts.evaluate(payload)
         self.assertEqual(result["counts"]["supported_with_all_expected_predicates"], 1)
         self.assertEqual(result["counts"]["unsupported_correctly_withheld"], 1)
-        self.assertIn("no full-report evaluation", benchmark_excerpts.markdown_summary(result).lower())
+        self.assertIn("not full reports", benchmark_excerpts.markdown_summary(result).lower())
         self.assertFalse(result["rules_approved"])
 
     def test_duplicate_identifiers_refused(self):
