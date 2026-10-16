@@ -43,6 +43,17 @@ Alternatively, use `--snapshots-dir MY_HTML` in place of `--live`, with files na
 
 **Actual research benchmark (2026-10-16):** Three live publisher reports were read and six unverified rules drafted; all three *manually nominated* relationships were found after fixing the passive DLL-load extraction gap. See [evidence, before/after logs and limitations](benchmarks/RESULTS_OCT16.md). These three labels do not establish real-world detection accuracy.
 
+## Challenge generated rules with fictional attack **and benign** events
+
+The real-report benchmark now has a second, **independently labeled fictional** stage. Once full-report evaluation succeeds, test its exact source-linked drafts against sample malicious-command variants, authorized administration with overlapping behavior, renamed modules and missing telemetry. There is still **no requirement for a SOC or a SIEM**:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --live --output-directory full-report-eval
+& .\.venv\Scripts\python.exe scripts/replay_benchmark.py --source-directory full-report-eval --output-directory fictional-event-eval
+```
+
+The versioned [synthetic challenge scenarios](benchmarks/synthetic_challenges_v1.json) define fictional malicious and benign event assumptions separately from the generated rules; the CLI loads the real-report run's local draft repository and calls the existing reference matcher on **only the qualifying source-linked draft**. It reports synthetic TP, FP, FN and TN, identifies each source-linked rule version by hash, and marks unavailable/missed source rules **unscored**. A benign match shows potential alert noise; attacker variations and missing fields expose evasion and visibility limitations. **These counts are not real SOC precision/recall, operational false-positive rates, or native KQL/SPL/Sigma query execution.** No generated rules are automatically approved or deployed. The same stages also run as a GitHub Actions demonstration and publish JSON/Markdown artifacts.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
