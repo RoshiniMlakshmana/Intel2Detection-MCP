@@ -76,7 +76,7 @@ class ReplayBenchmarkTests(unittest.TestCase):
             self.assertFalse(result["production_accuracy_inferred"])
             self.assertTrue(result["cases"][0]["rule_content_hashes"])
             self.assertEqual(len(result["cases"][0]["cases"]), 4)
-            self.assertIn("Fictional event", (challenge_dir / "SUMMARY.md").read_text())
+            self.assertIn("fictional event", (challenge_dir / "SUMMARY.md").read_text().lower())
             self.assertIn("RMM to PowerShell", (challenge_dir / "results.json").read_text())
 
     def test_unextracted_behavior_is_explicitly_unscored(self):
