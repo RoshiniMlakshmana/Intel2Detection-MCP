@@ -89,6 +89,18 @@ We evaluated **20 distinct public technical research articles** in three separat
 
 **New narrowly supported drafting:** Synthetic tests now exercise explicit attacker-executed `powershell.exe` commands containing both `Add-MpPreference` and an exclusion switch, and exact `mshta.exe` HTTPS HTA URLs. Generic source descriptions, benign documentation, unrelated clauses and negated events remain unverified and must not generate these command drafts. These are **narrow selectors**, not general malware recognition, and have not been shown to improve the 10-report first-pass result. They cannot automatically be approved or deployed.
 
+## General Windows executable lineage + independent source review
+
+The development branch now recognizes **source-attributed, attacker-linked named .exe → .exe process relationships**, even if neither process is PowerShell or msiexec. For example, a fictional case in which a malicious loader launches a named resource converter can lead to a two-field ParentImage/Image draft. Generic documentation, separate benign activity and unsupported source claims must not automatically become detections. Source evidence, human approval, and local SIEM validation remain mandatory.
+
+The first-pass multi-vendor benchmark also exposed an important measurement limitation: the **manually selected behavior labels themselves have not been independently verified**. Rather than rewriting previously measured targets or pretending the result improved, produce a **blank independent review worksheet** from existing benchmark output:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/adjudicate_research.py --manifest benchmarks/multivendor_holdout_v1.json --source-directory multivendor-results --output-directory review-worksheet
+```
+
+Open the generated `INDEPENDENT_REVIEW.csv` and `README.md`. A second analyst must review original publisher wording, decide whether a behavior was observed or merely suggested as a hunt, and verify the proposed telemetry fields. The script makes **no network requests**, leaves frozen report labels and prior results unchanged, and labels **every entry as PENDING_INDEPENDENT_REVIEW**. It does not improve scores or certify rules. This review step works entirely without a SOC or SIEM.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
