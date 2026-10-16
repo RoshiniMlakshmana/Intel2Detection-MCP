@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "public-full-html-partial-reference-v1",
+  "note": "Manually selected partial behavior references, not all behaviors in the named reports. Publisher article text fetched only on explicit --live; no copyrighted article copies here.",
+  "cases": [
+    {
+      "id": "microsoft-rmm-sept2026",
+      "title": "Phishing abuses RMM tools for persistent access",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/09/29/phishing-abuses-rmm-tools-persistent-access/",
+      "reference_behaviors": [
+        {
+          "name": "RMM agent launches PowerShell download",
+          "event_family": "process_creation",
+          "required_predicates": [
+            {
+              "field": "ParentImage",
+              "value": "RMM.Agent.exe"
+            },
+            {
+              "field": "Image",
+              "value": "PowerShell"
+            },
+            {
+              "field": "CommandLine",
+              "value": "Invoke-WebRequest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "talos-antino2026",
+      "title": "China-nexus UAT-11587 Antino backdoor",
+      "source_url": "https://blog.talosintelligence.com/china-nexus-uat-11587-targets-government-and-policy-organizations-across-asia-with-antino-backdoor/",
+      "reference_behaviors": [
+        {
+          "name": "GatherOsState sideloading slc DLL",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "GatherOsState.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "slc.dll"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "talos-gamaredon-remcos2025",
+      "title": "Gamaredon abuses LNK files to deliver Remcos",
+      "source_url": "https://blog.talosintelligence.com/gamaredon-campaign-distribute-remcos/",
+      "reference_behaviors": [
+        {
+          "name": "TiVoDiag loads mindclient DLL",
+          "event_family": "image_load",
+          "required_predicates": [
+            {
+              "field": "Image",
+              "value": "TiVoDiag.exe"
+            },
+            {
+              "field": "ImageLoaded",
+              "value": "mindclient.dll"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
