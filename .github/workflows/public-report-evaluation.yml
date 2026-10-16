@@ -8,6 +8,9 @@ on:
       - .github/workflows/public-report-evaluation.yml
       - threat_research/behavior_leads.py
       - threat_research/proposal_pass.py
+      - scripts/benchmark_reports.py
+      - scripts/replay_benchmark.py
+      - benchmarks/synthetic_challenges_v1.json
       - benchmarks/full_reports_v1.json
   workflow_dispatch:
 
@@ -31,6 +34,15 @@ jobs:
         run: python -m pip install -e .
       - name: Read three allowlisted public publisher reports
         run: python scripts/benchmark_reports.py --live --output-directory public-report-results
+      - name: Replay fictionally labeled benign and attacker variants against generated drafts
+        run: python scripts/replay_benchmark.py --source-directory public-report-results --output-directory public-synthetic-challenges
+      - name: Display synthetic challenge summary (NOT enterprise detection accuracy)
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f public-synthetic-challenges/SUMMARY.md ]]; then
+            cat public-synthetic-challenges/SUMMARY.md
+          fi
       - name: Display complete benchmark summary and case outcomes
         if: always()
         shell: bash
@@ -61,4 +73,6 @@ jobs:
           path: |
             public-report-results/SUMMARY.md
             public-report-results/results.json
+            public-synthetic-challenges/SUMMARY.md
+            public-synthetic-challenges/results.json
           if-no-files-found: warn
