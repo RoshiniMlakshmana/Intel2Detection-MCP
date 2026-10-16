@@ -6,6 +6,9 @@ on:
       - feat/no-siem-demo-sprint
     paths:
       - .github/workflows/public-report-evaluation.yml
+      - threat_research/behavior_leads.py
+      - threat_research/proposal_pass.py
+      - benchmarks/full_reports_v1.json
   workflow_dispatch:
 
 permissions:
