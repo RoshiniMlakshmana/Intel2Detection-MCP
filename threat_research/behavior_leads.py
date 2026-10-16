@@ -57,6 +57,14 @@ def behavior_patterns(paragraphs, limit=30):
             kinds.append("process_chain")
         if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
             kinds.append("dll_sideloading")
+        # A publisher may describe a malicious DLL *loaded by* a clean
+        # executable without using the word "sideload". Do not miss that
+        # passive relationship; the rule writer still requires the exact
+        # file pair and malicious context in the same clause.
+        elif (LOADER.search(paragraph) and re.search(
+                r"\b[\w.-]+\.dll\b.{0,120}\b(?:loaded|sideloaded)\s+by\s+"
+                r"[\"'“”‘’]*[\w.-]+\.exe\b", paragraph, re.I)):
+            kinds.append("dll_sideloading")
         if C2.search(paragraph) and BEACON.search(paragraph) and NETWORK.search(paragraph):
             kinds.append("c2_communication")
         for kind in kinds:
