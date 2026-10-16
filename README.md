@@ -31,6 +31,16 @@ Run a small, repeatable check of **real publisher wording** with no SIEM, live a
 
 Its inputs are short, manually curated quotations and reference predicates in [benchmarks/public_excerpts_v1.json](benchmarks/public_excerpts_v1.json). It reports which **bounded behavior predicates** the existing extractor recognized and which unsupported descriptions were correctly withheld. Results go to `results.json` and `SUMMARY.md`. Using original publisher excerpts is a stronger smoke test than wholly fictional prose, but **it is not an evaluation of full articles, detection accuracy on real events, or native KQL/SPL execution**. The offline runner does not re-fetch or authenticate the excerpts. We will add wider, independent full-report evaluation separately.
 
+## Full technical-report benchmark (optional live fetch, no SIEM)
+
+A separate, more realistic evaluator processes **entire publisher HTML pages**, not merely excerpts. The initial manually annotated, partial reference set covers three Microsoft/Cisco Talos reports in [benchmarks/full_reports_v1.json](benchmarks/full_reports_v1.json). The run is **not** part of normal startup or CI because live publisher requests may be blocked or change content. To explicitly evaluate the published HTML:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --live --output-directory full-report-eval
+```
+
+Alternatively, use `--snapshots-dir MY_HTML` in place of `--live`, with files named `<case-id>.html` under that directory. Snapshots are **origin-unverified** and must not be claimed to be publisher-retrieved. Each report uses its own isolated SQLite database and reuses the existing evidence-gated research + draft proposal pipeline. Results are written to `results.json` and `SUMMARY.md` with retrieved page hashes, source readability, draft predicates, and missed annotated behaviors. A blocked or unreadable publisher page is **unscored**, not silently treated as a false negative. Only manually nominated patterns are measured: this is not comprehensive report recall, a measured false-positive rate, or evidence of production effectiveness. The rule engine does not execute native Sigma/KQL/SPL or deploy any alerts.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
