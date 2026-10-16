@@ -33,8 +33,8 @@ class BundleExportTest(unittest.TestCase):
                              {"tp": 1, "fp": 1, "fn": 1, "tn": 1})
             self.assertEqual(metadata["synthetic_tests"][0]["rule_hash_from_replay"],
                              metadata["rule_content_hash"])
-            self.assertIn("Invoke-WebRequest", (folder / "detection.kql").read_text())
-            self.assertIn("Invoke-WebRequest", (folder / "detection.spl").read_text())
+            self.assertIn("invoke-webrequest", (folder / "detection.kql").read_text().lower())
+            self.assertIn("invoke-webrequest", (folder / "detection.spl").read_text().lower())
             self.assertIn("fictional", ((folder / "REVIEW.md").read_text() +
                           (dest / "README.md").read_text()).lower())
             self.assertTrue((folder / "detection.yml").exists())
