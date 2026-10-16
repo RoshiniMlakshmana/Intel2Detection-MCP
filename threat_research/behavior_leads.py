@@ -17,6 +17,25 @@ C2 = re.compile(r"\b(?:C2|command[- ]and[- ]control)\b", re.I)
 BEACON = re.compile(r"\b(?:beacon|connect(?:ion|ivity|s|ed)?|communicat(?:ion|es)|request)\b", re.I)
 NETWORK = re.compile(r"\b(?:HTTPS?|WebSockets?|domain|host|URL|URI)\b", re.I)
 
+# A narrow *research lead*, not a rule: generic named executable -> executable
+# relationships matter even when neither process is PowerShell or msiexec.
+# Split at actual sentence punctuation rather than periods in ".exe" tokens,
+# and require an actor cue in that SAME clause. The downstream bounded rule
+# writer independently checks action direction and actual process predicates.
+NAMED_EXE_EDGE = re.compile(
+    r"\b[A-Za-z0-9_.-]+\.exe\b.{0,130}?"
+    r"\b(?:spawn(?:s|ned|ed)?|launch(?:es|ed)?|start(?:s|ed)?|execut(?:es|ed))\b"
+    r".{0,90}?\b[A-Za-z0-9_.-]+\.exe\b", re.I)
+
+
+def named_executable_chain(text):
+    """Find attacker-attributed two-executable chains within ONE clause."""
+    for clause in re.split(r"[!?;]|\.(?:\s|$)", text):
+        if LOADER.search(clause) and NAMED_EXE_EDGE.search(clause):
+            return True
+    return False
+
+
 
 def from_paragraphs(paragraphs, limit=30):
     """Return explicit leads and exact short snippets; analyst must check full context."""
@@ -66,6 +85,8 @@ def behavior_patterns(paragraphs, limit=30):
                  (re.search(r"\bmshta\.exe\b", paragraph, re.I) and
                   re.search(r"https?://[^\s\"'<>]+\.hta\b", paragraph, re.I)))):
             kinds.append("bounded_command_execution")
+        if named_executable_chain(paragraph) and "process_chain" not in kinds:
+            kinds.append("process_chain")
         if SIDELOAD.search(paragraph) and LOADER.search(paragraph):
             kinds.append("dll_sideloading")
         # A publisher may describe a malicious DLL *loaded by* a clean
