@@ -1,4 +1,5 @@
 """Review worksheets never silently become independently verified labels."""
+import copy
 import csv
 import json
 import tempfile
@@ -21,7 +22,7 @@ def manifests():
     results = {"benchmark_id": "hypothetical", "cases": [
         {"id": "fictional-build", "source_url": url, "scored": True,
          "page_status": "inspected", "page_sha256": "a" * 64,
-         "reference_behaviors": [{**ref, "extracted": False, "matching_rule_ids": []}],
+         "reference_behaviors": [{**copy.deepcopy(ref), "extracted": False, "matching_rule_ids": []}],
          "generated_drafts": [{"rule_id": "fictional", "spec": {
              "event_family": "process_creation",
              "predicates": [{"field": "ParentImage", "value": "BuildTool.exe"}]}}]}
