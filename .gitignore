@@ -50,3 +50,19 @@ dist/
 .coverage
 *.zip
 offline-lab-*/
+
+# Generated no-SIEM evaluations and test artifacts
+offline-demo-*/
+public-excerpt-ci/
+public-excerpt-results/
+public-report-results/
+public-synthetic-challenges/
+public-review-packages/
+heldout-research-results/
+multivendor-results/
+known-development-results/
+heldout-results/
+full-report-eval/
+fictional-event-eval/
+detection-review-packages/
+review-worksheet/
