@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "public-excerpt-smoke-v1",
+  "created_utc": "2026-10-16",
+  "scope": "Manually selected, source-attributed excerpts from public research. This is not full-report evaluation or native SIEM testing.",
+  "cases": [
+    {
+      "id": "microsoft-rmm-parent-command",
+      "publisher": "Microsoft Security",
+      "source_url": "https://www.microsoft.com/en-us/security/blog/2026/09/29/phishing-abuses-rmm-tools-persistent-access/",
+      "excerpt": "RMM.Agent.exe service launched PowerShell. The PowerShell process modified the execution policy for the current session and executed Invoke-WebRequest commands",
+      "expected_draftable": true,
+      "expected_event_family": "process_creation",
+      "required_predicates": [
+        {"field": "ParentImage", "value": "RMM.Agent.exe"},
+        {"field": "Image", "value": "PowerShell"},
+        {"field": "CommandLine", "value": "Invoke-WebRequest"}
+      ],
+      "review_note": "Report describes RMM-to-PowerShell activity; this excerpt omits wider source context. Evaluate extraction only, not maliciousness or local relevance."
+    },
+    {
+      "id": "talos-antino-image-load",
+      "publisher": "Cisco Talos",
+      "source_url": "https://blog.talosintelligence.com/china-nexus-uat-11587-targets-government-and-policy-organizations-across-asia-with-antino-backdoor/",
+      "excerpt": "launches the Microsoft-signed “GatherOsState.exe”, which sideloads “slc.dll”, the Antino backdoor.",
+      "expected_draftable": true,
+      "expected_event_family": "image_load",
+      "required_predicates": [
+        {"field": "Image", "value": "GatherOsState.exe"},
+        {"field": "ImageLoaded", "value": "slc.dll"}
+      ],
+      "review_note": "A signed-host DLL load is an observation in published research, but filename-only detection needs paths/signatures and benign testing."
+    },
+    {
+      "id": "talos-gamaredon-unbounded-c2",
+      "publisher": "Cisco Talos",
+      "source_url": "https://blog.talosintelligence.com/gamaredon-campaign-distribute-remcos/",
+      "excerpt": "The PowerShell downloader contacts geo-fenced servers located in Russia and Germany to download the second stage Zip file containing the Remcos backdoor.",
+      "expected_draftable": false,
+      "required_predicates": [],
+      "review_note": "Geographical description alone does not identify a destination hostname or other bounded network predicate."
+    },
+    {
+      "id": "talos-avos-unbounded-payload",
+      "publisher": "Cisco Talos",
+      "source_url": "https://blog.talosintelligence.com/avoslocker-new-arsenal/",
+      "excerpt": "Two days later on March 6, the attacker ran more PowerShell scripts to download and execute a Sliver payload labeled \"vmware_kb.exe\".",
+      "expected_draftable": false,
+      "required_predicates": [],
+      "review_note": "A payload filename without the initiating process, actual command and telemetry relationship is insufficient for this bounded behavior extractor."
+    }
+  ]
+}
