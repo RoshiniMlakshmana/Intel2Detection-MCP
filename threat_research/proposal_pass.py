@@ -205,6 +205,51 @@ def _linux_reverse_shell_spec(pattern):
     return None
 
 
+def _bounded_command_specs(pattern):
+    """Literal Windows command-line selectors from ONE explicit malicious clause.
+
+    These rules are intentionally review-only and are not behavioral
+    equivalence classes: renamed tools, missing command-line collection,
+    benign IT admin commands and changed URLs remain important limitations.
+    Do not invent parent-child joins or decode obfuscated strings.
+    """
+    quote = pattern["quoted_paragraph"]
+    if behavior_leads.NEGATION.search(quote):
+        return []
+    specs = []
+    # Split only at sentence punctuation followed by whitespace; the dots in
+    # executable names and URL hostnames must not fragment the source text.
+    clauses = re.split(r"(?<=[!?;])\s+|(?<=\.)\s+", quote)
+    for clause in clauses:
+        if not (EXECUTION_ACTOR.search(clause)
+                and re.search(r"\b(?:ran|used|executed|launched|invoked)\b", clause, re.I)):
+            continue
+        script = re.search(r"\b(?:powershell|pwsh)\.exe\b", clause, re.I)
+        protect = re.search(r"\bAdd-MpPreference\b", clause, re.I)
+        excluded = re.search(r"(?<!\w)-Exclusion(?:Path|Extension)\b", clause, re.I)
+        if (script and protect and excluded
+                and script.start() < protect.start() < excluded.start()
+                and excluded.start() - script.end() <= 180):
+            specs.append({"event_family": "process_creation", "platform": "windows",
+                          "predicates": [
+                              {"field": "Image", "operator": "endswith", "value": script.group()},
+                              {"field": "CommandLine", "operator": "contains", "value": protect.group()},
+                              {"field": "CommandLine", "operator": "contains", "value": excluded.group()}]})
+        # Only a complete literal .hta URL following the program's name is
+        # actionable; "mshta uses an HTTP URL" is never a usable selector.
+        loader = re.search(r"\bmshta\.exe\b", clause, re.I)
+        url = re.search(r'https?://[a-z0-9.-]+(?::\d{1,5})?/[^\s<>"\']+?\.hta\b', clause, re.I)
+        if (loader and url and loader.end() < url.start()
+                and url.start() - loader.end() < 130
+                and re.search(r"\b(?:from|with|using|load(?:ed|s)?|run|execute(?:d|s)?)\b",
+                              clause[loader.end():url.start()], re.I)):
+            specs.append({"event_family": "process_creation", "platform": "windows",
+                          "predicates": [
+                              {"field": "Image", "operator": "endswith", "value": loader.group()},
+                              {"field": "CommandLine", "operator": "contains", "value": url.group()}]})
+    return specs
+
+
 def behavior_spec(pattern):
     """A bounded behavioral selection from one paragraph; no source verification implied."""
     return (_process_spec(pattern) or _encoded_powershell_spec(pattern) or _process_command_spec(pattern)
@@ -216,6 +261,9 @@ def behavior_specs(pattern):
     """Independent cited stage hunts; do not invent lineage or a time window."""
     first = behavior_spec(pattern)
     specs = [first] if first else []
+    for candidate in _bounded_command_specs(pattern):
+        if candidate not in specs:
+            specs.append(candidate)
     quote = pattern["quoted_paragraph"]
     for match in re.finditer(r"\bmsiexec\.exe\b", quote, re.I):
         before = re.split(r"[!?;]|\.(?:\s|$)", quote[:match.start()])[-1]
