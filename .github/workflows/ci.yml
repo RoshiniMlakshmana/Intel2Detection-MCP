@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Avoid wasting CI capacity on superseded versions of this work.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   offline-workflow:
     runs-on: ${{ matrix.os }}
