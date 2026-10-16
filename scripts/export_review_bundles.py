@@ -80,7 +80,7 @@ def export(source_directory, output_directory, challenge_directory=None):
             rule = rules.get_rule(identifier, db)
             if rule is None or rule["status"] != "draft":
                 raise ValueError(f"missing review-only draft {identifier}")
-            if candidate.get("spec") != rule.get("custom_spec"):
+            if not rule.get("custom_spec") or custom_rules.fingerprint(candidate.get("spec")) != custom_rules.fingerprint(rule["custom_spec"]):
                 raise ValueError("source result spec differs from the stored rule version")
             link = drafting.source_link(identifier, db)
             if link is None or link.get("status") != "unverified":
