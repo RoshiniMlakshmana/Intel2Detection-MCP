@@ -54,6 +54,18 @@ The real-report benchmark now has a second, **independently labeled fictional** 
 
 The versioned [synthetic challenge scenarios](benchmarks/synthetic_challenges_v1.json) define fictional malicious and benign event assumptions separately from the generated rules; the CLI loads the real-report run's local draft repository and calls the existing reference matcher on **only the qualifying source-linked draft**. It reports synthetic TP, FP, FN and TN, identifies each source-linked rule version by hash, and marks unavailable/missed source rules **unscored**. A benign match shows potential alert noise; attacker variations and missing fields expose evasion and visibility limitations. **These counts are not real SOC precision/recall, operational false-positive rates, or native KQL/SPL/Sigma query execution.** No generated rules are automatically approved or deployed. The same stages also run as a GitHub Actions demonstration and publish JSON/Markdown artifacts.
 
+## Export SOC-review packages without a SIEM
+
+After running the full-report evaluation and fictional-event challenges, you can bundle **the exact generated rules** as Sigma, KQL and SPL files, each accompanied by a source paragraph reference, page hash, required fields, evidence limitations and synthetic event outcomes:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/export_review_bundles.py --source-directory full-report-eval --challenge-directory fictional-event-eval --output-directory detection-review-packages
+```
+
+Read `detection-review-packages/README.md`, then open each rule's `REVIEW.md` and `metadata.json`. Rule text is copied from the source-linked draft repository, not regenerated, and checked against the recorded predicate fingerprint. Rules are never approved, published or deployed by this command. Generic example KQL and SPL **are not guaranteed to execute** against your SIEM tables or index configuration. No production environment is required to generate this review package.
+
+The [2026-10-16 evaluation](benchmarks/RESULTS_OCT16.md) records the actual three-publication retrieval, missed DLL relationship and successful extraction retest. Its associated fictional replay is a separate demonstration of intended matches, false alarms and missed variants—not a real-world performance measurement.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
