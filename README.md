@@ -66,6 +66,18 @@ Read `detection-review-packages/README.md`, then open each rule's `REVIEW.md` an
 
 The [2026-10-16 evaluation](benchmarks/RESULTS_OCT16.md) records the actual three-publication retrieval, missed DLL relationship and successful extraction retest. Its associated fictional replay is a separate demonstration of intended matches, false alarms and missed variants—not a real-world performance measurement.
 
+## Independent held-out research corpus (no tuning on the results)
+
+The **seven-report locked hold-out** in [benchmarks/full_reports_holdout_v1.json](benchmarks/full_reports_holdout_v1.json) is separate from the three known development reports used above. Its seven publisher pages and partial human behavior references were selected and frozen **before the first scored run**. The separate [held-out GitHub Actions workflow](.github/workflows/heldout-report-evaluation.yml) evaluates the same code on these previously untested publications; keep misses, unsupported behavior types and publisher-blocked articles visible instead of rewriting the labels or changing detection logic to make the score look better. The selection is a convenience sample, not random or independently second-reviewed. In particular, 7/7 would not mean 100% extraction accuracy or production detection effectiveness.
+
+Run locally if desired:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_reports.py --manifest benchmarks/full_reports_holdout_v1.json --live --output-directory heldout-report-results
+```
+
+The **development benchmark** evaluates 3 known reports. The **held-out benchmark** adds 7 distinct reports, bringing the attempted evaluation set to **10 reports** when both are executed. Do not mix their scores into one impressive-looking metric or claim comprehensive ground truth. See [benchmarks/README.md](benchmarks/README.md) for scope and provenance limits.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
