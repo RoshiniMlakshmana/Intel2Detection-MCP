@@ -136,6 +136,8 @@ def _image_load_spec(pattern):
     if (pattern.get("observable") or {}).get("lexical_behavior") != "dll_sideloading":
         return None
     quote = pattern["quoted_paragraph"]
+    if behavior_leads.NEGATION.search(quote):
+        return None
     for process in WINDOWS_EXE.finditer(quote):
         for module in WINDOWS_DLL.finditer(quote, process.end(), min(len(quote), process.end() + 180)):
             between = quote[process.end():module.start()]
