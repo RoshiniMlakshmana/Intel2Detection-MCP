@@ -35,8 +35,8 @@ class BundleExportTest(unittest.TestCase):
                              metadata["rule_content_hash"])
             self.assertIn("Invoke-WebRequest", (folder / "detection.kql").read_text())
             self.assertIn("Invoke-WebRequest", (folder / "detection.spl").read_text())
-            self.assertIn("Fictional", (folder / "REVIEW.md").read_text() +
-                          (dest / "README.md").read_text())
+            self.assertIn("fictional", ((folder / "REVIEW.md").read_text() +
+                          (dest / "README.md").read_text()).lower())
             self.assertTrue((folder / "detection.yml").exists())
             self.assertTrue((dest / "INDEX.json").exists())
 
