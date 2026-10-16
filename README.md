@@ -21,6 +21,16 @@ On macOS/Linux, replace the first command with `python3 -m venv .venv` and the P
 
 This is an intentionally **fictional, reproducible lab**, not an assertion of production accuracy or native SIEM query execution. Its expected outcomes include false positives and missed malicious events. Rules are neither approved nor deployed. For advanced use and real-source evaluation steps, see [QUICKSTART.md](QUICKSTART.md).
 
+## Source-attributed research excerpt benchmark (offline)
+
+Run a small, repeatable check of **real publisher wording** with no SIEM, live access or model key:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/benchmark_excerpts.py --output-directory public-excerpt-results
+```
+
+Its inputs are short, manually curated quotations and reference predicates in [benchmarks/public_excerpts_v1.json](benchmarks/public_excerpts_v1.json). It reports which **bounded behavior predicates** the existing extractor recognized and which unsupported descriptions were correctly withheld. Results go to `results.json` and `SUMMARY.md`. Using original publisher excerpts is a stronger smoke test than wholly fictional prose, but **it is not an evaluation of full articles, detection accuracy on real events, or native KQL/SPL execution**. The offline runner does not re-fetch or authenticate the excerpts. We will add wider, independent full-report evaluation separately.
+
 ## What it does
 
 - Collects CVEs, advisories, research feeds and GitHub leads.
