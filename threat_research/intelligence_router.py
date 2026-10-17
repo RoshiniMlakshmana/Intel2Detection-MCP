@@ -125,7 +125,7 @@ def route(threat_id, path: Path | None = None):
     """Distinguish trusted IOC leads from source-inspection work to do."""
     store.initialize(path)
     with store.connection(path) as db:
-        row = db.execute("SELECT id,kind,indicator,sources FROM threats WHERE id=?",
+        row = db.execute("SELECT id,kind,indicator,indicator_type,sources FROM threats WHERE id=?",
                          (threat_id.upper(),)).fetchone()
         if not row:
             raise ValueError("unknown threat")
