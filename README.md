@@ -41,6 +41,22 @@ The archived sample originates from [Neo23x0/evt2sigma](https://github.com/Neo23
 
 **This single event is NOT labeled attack or benign. Zero matches do not imply a correct true negative.** Treat this as a first independent-telemetry compatibility check only. For actual detection performance, users must supply trustworthy attack/benign labeled datasets, native query engines, and environment-specific analyst approval. The built-in research benchmark labels are still unadjudicated. Human verification remains the responsibility of an adopting analyst/organization; do not automatically approve draft rules.
 
+## Intelligence-first detection flow (two paths)
+
+**Known threat match:** Run a daily/source collector to populate your existing local database with vendor-sourced IOC records. Supply an observed event JSON object with actual fields to `scripts/intelligence_first.py`; it matches **only exact, non-expired** IP address, IP:port, domain, URL or SHA-256 fields. Returns threat ID, sources, matched field, and the distinction between *known indicator match* and *confirmed host compromise*. It does not automatically approve or deploy anything.
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --event observed-event.json --output ioc-match.json
+```
+
+**No known match or advisory lead:** Route the lead into the existing source inspection and evidence-backed proposal pipeline:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --threat-id CVE-2026-EXAMPLE
+```
+
+Replace the example with a real advisory ID in your collected database. This returns the research next step; it **does not claim to have generated a new rule immediately**. The existing research workflow fetches and extracts cited paragraphs, then proposes bounded, source-linked *unverified* Sigma/KQL/SPL drafts. Drafts require approval before use. Known IOC exact matching is not a generic malware verdict; indicator trust depends on the original intelligence source, freshness, and correct telemetry mapping. Unsupported IOC types remain explicitly unmatched. See [the two-path implementation](threat_research/intelligence_router.py) and its [regression tests](tests/test_intelligence_router.py).
+
 ## Try it without a SIEM (offline demo)
 
 Requires Python 3.11+; **no SOC, paid API, cloud account or production telemetry needed**. After cloning the repository, install and run:
