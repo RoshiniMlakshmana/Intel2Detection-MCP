@@ -26,7 +26,7 @@ jobs:
           with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
               for entry in tar:
                   print("MEMBER",entry.name,entry.size,flush=True)
-                  if not entry.isfile() or entry.size>30_000_000: continue
+                  if not entry.isfile(): continue
                   f=tar.extractfile(entry)
                   head=f.read(6000).decode("utf-8",errors="replace")
                   print("FIRST_RECORD_SAMPLE",head[:1800],flush=True)
