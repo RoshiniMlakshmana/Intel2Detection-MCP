@@ -1,0 +1,41 @@
+name: Inspect independent labeled Sysmon dataset (research only)
+
+on:
+  push:
+    paths:
+      - '.github/workflows/inspect-external-dataset.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Download externally maintained labeled dataset, inspect structure only
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv, hashlib, io, urllib.request, zipfile
+          url="https://raw.githubusercontent.com/JamilIsp/SILRAD-dataset/5085216bac1758023c672214d61b88dcc992da8b/SILRAD-dataset.zip"
+          print("SOURCE URL", url, flush=True)
+          with urllib.request.urlopen(url, timeout=90) as response:
+              content=response.read(15_000_001)
+          if len(content)>15_000_000:
+              raise ValueError("dataset exceeds 15 MB limit")
+          print("SHA256", hashlib.sha256(content).hexdigest(), "size",len(content))
+          with zipfile.ZipFile(io.BytesIO(content)) as z:
+              for entry in z.infolist():
+                  print("FILE",entry.filename,"bytes",entry.file_size,flush=True)
+                  if entry.is_dir() or entry.file_size>50_000_000 or not entry.filename.lower().endswith(".csv"): continue
+                  with z.open(entry) as data:
+                      head=data.read(3500).decode("utf-8-sig", errors="replace")
+                      for line in head.splitlines()[:2]:
+                          print("CSV EXAMPLE",line[:550],flush=True)
+          print("INSPECTION ONLY; NO EVENT-LABEL MAPPING AND NO PERFORMANCE CLAIMS")
+          PY
