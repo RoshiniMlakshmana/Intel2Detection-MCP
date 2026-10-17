@@ -7,6 +7,18 @@
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
 
+## External telemetry smoke check (third-party Sysmon sample)
+
+For a small **independently authored event sample** separate from our own synthetic tests, run:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/check_external_sysmon.py --output external-sysmon-check.json
+```
+
+The archived sample originates from [Neo23x0/evt2sigma](https://github.com/Neo23x0/evt2sigma/blob/master/tests/sysmon-event.xml), not from our detector or a fabricated project fixture. The runner records the source, original XML hash, normalized Sysmon Event 1 fields and event values. Without `--rule-database PATH_TO_EXISTING_SQLITE_DB`, it performs **parser/field inspection only** and loads no detection rules. With that option, it performs *local reference-matcher* checks against stored rules only; it does **not** run native KQL/SPL/Sigma or supply missing attack/benign labels.
+
+**This single event is NOT labeled attack or benign. Zero matches do not imply a correct true negative.** Treat this as a first independent-telemetry compatibility check only. For actual detection performance, users must supply trustworthy attack/benign labeled datasets, native query engines, and environment-specific analyst approval. The built-in research benchmark labels are still unadjudicated. Human verification remains the responsibility of an adopting analyst/organization; do not automatically approve draft rules.
+
 ## Try it without a SIEM (offline demo)
 
 Requires Python 3.11+; **no SOC, paid API, cloud account or production telemetry needed**. After cloning the repository, install and run:
