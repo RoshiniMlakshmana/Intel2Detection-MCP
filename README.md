@@ -7,6 +7,12 @@
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
 
+## Real external telemetry signal detected (PowerShell 4103)
+
+**Verified local signal match:** A pinned external Mordor attack-emulation recording contained **4,576 captured Windows events**, of which **1,735 Windows PowerShell Event ID 4103 records** matched an encoded-command switch in the logged `Host Application` value. The independent source was downloaded, hash-checked and actually inspected by [GitHub Actions run #38994927672](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/actions/runs/38994927672). See [the evidence report and exact trace](benchmarks/EXTERNAL_POWERSHELL_DETECTION_RESULT.md) and [the detector](scripts/detect_external_powershell_4103.py). The run exports a machine-readable detection report.
+
+**Meaning:** This proves the implemented **4103-specific Python observable matcher** matched genuine third-party Windows telemetry. The 1,735 records can include repeated logging of the same process invocation and do **not** represent 1,735 distinct attacks or independently labeled true positives. This does **not** test our different Sysmon Event ID 1 Sigma/KQL/SPL drafts in a native SIEM; no production detection accuracy is claimed.
+
 ## Independently labeled event validation (strict, no invented results)
 
 The optional `scripts/evaluate_external_labels.py` scores **existing source-linked local draft rules** only when an external event file and a separate independently evidenced label manifest are supplied. It rejects missing labels, mismatched source hashes, duplicates, and self-asserted synthetic provenance. If no stored rules are available, it returns **UNSCORED**, not a fabricated true negative.
