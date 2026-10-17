@@ -7,6 +7,28 @@
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
 
+## Real external telemetry signal detected (PowerShell 4103)
+
+**Verified local signal match:** A pinned external Mordor attack-emulation recording contained **4,576 captured Windows events**, of which **1,735 Windows PowerShell Event ID 4103 records** matched an encoded-command switch in the logged `Host Application` value. The independent source was downloaded, hash-checked and actually inspected by [GitHub Actions run #38994927672](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/actions/runs/38994927672). See [the evidence report and exact trace](benchmarks/EXTERNAL_POWERSHELL_DETECTION_RESULT.md) and [the detector](scripts/detect_external_powershell_4103.py). The run exports a machine-readable detection report.
+
+**Meaning:** This proves the implemented **4103-specific Python observable matcher** matched genuine third-party Windows telemetry. The 1,735 records can include repeated logging of the same process invocation and do **not** represent 1,735 distinct attacks or independently labeled true positives. This does **not** test our different Sysmon Event ID 1 Sigma/KQL/SPL drafts in a native SIEM; no production detection accuracy is claimed.
+
+## Independently labeled event validation (strict, no invented results)
+
+The optional `scripts/evaluate_external_labels.py` scores **existing source-linked local draft rules** only when an external event file and a separate independently evidenced label manifest are supplied. It rejects missing labels, mismatched source hashes, duplicates, and self-asserted synthetic provenance. If no stored rules are available, it returns **UNSCORED**, not a fabricated true negative.
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/evaluate_external_labels.py --events external-events.jsonl --labels independent-labels.json --rule-database path-to-research.sqlite3 --output external-evaluation.json
+```
+
+The labels JSON must contain `schema_version: 1`, `provenance: "externally_verified_event_labels"`, `external_dataset_url`, `independent_label_evidence_url`, `events_sha256` and an entry for **each** event with `event_id`, `expected_malicious` (boolean) and `evidence` (individual label explanation). Event records must already have `event_id`, `timestamp` and `event_type`, and must not embed assumed attack/benign labels. No synthetic examples are silently used as external ground truth.
+
+**Second external dataset investigated:** We also successfully retrieved a pinned [Mordor raw Mimikatz adversary-emulation dataset](benchmarks/MORDOR_RAW_TELEMETRY_AUDIT.md). Unlike the feature-encoded SILRAD CSV, it contains original Windows event JSON (including PowerShell 4103), but the capture is **labeled as an attack scenario, not individually labeled for every benign or malicious event**, and does not automatically match our existing source-specific draft selectors. It remains **unscored** rather than being treated as independent TP/FP/FN/TN ground truth.
+
+**External dataset eligibility finding (2026-10-16):** We inspected SILRAD's pinned goodware/ransomware CSV archive and rejected it for this particular rule-engine test: `Image`, `ParentImage` and `CommandLine` are encoded floating-point features rather than original event text. **No misleading TP/FP/FN/TN counts were calculated.** See [independent dataset schema audit and source SHA-256](benchmarks/EXTERNAL_LABEL_SOURCE_AUDIT.md).
+
+External resources such as [Splunk Attack Data](https://github.com/splunk/attack_data) offer documented attack-exercise collections, but a *dataset or folder classified as attack* is **not enough to label every record malicious**: realistic traces contain normal process events too. This project **does not currently ship an independently labeled attack-and-benign event-level benchmark or a scored rule-performance figure**. The new strict evaluator is ready for one, but its results cannot be invented. It runs the Python reference matcher, not native Splunk SPL, KQL, or Sigma execution. Organization-specific human signoff and deployment validation remain the installing organization's responsibility.
+
 ## External telemetry smoke check (third-party Sysmon sample)
 
 For a small **independently authored event sample** separate from our own synthetic tests, run:
@@ -18,6 +40,22 @@ For a small **independently authored event sample** separate from our own synthe
 The archived sample originates from [Neo23x0/evt2sigma](https://github.com/Neo23x0/evt2sigma/blob/master/tests/sysmon-event.xml), not from our detector or a fabricated project fixture. The runner records the source, original XML hash, normalized Sysmon Event 1 fields and event values. Without `--rule-database PATH_TO_EXISTING_SQLITE_DB`, it performs **parser/field inspection only** and loads no detection rules. With that option, it performs *local reference-matcher* checks against stored rules only; it does **not** run native KQL/SPL/Sigma or supply missing attack/benign labels.
 
 **This single event is NOT labeled attack or benign. Zero matches do not imply a correct true negative.** Treat this as a first independent-telemetry compatibility check only. For actual detection performance, users must supply trustworthy attack/benign labeled datasets, native query engines, and environment-specific analyst approval. The built-in research benchmark labels are still unadjudicated. Human verification remains the responsibility of an adopting analyst/organization; do not automatically approve draft rules.
+
+## Intelligence-first detection flow (two paths)
+
+**Known threat match:** Run a daily/source collector to populate your existing local database with vendor-sourced IOC records. Supply an observed event JSON object with actual fields to `scripts/intelligence_first.py`; it matches **only exact, non-expired** IP address, IP:port, domain, URL or SHA-256 fields. Returns threat ID, sources, matched field, and the distinction between *known indicator match* and *confirmed host compromise*. It does not automatically approve or deploy anything.
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --event observed-event.json --output ioc-match.json
+```
+
+**No known match or advisory lead:** Route the lead into the existing source inspection and evidence-backed proposal pipeline:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --threat-id CVE-2026-EXAMPLE --run-research
+```
+
+Replace the example with a real advisory ID in your collected database. With `--run-research`, this actually executes a bounded fetch of cited publisher pages and calls the existing source-evidence proposal pipeline. It returns a list of unverified draft rules where the inspected source provides sufficient behavior detail, or explicit missing-source/missing-telemetry reasons. Without `--run-research`, it only reports the next step. The existing research workflow fetches and extracts cited paragraphs, then proposes bounded, source-linked *unverified* Sigma/KQL/SPL drafts. Drafts require approval before use. Known IOC exact matching is not a generic malware verdict; indicator trust depends on the original intelligence source, freshness, and correct telemetry mapping. Unsupported IOC types remain explicitly unmatched. See [the two-path implementation](threat_research/intelligence_router.py) and its [regression tests](tests/test_intelligence_router.py).
 
 ## Try it without a SIEM (offline demo)
 
