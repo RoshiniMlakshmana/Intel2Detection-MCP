@@ -1,0 +1,34 @@
+name: Detect real encoded PowerShell 4103 signal from external telemetry
+on:
+  push:
+    paths:
+      - '.github/workflows/real-telemetry-detection.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Fetch verified external raw Mordor capture and run observable detector
+        shell: bash
+        run: |
+          python - <<'PY'
+          import urllib.request, pathlib
+          url="https://raw.githubusercontent.com/thomaspatzke/mordor/84865f779d00bd5839301642fd0e907cfc78240c/small_datasets/windows/credential_access/credential_dumping_T1003/credentials_from_memory/empire_mimikatz_logonpasswords.tar.gz"
+          with urllib.request.urlopen(url, timeout=70) as f:
+              b=f.read(6_000_001)
+          if len(b)>6_000_000: raise ValueError("large archive")
+          pathlib.Path("pinned-mordor.tar.gz").write_bytes(b)
+          PY
+          python scripts/detect_external_powershell_4103.py --archive pinned-mordor.tar.gz --output external-match-report.json
+      - name: Publish verified report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-external-telemetry-match-report
+          path: external-match-report.json
+          retention-days: 30
