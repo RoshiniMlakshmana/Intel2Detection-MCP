@@ -1,0 +1,13 @@
+# Additional third-party dataset audit: Mordor adversary emulation
+
+**2026-10-16 | Result: RAW ATTACK-SCENARIO TELEMETRY FOUND; EVENT-LEVEL RULE SCORE UNSCORED**
+
+Source: [Mordor adversary technique replay](https://github.com/thomaspatzke/mordor), immutable commit `84865f779d00bd5839301642fd0e907cfc78240c`. This archive includes raw, recorded Windows event telemetry, rather than the numeric feature transforms that blocked the SILRAD corpus.
+
+**Actual completed retrieval:** GitHub Actions research-only [run #38993406634](https://github.com/RoshiniMlakshmana/Intel2Detection-MCP/actions/runs/38993406634) (success) downloaded `small_datasets/windows/credential_access/credential_dumping_T1003/credentials_from_memory/empire_mimikatz_logonpasswords.tar.gz` (1,301,513 bytes). Pinned compressed archive SHA-256: `b2f12d051b258d461df7cbd712267b5af5eb9abbff651b7cf06ddf4e2dd86ddc`. Archive member: `empire_mimikatz_logonpasswords_2019-05-18202151.json`, 46,553,645 bytes uncompressed.
+
+**Verified sample:** first JSON record includes `@timestamp=2019-05-18T20:21:48.223Z`, `event_id=4103`, `source_name=Microsoft-Windows-PowerShell` and original PowerShell command invocation and arguments in the `message` field. The sample is raw source telemetry with useful context; it is **not a normalized Sysmon process-creation record** and `event_id=4103` is not equivalent to Sysmon Event ID 1. The sample event should not be fed directly to a process-creation matcher as though it has `Image` and `ParentImage`.
+
+**Why no independent TP/FP/FN/TN yet:** Mordor labels the *attack exercise / collection*, not each individual logged event as malicious or benign. It deliberately contains surrounding benign and unrelated context. Our current held-out Sigma rule drafts are also source-specific Windows process-chain/DLL-load detections from a different investigation; there is no valid fixed mapping from this Mimikatz PowerShell scenario to those specific expected detections. Marking every event malicious would be a label leakage error, and marking unmatched events benign would be equally invalid. We **did not manufacture test labels or detection accuracy figures**. The raw archive is referenced by pinned URL/hash rather than added as 46 MB of unnecessary files to Git.
+
+**Result:** We have identified and successfully downloaded an independent raw attack-scenario telemetry source; label quality and rule applicability are still separate gates. The strict evaluator in `scripts/evaluate_external_labels.py` is ready for compatible event-level label evidence and real saved rule DB inputs. Native SIEM execution remains separately required.
