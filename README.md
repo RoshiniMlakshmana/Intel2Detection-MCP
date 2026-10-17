@@ -52,10 +52,10 @@ The archived sample originates from [Neo23x0/evt2sigma](https://github.com/Neo23
 **No known match or advisory lead:** Route the lead into the existing source inspection and evidence-backed proposal pipeline:
 
 ```powershell
-& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --threat-id CVE-2026-EXAMPLE
+& .\.venv\Scripts\python.exe scripts/intelligence_first.py --database path-to-intel.sqlite3 --threat-id CVE-2026-EXAMPLE --run-research
 ```
 
-Replace the example with a real advisory ID in your collected database. This returns the research next step; it **does not claim to have generated a new rule immediately**. The existing research workflow fetches and extracts cited paragraphs, then proposes bounded, source-linked *unverified* Sigma/KQL/SPL drafts. Drafts require approval before use. Known IOC exact matching is not a generic malware verdict; indicator trust depends on the original intelligence source, freshness, and correct telemetry mapping. Unsupported IOC types remain explicitly unmatched. See [the two-path implementation](threat_research/intelligence_router.py) and its [regression tests](tests/test_intelligence_router.py).
+Replace the example with a real advisory ID in your collected database. With `--run-research`, this actually executes a bounded fetch of cited publisher pages and calls the existing source-evidence proposal pipeline. It returns a list of unverified draft rules where the inspected source provides sufficient behavior detail, or explicit missing-source/missing-telemetry reasons. Without `--run-research`, it only reports the next step. The existing research workflow fetches and extracts cited paragraphs, then proposes bounded, source-linked *unverified* Sigma/KQL/SPL drafts. Drafts require approval before use. Known IOC exact matching is not a generic malware verdict; indicator trust depends on the original intelligence source, freshness, and correct telemetry mapping. Unsupported IOC types remain explicitly unmatched. See [the two-path implementation](threat_research/intelligence_router.py) and its [regression tests](tests/test_intelligence_router.py).
 
 ## Try it without a SIEM (offline demo)
 
