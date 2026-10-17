@@ -1,0 +1,34 @@
+name: Audit raw Mordor attack telemetry (research)
+on:
+  push:
+    paths: ['.github/workflows/audit-mordor.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download pinned small attack telemetry and inspect data format
+        shell: bash
+        run: |
+          python - <<'PY'
+          import urllib.request, hashlib, io, tarfile
+          path="small_datasets/windows/credential_access/credential_dumping_T1003/credentials_from_memory/empire_mimikatz_logonpasswords.tar.gz"
+          url="https://raw.githubusercontent.com/thomaspatzke/mordor/84865f779d00bd5839301642fd0e907cfc78240c/"+path
+          with urllib.request.urlopen(url,timeout=60) as f:
+              raw=f.read(3_000_000)
+          print("DATASET",url,flush=True)
+          print("BYTES",len(raw),"SHA256",hashlib.sha256(raw).hexdigest(),flush=True)
+          if len(raw)>=3_000_000: raise ValueError("unexpected large archive")
+          with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+              for entry in tar:
+                  print("MEMBER",entry.name,entry.size,flush=True)
+                  if not entry.isfile() or entry.size>30_000_000: continue
+                  f=tar.extractfile(entry)
+                  head=f.read(6000).decode("utf-8",errors="replace")
+                  print("FIRST_RECORD_SAMPLE",head[:1800],flush=True)
+          print("NOT SCORED: attack scenario does not independently label each telemetry event",flush=True)
+          PY
