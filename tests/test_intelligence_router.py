@@ -47,9 +47,9 @@ class IntelligenceRouterTest(unittest.TestCase):
         self.assertEqual(p["path"],"behavior_research")
         self.assertFalse(p["automatic_approval"])
     def test_cli_dispatches_real_research_pipeline_when_requested(self):
-        with patch('threat_research.research_pass.run_pass',return_value={\"drafts_created\":1,\"results\":[]}) as mock:
-            self.assertEqual(intelligence_first.main([\"--database\",str(self.db),\"--threat-id\",\"CVE-2099-9999\",\"--run-research\"]),0)
-            self.assertEqual(mock.call_args.kwargs['threat_ids'],[\"CVE-2099-9999\"])
+        with patch('threat_research.research_pass.run_pass',return_value={"drafts_created":1,"results":[]}) as mock:
+            self.assertEqual(intelligence_first.main(["--database",str(self.db),"--threat-id","CVE-2099-9999","--run-research"]),0)
+            self.assertEqual(mock.call_args.kwargs['threat_ids'],["CVE-2099-9999"])
     def test_ioc_routes_to_matching(self):
         self.assertEqual(route.route("IOC-EXAMPLE-IP",self.db)["path"],"known_indicator")
 
