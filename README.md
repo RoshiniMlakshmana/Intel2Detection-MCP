@@ -7,6 +7,18 @@
 - **SIEM optional:** research and local testing work without one.
 - **Current status:** supported patterns work; broad real-world accuracy is still unproven.
 
+## Independently labeled event validation (strict, no invented results)
+
+The optional `scripts/evaluate_external_labels.py` scores **existing source-linked local draft rules** only when an external event file and a separate independently evidenced label manifest are supplied. It rejects missing labels, mismatched source hashes, duplicates, and self-asserted synthetic provenance. If no stored rules are available, it returns **UNSCORED**, not a fabricated true negative.
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/evaluate_external_labels.py --events external-events.jsonl --labels independent-labels.json --rule-database path-to-research.sqlite3 --output external-evaluation.json
+```
+
+The labels JSON must contain `schema_version: 1`, `provenance: "externally_verified_event_labels"`, `external_dataset_url`, `independent_label_evidence_url`, `events_sha256` and an entry for **each** event with `event_id`, `expected_malicious` (boolean) and `evidence` (individual label explanation). Event records must already have `event_id`, `timestamp` and `event_type`, and must not embed assumed attack/benign labels. No synthetic examples are silently used as external ground truth.
+
+External resources such as [Splunk Attack Data](https://github.com/splunk/attack_data) offer documented attack-exercise collections, but a *dataset or folder classified as attack* is **not enough to label every record malicious**: realistic traces contain normal process events too. This project **does not currently ship an independently labeled attack-and-benign event-level benchmark or a scored rule-performance figure**. The new strict evaluator is ready for one, but its results cannot be invented. It runs the Python reference matcher, not native Splunk SPL, KQL, or Sigma execution. Organization-specific human signoff and deployment validation remain the installing organization's responsibility.
+
 ## External telemetry smoke check (third-party Sysmon sample)
 
 For a small **independently authored event sample** separate from our own synthetic tests, run:
