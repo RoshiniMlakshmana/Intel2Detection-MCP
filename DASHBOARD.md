@@ -1,5 +1,21 @@
 # Analyst dashboard (no SIEM required)
 
+## Known threat indicator check (new dashboard view)
+
+The navigation includes **Known IOC check** at `http://127.0.0.1:8765/indicator-check`.
+Supply one observed destination IP, hostname, URL or full SHA-256, or both
+destination IP and port. The page reads only the existing collected local threat
+database: exact indicator match, cited threat source and feed confidence appear.
+No matching indicator produces a clear no-match result, **not a benign verdict**.
+The lookup is read-only and never creates, approves or deploys rules.
+
+Existing threat-detail pages now show the actual `known_indicator` or
+`behavior_research` route. New reports continue through the original
+source-research and draft-proposal controls. Collection still requires a successful
+source fetch, and the optional ThreatFox IOC feed requires `THREATFOX_AUTH_KEY`.
+The view does not claim the new router is a native SIEM engine or that its
+indicator catalog is complete.
+
 ## Current workflow
 
 The four main tabs are **Sources → Threat intel → Rules → Needs attention**.
