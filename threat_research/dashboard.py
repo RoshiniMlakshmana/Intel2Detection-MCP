@@ -436,7 +436,19 @@ def render_rules(path=None, qs=None):
     result = workflow.list_rules(path, state=state, page=_qs_one(qs, "page", "1"))
     rows = []
     for item in result["items"]:
-        rule = rules.get_rule(item["id"], path)
+        try:
+            rule = rules.get_rule(item["id"], path)
+            rule_warning = ""
+        except ValueError as exc:
+            # Stored legacy specs can fail the current bounded-spec compiler.
+            # Show the raw persisted rule (no query regeneration or writes).
+            with store.connection(path) as db:
+                saved = db.execute("SELECT sigma,kql,spl FROM rules WHERE id=?",
+                                   (item["id"],)).fetchone()
+            rule = dict(saved) if saved else {}
+            rule_warning = ('<p><span class="badge error">Legacy rule needs repair</span> '
+                            + _e(str(exc)[:180]) + '. Stored query text shown unchanged; '
+                            'no successful validation or deployment implied.</p>')
         check = item["labeled_checks"]
         if check:
             check_html = (f'TP {check["counts"]["tp"]} / FP {check["counts"]["fp"]} / '
@@ -445,7 +457,7 @@ def render_rules(path=None, qs=None):
                 check_html += ' <span class="badge stale">older version</span>'
         else:
             check_html = '<small class="muted">not tested</small>'
-        formats = '<details><summary>View Sigma / KQL / SPL</summary>' + ''.join(
+        formats = rule_warning + '<details><summary>View Sigma / KQL / SPL</summary>' + ''.join(
             f'<h3>{name}</h3><pre>{_e(rule.get(field) or "Not generated")}</pre>'
             for name, field in (("Sigma", "sigma"), ("KQL", "kql"), ("SPL", "spl"))) + '</details>'
         rows.append(f'<tr><td><a href="/threat?id={_url_escape(item["threat_id"])}&from=rules#rule-{_e(item["id"])}">{_e(item["title"])}</a>'
