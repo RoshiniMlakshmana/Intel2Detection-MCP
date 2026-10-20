@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import (core, corroboration, custom_rules, dashboard_data, environment, poller, proposal_pass,
+from . import (core, corroboration, custom_rules, dashboard_data, environment, intelligence_router, poller, proposal_pass,
                rules, soc_replay, store, workflow, workup)
 
 DEFAULT_HOST = "127.0.0.1"
@@ -128,6 +128,7 @@ def _page(title, body, active=None, flash=None, path=None):
         return f'{label}<span class="count">{counts[key]}</span>'
     needs_count = counts["source_errors"] + counts["pending_reviews"] + counts["actionable_research_backlog"]
     nav_items = [("/", "Sources"), ("/leads", counted("Threat intel", "leads_total")),
+                 ("/indicator-check", "Known IOC check"),
                  ("/rules?state=draft", counted("Rules", "draft_rules")),
                  ("/attention", f'Needs attention<span class="count">{needs_count}</span>')]
     # Built without a backslash inside any f-string expression part: that
@@ -588,6 +589,54 @@ def render_tools(path=None, qs=None):
     return _page("MCP tools", body, active="/tools", flash=_flash_from_query(qs or {}), path=path)
 
 
+def render_indicator_check(path=None, qs=None):
+    """Read-only exact IOC lookup against already collected threat intelligence."""
+    qs = qs or {}
+    allowed = {
+        "DestinationIp": "Destination IP",
+        "DestinationPort": "Destination port (for IP:port intel)",
+        "DestinationHostname": "Destination domain",
+        "Url": "URL",
+        "SHA256": "SHA-256 file hash",
+    }
+    fields = {key: (qs.get(key) or [""])[0].strip() for key in allowed}
+    for key, value in fields.items():
+        if len(value) > 512 or "\\n" in value or "\\r" in value:
+            raise ValueError("IOC value is too long or contains line breaks")
+    selected = {key: value for key, value in fields.items() if value}
+    if selected and len(selected) > 2:
+        raise ValueError("Check one indicator, or a destination IP and port")
+    if len(selected) == 2 and set(selected) != {"DestinationIp", "DestinationPort"}:
+        raise ValueError("Only destination IP and port may be combined")
+    if selected and "DestinationPort" in selected and "DestinationIp" not in selected:
+        raise ValueError("Destination port requires destination IP")
+
+    result = intelligence_router.classify_event(selected, path) if selected else None
+    controls = "".join(
+        '<label>' + _e(label) + '</label>'
+        + '<input name="' + _e(field) + '" value="' + _e(fields[field]) + '" maxlength="512">'
+        for field, label in allowed.items()
+    )
+    if result is None:
+        body = '<p class="muted">Enter an indicator from an observed event and click Check. Only previously collected intelligence is searched.</p>'
+    elif result["matches"]:
+        rows = "".join(
+            '<li><b><a href="/threat?id=' + _url_escape(m["threat_id"]) + '">' + _e(m["threat_id"]) + '</a></b>'
+            + ' &middot; ' + _e(m["title"])
+            + '<br><small>Matched ' + _e(m["matched_field"]) + ' &middot; '
+            + _e(m["indicator_type"]) + ' &middot; source confidence: ' + _e(m.get("confidence"))
+            + '</small><br>' + (" ".join(_safe_href(src) for src in m["sources"]) or "No cited source")
+            + '</li>'
+            for m in result["matches"]
+        )
+        body = '<p><span class="badge ok">Known intelligence indicator match</span> ' + str(len(result["matches"])) + ' result(s).</p><ul class="bullets">' + rows + '</ul>'
+    else:
+        body = '<p><span class="badge unknown">No known indicator match</span> No exact, unexpired IOC matched the collected local database. This is not a clean bill of health. New report-driven rules are available from Threat intel lead pages.</p>'
+    footer = '<p class="muted">An IOC match is not confirmation of an incident. Confidence is the feed value, not locally measured reliability. No rule was approved, deployed, or executed in a SIEM.</p>'
+    form = '<form method="get" action="/indicator-check"><div class="panel">' + controls + '<p><button type="submit">Check stored threat intelligence</button></p></div></form>'
+    return _page("Known IOC check", '<h1>Known threat indicator check</h1>' + form + '<div class="panel">' + body + footer + '</div>', active="/indicator-check", flash=_flash_from_query(qs), path=path)
+
+
 # ---------------------------------------------------------------- Threat ---
 
 def _evidence_block(evidence):
@@ -952,7 +1001,7 @@ def render_threat(threat_id, path=None, qs=None):
 <div class="panel"><b>At a glance:</b> {len(view['rules'])} local rule(s). Research citations describe the publisher's findings;
 they do not show activity in your environment. <a href="/rules?state=draft">See all drafts</a>.</div>
 
-<details><summary>Research and review steps</summary><div class="panel">{_progression_html(progression)}</div></details>
+<div class="panel"><b>Intelligence-first route:</b> {_e(intelligence_router.route(t["id"], path)["path"])}. Known IOC leads can be checked in <a href="/indicator-check">Known IOC check</a>; other leads follow cited-source research and unverified rule drafting below. No rule approval or deployment is implied.</div>\n\n<details><summary>Research and review steps</summary><div class="panel">{_progression_html(progression)}</div></details>
 
 <h2>Pattern and proposed detection</h2>
 <div class="panel">{_workup_html(workup.lead_workup(t["id"], path))}</div>
@@ -1152,6 +1201,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, render_leads(path, {**qs, "source": qs.get("name") or [""]}))
             elif parsed.path in ("/leads", "/threats"):
                 self._send(200, render_leads(path, qs))
+            elif parsed.path == "/indicator-check":
+                self._send(200, render_indicator_check(path, qs))
             elif parsed.path == "/rules":
                 self._send(200, render_rules(path, qs))
             elif parsed.path == "/attention":
