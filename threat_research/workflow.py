@@ -239,7 +239,12 @@ def workflow_counts(path: Path | None = None):
 
 
 def latest_check(rule_id, path):
-    rule = rules.get_rule(rule_id, path)
+    try:
+        rule = rules.get_rule(rule_id, path)
+    except ValueError:
+        # Older stored custom specs may no longer validate. Keep the rule
+        # list usable, but never mark their historic tests current.
+        rule = None
     with store.connection(path) as db:
         row = db.execute("SELECT rule_hash,tested_at,sample_size,counts,sample_source,sample_provenance "
                          "FROM rule_tests WHERE rule_id=? ORDER BY id DESC LIMIT 1", (rule_id,)).fetchone()
